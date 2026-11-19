@@ -1,0 +1,27 @@
+@page
+@{
+    ViewData["Title"] = "Invalid Permissions";
+    Layout = "_Layout";
+}
+
+<div class="crumbs"><a href="/Dashboard">Home</a> › Invalid Permissions</div>
+
+<div class="pagehead">
+    <div>
+        <h1>Invalid Permissions</h1>
+        <div class="sub">You do not have permission to view that screen.</div>
+    </div>
+</div>
+
+<div class="card">
+    <p>
+        The screen you tried to open requires the Administrator or Approver role.
+        You are signed in as <strong>@(User.Identity?.Name ?? "Guest")</strong>.
+    </p>
+    <p class="muted">
+        This mirrors the <code>InvalidPermissions</code> screen in the source module,
+        which the original app redirected to when a role check failed.
+    </p>
+    <a class="btn" href="/Dashboard">Back to Dashboard</a>
+    <a class="btn btn-ghost" href="/Logout">Switch user</a>
+</div>

@@ -1,0 +1,35 @@
+@page
+@model BlogModel
+@{ ViewData["Title"] = "Blog"; }
+
+<div class="crumbs"><a href="/Dashboard">Home</a> › Blog</div>
+
+<div class="pagehead">
+    <div>
+        <h1>Blog</h1>
+        <div class="sub">Platform announcements</div>
+    </div>
+    <div class="spacer"></div>
+    @if (Model.CanEdit)
+    {
+        <span class="btn btn-ghost" title="Not implemented in this demo build">+ New Post</span>
+    }
+</div>
+
+@foreach (var p in Model.Posts)
+{
+    <div class="card" style="margin-bottom:16px">
+        <h2>@p.Title</h2>
+        <p class="muted" style="margin:0 0 10px">@p.CreatedOn?.ToString("dd MMM yyyy")</p>
+        <p style="margin:0">@p.Description</p>
+    </div>
+}
+@if (Model.Posts.Count == 0)
+{
+    <div class="card"><p class="muted" style="margin:0">No posts yet.</p></div>
+}
+
+<div class="prov" style="margin-top:6px">
+    In the original app, creating and editing posts was restricted to administrators
+    (<code>BlogPostCreateOrUpdate</code>). The read view was open to any registered user.
+</div>

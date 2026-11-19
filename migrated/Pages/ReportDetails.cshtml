@@ -1,0 +1,83 @@
+@page
+@model ReportDetailsModel
+@{ ViewData["Title"] = "Report Details"; }
+@functions {
+    static string Eur(decimal v) => "€ " + v.ToString("N2", new System.Globalization.CultureInfo("de-DE"));
+}
+
+<div class="crumbs">
+    <a href="/Dashboard">Home</a> › <a href="/Reports?kind=@Model.Kind">Reports</a> › Details
+</div>
+
+@if (Model.NotFound)
+{
+    <div class="alert alert-error">That report does not exist.</div>
+    <a class="btn" href="/Reports?kind=@Model.Kind">Back to Reports</a>
+}
+else
+{
+    <div class="pagehead">
+        <div>
+            <h1>@(Model.Kind == "Expenses" ? "Expense" : "Earning") Report Details</h1>
+            <div class="sub">@Model.Title</div>
+        </div>
+        <div class="spacer"></div>
+        <a class="btn btn-ghost" href="/Reports?kind=@Model.Kind&amp;expand=@Model.Id">Back to Reports</a>
+    </div>
+
+    <div class="tiles" style="grid-template-columns:repeat(4,1fr)">
+        <div class="card tile">
+            <div class="label">Code</div>
+            <div class="value" style="font-size:20px">@Model.Code</div>
+        </div>
+        <div class="card tile">
+            <div class="label">Status</div>
+            <div class="value" style="font-size:20px"><span class="badge @Model.Status">@Model.Status</span></div>
+        </div>
+        <div class="card tile">
+            <div class="label">Total</div>
+            <div class="value" style="font-size:20px">@Eur(Model.Total)</div>
+        </div>
+        <div class="card tile">
+            <div class="label">Records</div>
+            <div class="value" style="font-size:20px">@Model.Items.Count</div>
+        </div>
+    </div>
+
+    <div class="card" style="padding:0">
+        <table class="tbl">
+            <thead>
+                <tr>
+                    <th style="width:150px">Date</th>
+                    <th style="width:220px">Title</th>
+                    <th>Description</th>
+                    <th style="width:120px">Type</th>
+                    <th style="width:130px" class="right">Amount</th>
+                </tr>
+            </thead>
+            <tbody>
+                @if (Model.Items.Count == 0)
+                {
+                    <tr><td colspan="5" class="muted">This report has no records yet.</td></tr>
+                }
+                @foreach (var it in Model.Items)
+                {
+                    <tr>
+                        <td>@it.Date?.ToString("dd MMM yyyy")</td>
+                        <td><strong>@it.Title</strong></td>
+                        <td class="muted">@it.Description</td>
+                        <td>@it.Type</td>
+                        <td class="right">@Eur(it.Amount)</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+
+    <div class="prov" style="margin-top:22px">
+        In the original app this screen also handled invoice download, inline edit and
+        delete, and report submission. Those actions exist in the extracted module
+        (<code>ExpenseUploadInvoice</code>, <code>ExpenseDelete</code>,
+        <code>ExpenseReport_Submit</code>) but are not implemented in this demo build.
+    </div>
+}

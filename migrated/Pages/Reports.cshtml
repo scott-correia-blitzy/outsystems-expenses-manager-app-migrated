@@ -1,0 +1,109 @@
+@page
+@model ReportsModel
+@{ ViewData["Title"] = "Reports"; }
+@functions {
+    static string Eur(decimal v) => "€ " + v.ToString("N2", new System.Globalization.CultureInfo("de-DE"));
+}
+
+<div class="crumbs"><a href="/Dashboard">Home</a> › Reports</div>
+
+<div class="pagehead">
+    <div>
+        <h1>Reports</h1>
+        <div class="sub">Browse your reports</div>
+    </div>
+    <div class="spacer"></div>
+    <span class="btn btn-ghost" title="Creating reports is out of scope for this demo build">+ New Report</span>
+</div>
+
+<div>
+    <div class="tabs">
+        <a href="?kind=Expenses&amp;status=@Model.StatusFilter" class="@(Model.Kind == "Expenses" ? "active" : "")">Expenses</a>
+        <a href="?kind=Earnings&amp;status=@Model.StatusFilter" class="@(Model.Kind == "Earnings" ? "active" : "")">Earnings</a>
+    </div>
+</div>
+
+<div>
+    <div class="filters">
+        @foreach (var f in new[] { "All", "Draft", "Submitted", "Approved", "Declined" })
+        {
+            <a href="?kind=@Model.Kind&amp;status=@f" class="@(Model.StatusFilter == f ? "active" : "")">@f</a>
+        }
+    </div>
+</div>
+
+<div class="tblwrap">
+    <table class="tbl">
+        <thead>
+            <tr>
+                <th style="width:170px">Code</th>
+                <th>Title</th>
+                <th style="width:130px">Date</th>
+                <th style="width:160px">@(Model.Kind == "Expenses" ? "Total Spent" : "Total Earned")</th>
+                <th style="width:130px">Status</th>
+                <th style="width:60px"></th>
+            </tr>
+        </thead>
+        <tbody>
+            @if (Model.Rows.Count == 0)
+            {
+                <tr><td colspan="6" class="muted">No reports match this filter.</td></tr>
+            }
+            @foreach (var r in Model.Rows)
+            {
+                var open = Model.Expanded == r.Id;
+                <tr>
+                    <td><span class="pill">@r.Code</span></td>
+                    <td><strong>@r.Title</strong></td>
+                    <td>@r.Date?.ToString("d.MM.yyyy")</td>
+                    <td>@Eur(r.Total)</td>
+                    <td><span class="badge @r.Status">@r.Status</span></td>
+                    <td class="right">
+                        <a href="?kind=@Model.Kind&amp;status=@Model.StatusFilter&amp;expand=@(open ? 0 : r.Id)#r@(r.Id)"
+                           title="@(open ? "Collapse" : "Expand")">@(open ? "⌃" : "⌄")</a>
+                    </td>
+                </tr>
+                if (open)
+                {
+                    <tr class="detail" id="r@(r.Id)">
+                        <td colspan="6">
+                            <div class="right" style="margin-bottom:8px">
+                                <a class="btn btn-sm" href="/ReportDetails?kind=@Model.Kind&amp;id=@r.Id">ⓘ View Report Details</a>
+                            </div>
+                            <div class="inner">
+                                <table class="tbl">
+                                    <thead>
+                                        <tr>
+                                            <th style="width:150px">Date</th>
+                                            <th style="width:210px">Title</th>
+                                            <th>Description</th>
+                                            <th style="width:150px">@(Model.Kind == "Expenses" ? "Amount Spent" : "Amount Earned")</th>
+                                            <th style="width:120px">Type</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        @if (r.Items.Count == 0)
+                                        {
+                                            <tr><td colspan="5" class="muted">This report has no records yet.</td></tr>
+                                        }
+                                        @foreach (var it in r.Items)
+                                        {
+                                            <tr>
+                                                <td>@it.Date?.ToString("dd MMM yyyy")</td>
+                                                <td>@it.Title</td>
+                                                <td class="muted">@it.Description</td>
+                                                <td>@Eur(it.Amount)</td>
+                                                <td>@it.Type</td>
+                                            </tr>
+                                        }
+                                    </tbody>
+                                </table>
+                            </div>
+                        </td>
+                    </tr>
+                }
+            }
+        </tbody>
+    </table>
+</div>
+<div class="rowcount">1 to @Model.Rows.Count of @Model.Rows.Count items</div>

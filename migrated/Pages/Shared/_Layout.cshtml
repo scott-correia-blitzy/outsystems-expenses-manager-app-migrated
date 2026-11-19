@@ -1,0 +1,42 @@
+﻿@{
+    var path = Context.Request.Path.Value?.ToLowerInvariant() ?? "";
+    bool On(string p) => path.StartsWith(p, StringComparison.OrdinalIgnoreCase);
+    var isAdmin = User.IsInRole("Administrator") || User.IsInRole("Approver");
+    var roles = (User.Identity?.IsAuthenticated == true)
+        ? string.Join(", ", User.FindAll(System.Security.Claims.ClaimTypes.Role).Select(c => c.Value))
+        : "Anonymous";
+}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>@ViewData["Title"] | Expenses Manager V2</title>
+    <link rel="stylesheet" href="~/css/app.css" />
+</head>
+<body>
+    <header class="topbar">
+        <div class="brand"><span class="logo">K</span> Expenses Manager V2</div>
+        <nav class="navlinks">
+            <a href="/Dashboard" class="@(On("/dashboard") ? "active" : "")">Dashboard</a>
+            <a href="/Reports" class="@(On("/reports") ? "active" : "")">Reports</a>
+            <a href="/Blog" class="@(On("/blog") ? "active" : "")">Blog</a>
+            @if (isAdmin)
+            {
+                <a href="/Admin" class="@(On("/admin") ? "active" : "")">Admin</a>
+            }
+            <a href="/Migration" class="@(On("/migration") ? "active" : "")">Migration</a>
+        </nav>
+        <div class="spacer"></div>
+        <div class="whoami">
+            <span class="avatar">&#128100;</span>
+            <span>@(User.Identity?.Name ?? "Guest")</span>
+            <span class="rolechip">@roles</span>
+            <a href="/Logout" title="Log out">&#8677;</a>
+        </div>
+    </header>
+    <div class="wrap">
+        @RenderBody()
+    </div>
+</body>
+</html>

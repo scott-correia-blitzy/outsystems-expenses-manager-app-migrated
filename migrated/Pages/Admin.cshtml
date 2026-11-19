@@ -1,0 +1,81 @@
+@page
+@model AdminModel
+@{ ViewData["Title"] = "Admin Dashboard"; }
+@functions {
+    static string Eur(decimal v) => "€ " + v.ToString("N2", new System.Globalization.CultureInfo("de-DE"));
+}
+
+<div class="crumbs"><a href="/Dashboard">Home</a> › Admin</div>
+
+<div class="pagehead">
+    <div>
+        <h1>Admin Dashboard</h1>
+        <div class="sub">Review and process submitted reports</div>
+    </div>
+</div>
+
+<div class="prov">
+    <strong>Role restricted.</strong> This screen requires the Administrator or Approver role.
+    In the source module that restriction is a <code>RoleException</code> on the
+    <code>AdminDashboard</code> screen; here it is the <code>Approver</code> authorization
+    policy in <code>Program.cs</code>. Log in as <code>em_user1</code> to see the denial.
+</div>
+
+<div class="tiles">
+    <div class="card tile">
+        <div class="label">Total Reports</div>
+        <div class="value">@Model.TotalReports</div>
+    </div>
+    <div class="card tile">
+        <div class="label">Pending Verification</div>
+        <div class="value">@Model.Pending</div>
+        <div class="foot">Awaiting an approve or decline decision</div>
+    </div>
+    <div class="card tile">
+        <div class="label">Approval Rate</div>
+        <div class="value">@Model.ApprovalRate.ToString("N1")%</div>
+        <div class="foot">Of reports already processed</div>
+    </div>
+    <div class="card tile">
+        <div class="label">Total Value Submitted</div>
+        <div class="value">@Eur(Model.TotalValue)</div>
+    </div>
+</div>
+
+<div class="card" style="padding:0">
+    <table class="tbl">
+        <thead>
+            <tr>
+                <th style="width:120px">Kind</th>
+                <th style="width:150px">Code</th>
+                <th>Title</th>
+                <th style="width:140px">Submitted</th>
+                <th style="width:140px" class="right">Total</th>
+                <th style="width:130px">Status</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var r in Model.Queue)
+            {
+                <tr>
+                    <td class="muted">@r.Kind</td>
+                    <td><span class="pill">@r.Code</span></td>
+                    <td><strong>@r.Title</strong></td>
+                    <td>@r.SubmittedOn?.ToString("dd MMM yyyy")</td>
+                    <td class="right">@Eur(r.Total)</td>
+                    <td><span class="badge @r.Status">@r.Status</span></td>
+                </tr>
+            }
+            @if (Model.Queue.Count == 0)
+            {
+                <tr><td colspan="6" class="muted">Nothing submitted.</td></tr>
+            }
+        </tbody>
+    </table>
+</div>
+
+<div class="prov" style="margin-top:22px">
+    The approve and decline actions exist in the extracted module as the
+    <code>ProcessExpenseReport</code> and <code>ProcessEarningReport</code> server
+    actions. They are not wired up in this demo build.
+</div>

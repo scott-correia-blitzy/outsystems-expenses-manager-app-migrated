@@ -1,0 +1,123 @@
+@page
+@model MigrationModel
+@{ ViewData["Title"] = "Migration"; }
+
+<div class="crumbs"><a href="/Dashboard">Home</a> › Migration</div>
+
+<div class="pagehead">
+    <div>
+        <h1>Migration Trace</h1>
+        <div class="sub">What each part of this app came from in the OutSystems module</div>
+    </div>
+</div>
+
+<div class="prov">
+    <strong>Read this before using the app as evidence.</strong>
+    A running app does not prove the OML to XML extraction was faithful. This app was written
+    from the extracted XML, so anything the extraction dropped would simply be absent here,
+    and the app would still run. What it does show is that the XML is complete enough to
+    rebuild working behaviour from, and that the data model and business rules in it hold
+    together. The real corroboration is the screenshot comparison in the last section.
+</div>
+
+<div class="card" style="margin-bottom:16px">
+    <h2>The one SQL node</h2>
+    <p class="muted">
+        The source module has a single hand-written SQL node. In the extracted XML it is not
+        stored as a string: it is a <code>ParsedSQLExpression</code> split across dozens of
+        <code>Text</code> and <code>Unbound</code> elements, with table and parameter names held
+        as key references. Reassembling those fragments in order produces this:
+    </p>
+    <pre class="sql">@ExpensesManager.Services.ReportingService.OriginalSqlServer</pre>
+    <p class="muted" style="margin-top:18px">
+        Running here against SQLite, with <code>DATEADD</code> and <code>GETDATE</code> translated
+        and the as-of date passed in because the sample data is from 2024:
+    </p>
+    <pre class="sql">@ExpensesManager.Services.ReportingService.MigratedSqlite</pre>
+    <p class="muted" style="margin-top:18px">
+        This query returned <strong>@Model.SqlRowCount rows</strong> just now, and feeds the
+        "Expenses &amp; Earnings per date" chart on the dashboard.
+    </p>
+</div>
+
+<div class="card" style="margin-bottom:16px">
+    <h2>Element mapping</h2>
+    <table class="tbl">
+        <thead>
+            <tr>
+                <th style="width:30%">OutSystems</th>
+                <th style="width:34%">Source element</th>
+                <th>Here</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var m in Model.Mappings)
+            {
+                <tr>
+                    <td><strong>@m.Concept</strong></td>
+                    <td class="muted"><code>@m.Source</code></td>
+                    <td>@m.Target</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+</div>
+
+<div class="card" style="margin-bottom:16px">
+    <h2>Static Entity values, as extracted</h2>
+    <p class="muted">
+        These are design-time records from the module, not table data. OutSystems logic refers
+        to them by name, so the Id values are effectively constants that the code depends on.
+        They are seeded into this database unchanged.
+    </p>
+    <table class="tbl">
+        <thead>
+            <tr><th>Entity</th><th>Id</th><th>Label</th><th>Order</th><th>Active</th></tr>
+        </thead>
+        <tbody>
+            @foreach (var s in Model.StaticRecords)
+            {
+                <tr>
+                    <td class="muted">@s.Entity</td>
+                    <td>@s.Id</td>
+                    <td><strong>@s.Label</strong></td>
+                    <td>@s.Order</td>
+                    <td>@(s.Active ? "Yes" : "No")</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+    <p class="muted" style="margin-top:14px">
+        Note <code>Draft</code> and <code>Submitted</code> both carry Order 2. That duplicate is
+        in the source app and was reproduced rather than corrected.
+    </p>
+</div>
+
+<div class="card">
+    <h2>What actually corroborates the extraction</h2>
+    <p class="muted">
+        The original hosted demo is gone, so the screenshots in the legacy repo are the only
+        surviving record of the app running. These values were read off those screenshots and
+        compared against what came out of the binary modules:
+    </p>
+    <table class="tbl">
+        <thead>
+            <tr><th style="width:38%">Checked</th><th style="width:31%">In the screenshots</th><th>Extracted independently</th></tr>
+        </thead>
+        <tbody>
+            @foreach (var c in Model.Corroboration)
+            {
+                <tr>
+                    <td><strong>@c.What</strong></td>
+                    <td class="muted">@c.Screenshot</td>
+                    <td>@c.Extracted</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+    <p class="muted" style="margin-top:16px">
+        The dashboard figures in this build were reconstructed to land on the original's numbers,
+        so treat the first three rows as the real evidence: those labels and the report code format
+        came out of the binary before any screenshot was consulted.
+    </p>
+</div>

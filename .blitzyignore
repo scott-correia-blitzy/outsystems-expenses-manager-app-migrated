@@ -1,0 +1,75 @@
+# .blitzyignore
+# Assumes gitignore-style pattern syntax. Verify against Blitzy's docs if behavior differs.
+#
+# Scope: ONLY files nothing can read, plus the one directory that would give the
+# demo away. Everything with extractable content stays visible, including images,
+# PDFs and Office documents. Images in particular are valuable here:
+# legacy/screenshots/ is the only surviving record of the original app running,
+# since the hosted demo is gone.
+
+# --- The migrated target ---
+# This is the single exception to the "unreadable binaries only" rule above, and it
+# is not about readability. migrated/ is a hand-written .NET build of the same app,
+# produced from the extracted XML. It is readable, and it is useful to humans, but
+# to an ingestion run it is the answer key: if Blitzy reads the finished target
+# alongside the legacy input, it is transcribing rather than modernizing, and the
+# demo proves nothing.
+#
+# Remove this rule only if the intent is to let Blitzy see the target, for example
+# to score its own output against a reference.
+migrated/
+
+# --- OutSystems binaries ---
+# Verified opaque: a header plus compressed binary XML fragments, no readable text.
+# The extracted XML in legacy-oml-xml/ is what carries this content.
+*.oml
+*.oap
+*.osp
+*.osl
+*.oss
+
+# --- Compiled output ---
+*.dll
+*.exe
+*.pdb
+*.so
+*.dylib
+*.class
+*.o
+*.obj
+
+# --- Archives ---
+# Opaque until extracted. Extract first, then let the contents be ingested.
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+*.rar
+*.jar
+*.war
+*.nupkg
+
+# --- Database binaries and backups ---
+*.bak
+*.mdf
+*.ldf
+*.dmp
+*.sqlite
+*.db
+
+# --- Video ---
+*.mp4
+*.mov
+*.avi
+
+# --- Fonts ---
+*.ttf
+*.otf
+*.woff
+*.woff2
+*.eot
+
+# --- OS binary metadata ---
+.DS_Store
+Thumbs.db

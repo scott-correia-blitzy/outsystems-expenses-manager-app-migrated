@@ -1,0 +1,159 @@
+@page
+@model DashboardModel
+@{ ViewData["Title"] = "Dashboard"; }
+@functions {
+    static string Eur(decimal v) => "€ " + v.ToString("N2", new System.Globalization.CultureInfo("de-DE"));
+    static string Icon(string label) => label switch
+    {
+        "Travel" => "✈",
+        "Restaurant" => "🍴",
+        "Kilometers" => "🚗",
+        "Salary" => "💰",
+        "Investment" => "📈",
+        "Service" => "🛠",
+        _ => "💳",
+    };
+}
+
+<div class="crumbs"><a href="/Dashboard">Home</a> › Dashboard</div>
+
+<div class="pagehead">
+    <div>
+        <h1>Dashboard</h1>
+        <div class="sub">Welcome to Expenses Manager</div>
+    </div>
+    <div class="spacer"></div>
+    <a class="btn" href="/Reports">▦ View Reports</a>
+</div>
+
+<div class="prov">
+    <strong>Demo build.</strong> Migrated from the OutSystems module by Blitzy ingestion input.
+    Figures are computed from sample data reconstructed to match the original screenshots,
+    evaluated as of @Model.AsOf.ToString("d MMMM yyyy") (when those screenshots were taken).
+</div>
+
+@if (Model.Stats.HasDrafts)
+{
+    <div class="alert alert-info">
+        ⓘ You have reports with Draft status, this reports are not considered for statistics
+    </div>
+}
+
+<div class="tiles">
+    <div class="card tile">
+        <div class="label">Total Balance</div>
+        <div class="value">@Eur(Model.Stats.TotalBalance)</div>
+        <div class="foot @(Model.Stats.TotalBalance >= 0 ? "good" : "bad")">
+            @(Model.Stats.TotalBalance >= 0 ? "☺ Your balance is ok" : "☹ Your balance is negative")
+        </div>
+    </div>
+    <div class="card tile">
+        <div class="label">Total Spent <span>(current month)</span></div>
+        <div class="value">@Eur(Model.Stats.SpentCurrentMonth)</div>
+        <div class="foot @(Model.Stats.PercentVsLastMonth <= 0 ? "good" : "bad")">
+            @(Model.Stats.PercentVsLastMonth <= 0 ? "↘" : "↗")
+            is @Math.Abs(Model.Stats.PercentVsLastMonth).ToString("N2")%
+            @(Model.Stats.PercentVsLastMonth <= 0 ? "less" : "more") of last month
+        </div>
+    </div>
+    <div class="card tile">
+        <div class="label">Total Spent <span>(last month)</span></div>
+        <div class="value">@Eur(Model.Stats.SpentLastMonth)</div>
+        <div class="foot">@Model.LastMonthRange</div>
+    </div>
+    <div class="card tile">
+        <div class="label">Earnings <span>(current month)</span></div>
+        <div class="value">@Eur(Model.Stats.EarnedCurrentMonth)</div>
+        <div class="foot">@Model.CurrentMonthRange</div>
+    </div>
+</div>
+
+<div class="grid2">
+    <div class="card">
+        <h2>Expenses &amp; Earnings per date <span class="sub">(last 30 days)</span></h2>
+        @if (Model.Chart.Count == 0)
+        {
+            <p class="muted">No records in the last 30 days.</p>
+        }
+        else
+        {
+            <div class="chart">
+                @foreach (var day in Model.Chart)
+                {
+                    <div class="col">
+                        @if (day.Earn > 0)
+                        {
+                            <div class="bar earn" style="height:@Model.BarHeight(day.Earn)px" title="Earnings @Eur(day.Earn)"></div>
+                        }
+                        @if (day.Exp > 0)
+                        {
+                            <div class="bar exp" style="height:@Model.BarHeight(day.Exp)px" title="Expenses @Eur(day.Exp)"></div>
+                        }
+                        <div class="clabel">@day.Date.ToString("d MMM")</div>
+                    </div>
+                }
+            </div>
+            <div class="legend">
+                <span><i class="bar exp" style="background:#d4dde6"></i>Expenses</span>
+                <span><i class="bar earn" style="background:#1f8a99"></i>Earnings</span>
+                <span class="muted">from the migrated SQL node &mdash; <a href="/Migration">see the query</a></span>
+            </div>
+        }
+    </div>
+
+    <div class="card">
+        <h2>Expenses per type</h2>
+        <div class="tlist">
+            @foreach (var s in Model.Stats.ExpensesPerType)
+            {
+                <div class="trow">
+                    <div class="ticon">@Icon(s.Label)</div>
+                    <div>
+                        <div class="tname">@s.Label</div>
+                        <div class="tcount">Count: @s.Count</div>
+                    </div>
+                    <div class="spacer"></div>
+                    <div>
+                        <div class="tpct">@s.Percent.ToString("N2")%</div>
+                        <div class="tamt">@Eur(s.Total)</div>
+                    </div>
+                </div>
+            }
+        </div>
+    </div>
+</div>
+
+<div class="grid2">
+    <div class="card">
+        <h2>Earnings trends</h2>
+        <div class="tlist">
+            @foreach (var s in Model.Stats.EarningsPerType)
+            {
+                <div class="trow">
+                    <div class="ticon">@Icon(s.Label)</div>
+                    <div>
+                        <div class="tname">@s.Label</div>
+                        <div class="tcount">Count: @s.Count</div>
+                    </div>
+                    <div class="spacer"></div>
+                    <div>
+                        <div class="tpct">@s.Percent.ToString("N2")%</div>
+                        <div class="tamt">@Eur(s.Total)</div>
+                    </div>
+                </div>
+            }
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>Report Status Summary</h2>
+        @foreach (var s in Model.Stats.StatusSummary)
+        {
+            <div class="statrow">
+                <strong>@s.Label</strong>
+                <div class="spacer"></div>
+                <span class="count @s.Label">@s.Count</span>
+            </div>
+        }
+    </div>
+</div>

@@ -1,0 +1,35 @@
+@page
+@model LoginModel
+@{ Layout = null; ViewData["Title"] = "Login"; }
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Login | Expenses Manager V2</title>
+    <link rel="stylesheet" href="~/css/app.css" />
+</head>
+<body class="login-body">
+    <div class="login-card">
+        <div class="login-brand"><span class="logo">K</span> Expenses Manager V2</div>
+        <p class="login-sub">Migrated from OutSystems to ASP.NET Core</p>
+        @if (Model.Error is not null) { <div class="alert alert-error">@Model.Error</div> }
+        <form method="post">
+            <label>Username</label>
+            <input name="Username" value="em_user1" autocomplete="off" />
+            <label>Password</label>
+            <input name="Password" type="password" value="123456" autocomplete="off" />
+            <button type="submit">Login</button>
+        </form>
+        <div class="login-accounts">
+            <strong>Demo accounts</strong>
+            <div><code>em_user1</code> / <code>123456</code> &mdash; User role</div>
+            <div><code>em_admin</code> / <code>123456</code> &mdash; Administrator role</div>
+            <p class="muted">
+                These are the two accounts listed in the original project's README. They are
+                sample credentials for local demo data only.
+            </p>
+        </div>
+    </div>
+</body>
+</html>

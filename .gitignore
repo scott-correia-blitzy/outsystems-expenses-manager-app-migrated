@@ -1,0 +1,25 @@
+# Build output
+bin/
+obj/
+[Dd]ebug/
+[Rr]elease/
+*.user
+*.suo
+
+# Generated at first run by migrated/. Not source.
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+
+# OS and editor
+.DS_Store
+._*
+Thumbs.db
+.vs/
+.vscode/
+.idea/
+
+# Note: legacy/project_files/*.oml and *.oap are deliberately NOT ignored here.
+# They are the original binaries and the repo exists partly to show them. They are
+# excluded from Blitzy ingestion instead, via .blitzyignore.

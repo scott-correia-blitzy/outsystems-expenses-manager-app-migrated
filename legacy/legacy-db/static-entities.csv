@@ -1,0 +1,15 @@
+entity,record_name,Id,Label,Order,Is_Active
+Currency,Dollar,2,Dollar,2,True
+Currency,Euro,1,Euro,1,True
+Status,Draft,1,Draft,2,True
+Status,Submitted,2,Submitted,2,True
+Status,Approved,3,Approved,3,True
+Status,Declined,4,Declined,4,True
+ExpenseType,Other,4,Other,4,True
+ExpenseType,Restaurant,1,Restaurant,1,True
+ExpenseType,Kilometers,3,Kilometers,3,True
+ExpenseType,Travel,2,Travel,2,True
+EarningType,Other,4,Other,4,True
+EarningType,Service,3,Service,3,True
+EarningType,Salary,1,Salary,1,True
+EarningType,Investment,2,Investment,2,True
