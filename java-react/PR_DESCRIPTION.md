@@ -9,8 +9,8 @@ This PR adds `java-react/`, a rebuild of the OutSystems 11 application Expenses 
 | Legacy construct | Count | Target |
 |---|---|---|
 | Reactive Web screens | 14 | React routes, one page each in `frontend/src/pages/`, guarded by the route table `frontend/src/routes.tsx` |
-| Server actions | 21 | `@Service` methods in `com.massmutual.expensesmanager.service` |
-| Screen and block aggregates | 40 | Spring Data JPA queries, declared once on generic `@NoRepositoryBean` repositories and bound to both report kinds |
+| Server actions | 21 | Methods of Spring-managed classes in `com.massmutual.expensesmanager.service`: the `@Service` classes and the `@Component` classes `ReportCodeGenerator` and `AmountCalculator`; `DoLogout` is the Spring Security logout filter configured in `web/SecurityConfig` |
+| Screen and block aggregates | 40 | Spring Data JPA queries: report, line and invoice queries declared once on generic `@NoRepositoryBean` repositories and bound to both report kinds; type and blog queries on the concrete `ExpenseTypeRepository`, `EarningTypeRepository` and `BlogPostRepository`; creator display names from `AppUserRepository` |
 | Action aggregates, plus the `SQL1` union | 18 + 1 | `ReportRepository` counts and lookups; `LineRepository.findForCreatorSince`, merged per kind in `DashboardService` |
 | Entities (4 of them Static Entities) | 11 | JPA entities on an H2 schema transcribed from `legacy/legacy-db/schema.sql` |
 | Platform `User` entity and the OutSystems `Users` module | n/a | New `AppUser` and `AppUserRole` tables with BCrypt password hashes |
@@ -193,7 +193,7 @@ Legacy spelling is kept in identifiers and messages: `SubmitedBy`, `SubmitedOn`,
 
 ## Seed values inferred
 
-`src/main/resources/seed/demo-data.json` is loaded on first start. Every value below is inferred, so that the screenshot figures add up, and is not taken from legacy; everything else seeded is read from a screenshot (the README seed section names the file per row). Amounts are EUR.
+`src/main/resources/seed/demo-data.json` is loaded on first start. Every value below is inferred, so that the screenshot figures add up, and is not taken from legacy. Everything else seeded is read from a screenshot (the README seed section names the file per row) or follows legacy: the demo logins and their roles come from `legacy/docs/upstream-README.md`; the owner is the creator, submitter and updater of every report and the creator and updater of every line, as legacy saves stamp them; and `IsActive` stays `FALSE`, the OutSystems default (AN-15). Amounts are EUR.
 
 - **Reference date** `2024-05-23`, from "May 01 - May 31" and "April 01 - April 30" in `User_View_Dashboard.png` and "23 May 2024 15:18:38" in `User_View_New_Expense_Detail.png`.
 - **Lines of John Smith's reports** whose rows show only a total:
@@ -216,7 +216,7 @@ Legacy spelling is kept in identifiers and messages: `SubmitedBy`, `SubmitedOn`,
   - The single lines of `6/2024 EX` (Other, 200.00) and `7/2024 EX` (Other, 250.00); those report rows are from `Admin_View_Report_List.png`.
 - **Usernames** `michael.davis` and `sarah.lee`, with random unusable passwords; they are not demo logins.
 - **Default times**: reports are created at 09:00:00 (except `12/2024 EX`, 15:18:38 from the screenshot); every non-Draft report is submitted one day after creation; `8/2024 EX` and `9/2024 EX` are processed one day after submission; the last update is the latest of these.
-- **Line defaults**: EUR, no invoice, no distance (except the 19.05 km line) and an empty description unless a screenshot shows one. John Smith's line dates that no screenshot fixes avoid April and May, so only the Business Trip lines fall in last month and no Submitted or Approved line falls in the current month.
+- **Line defaults**: EUR, no invoice, no distance (except the 19.05 km line) and an empty description unless a screenshot shows one; each line takes its report's creation time as its own creation and last-update time. John Smith's line dates that no screenshot fixes avoid April and May, so only the Business Trip lines fall in last month and no Submitted or Approved line falls in the current month.
 - **Line titles** not shown in any screenshot: all the titles listed above.
 - **Figures hidden in the screenshots**, derived from the seed: the fourth "Expenses per type" row, Kilometers 7.05 (1 line) 0.55%; the status counts Draft 5 and Submitted 7.
 - **Blog posts**, both by EM_Admin and never edited: "Welcome to Expenses Manager" (2024-03-16 10:00, "Record your expenses and earnings in reports, then submit them for approval.") and "Mileage reimbursement rate" (2024-03-20 10:00, "Kilometers expenses are reimbursed at 0.37 EUR per km.").
@@ -318,4 +318,3 @@ Build first (`./mvnw -q package`) and record the build time separately. Stop the
 | 8 | Performance | `ResponseTimeIT`, the startup time above | `./mvnw verify` |
 
 Test sources: `src/test/java/com/massmutual/expensesmanager/` for the backend suites and `frontend/src/` for Vitest.
-

@@ -103,7 +103,7 @@ What the suites prove:
 
 - `BusinessRulesTest`: report codes, submit, decision and delete rules, amount calculation, validation boundaries.
 - `ScreenshotFiguresIT`: the seeded figures and report rows match `../legacy/screenshots/`.
-- `RoleMatrixIT`: every endpoint for anonymous, User, Approver, Administrator and mixed-role callers.
+- `RoleMatrixIT`: every endpoint for anonymous, User, Approver and Administrator callers. Mixed-role callers get targeted checks: User plus Administrator cannot write another user's Draft but can read it and decide a Submitted report, and User plus Administrator and User plus Approver list the reports their combined roles allow.
 - `EndToEndIT`: create, add a line, upload and download an invoice, submit, approve, log out and in again, and restart on the same data.
 - `ResponseTimeIT`: start with seeding under 30 s, and a 95th percentile under 300 ms for the list and dashboard calls.
 - Vitest: formatters, all 14 routes rendered and guarded per role, and a scan that rejects colour literals outside `frontend/src/theme/theme.ts`.
@@ -112,7 +112,7 @@ The integration tests start the app on a random port with a private H2 file in a
 
 ## Seed data
 
-Every seeded value is either read from a screenshot in `../legacy/screenshots/` (named in the Source column) or inferred so that the screenshot figures add up (marked inferred). Amounts are EUR.
+Every seeded value is read from a screenshot in `../legacy/screenshots/` (named in the Source column), inferred so that the screenshot figures add up (marked inferred), or follows legacy: the demo logins and their roles come from `../legacy/docs/upstream-README.md`; the owner is the creator, submitter and updater of every report and the creator and updater of every line, as legacy saves stamp them; and `IsActive` stays `FALSE`, the OutSystems default (AN-15). Amounts are EUR.
 
 **Reference date.** `expenses.dashboard.reference-date=2024-05-23`, because `User_View_Dashboard.png` shows "May 01 - May 31" as the current month and "April 01 - April 30" as last month, and `User_View_New_Expense_Detail.png` shows `12/2024 EX` created at 23 May 2024 15:18:38. It drives only the current and last month spend, the change percentage, current month earnings and the 30-day chart. New report codes use the real system year.
 
@@ -160,6 +160,7 @@ All Submitted, each with one line titled as the report and dated the day before 
 - Reports are created at 09:00:00, except `12/2024 EX` (15:18:38).
 - Every non-Draft report was submitted one day after creation; `8/2024 EX` and `9/2024 EX` were processed one day after submission; the last update is the latest of these.
 - Lines are in EUR with no invoice, no distance (except the 19.05 km line) and an empty description unless one is shown above.
+- Each line takes its report's creation time as its own creation and last-update time.
 - John Smith's line dates that no screenshot fixes avoid April and May, so only the Business Trip lines fall in last month and no Submitted or Approved line falls in the current month.
 - `9/2024 EX` keeps the creation date 1.04.2024 shown in `Admin_View_Report_List.png`, although its lines are dated 2 Apr 2024.
 
