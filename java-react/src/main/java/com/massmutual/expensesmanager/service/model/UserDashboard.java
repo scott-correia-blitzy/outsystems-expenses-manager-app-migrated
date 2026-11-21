@@ -1,5 +1,7 @@
 package com.massmutual.expensesmanager.service.model;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+
 import java.math.BigDecimal;
 import java.util.List;
 
@@ -12,7 +14,7 @@ public record UserDashboard(
         Period currentMonth,
         Period lastMonth,
         List<TypeShare> expenseTypeShares,
-        List<TypeShare> earningTypeShares,
+        @JsonIgnoreProperties("sharePercent") List<TypeShare> earningTypeShares,
         List<DatedAmount> perDate,
         StatusCounts statusCounts,
         boolean draftBanner) {
