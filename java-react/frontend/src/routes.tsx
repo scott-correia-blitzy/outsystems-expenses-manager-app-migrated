@@ -185,9 +185,19 @@ export function menuFor(roles: readonly Role[]): MenuItem[] {
 }
 
 export function safeRedirectTarget(from: unknown): string | null {
-  const isSameOriginPath =
-    typeof from === 'string' && from.startsWith('/') && !from.startsWith('//') && !from.startsWith('/\\');
-  return isSameOriginPath ? from : null;
+  if (typeof from !== 'string' || !from.startsWith('/')) {
+    return null;
+  }
+  let target: URL;
+  try {
+    // URL parsing drops tabs and newlines, reads backslashes as slashes and resolves dot segments.
+    target = new URL(from, window.location.origin);
+  } catch {
+    return null;
+  }
+  const path = target.pathname + target.search + target.hash;
+  const isSameOriginPath = target.origin === window.location.origin && !path.startsWith('//');
+  return isSameOriginPath ? path : null;
 }
 
 function returnPathFrom(state: unknown): string | null {

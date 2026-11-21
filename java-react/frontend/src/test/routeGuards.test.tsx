@@ -1,6 +1,7 @@
 import { fireEvent, screen } from '@testing-library/react';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { ApiError, MESSAGES } from '../api/types';
+import { safeRedirectTarget } from '../routes';
 import { expireSession, SESSION_CATEGORIES, SESSIONS, type SessionCategory } from './fixtures';
 import { expectLocation, renderRoute } from './renderRoute';
 
@@ -206,6 +207,28 @@ describe('expired session', () => {
     },
     15000,
   );
+});
+
+describe('login return path', () => {
+  it.each([
+    '/\t/outside.example',
+    '/\n/outside.example',
+    '/\r/outside.example',
+    '//outside.example',
+    '/\\outside.example',
+    '/.//outside.example',
+    'https://outside.example/x',
+    'reports',
+    '',
+    42,
+    undefined,
+  ])('rejects %j', (from) => {
+    expect(safeRedirectTarget(from)).toBeNull();
+  });
+
+  it.each(['/reports', '/reports/expense/12', '/reports?kind=earning'])('keeps %s', (from) => {
+    expect(safeRedirectTarget(from)).toBe(from);
+  });
 });
 
 describe('api.ts session expiry reporting', () => {
