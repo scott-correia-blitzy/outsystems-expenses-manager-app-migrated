@@ -53,8 +53,7 @@ public class AmountCalculator {
     public BigDecimal usdToEur(BigDecimal amount, BigDecimal rate) {
         List<FieldViolation> violations = new ArrayList<>();
         collectViolation(violations, "amount", amount, STORED_INTEGER_DIGITS, LegacyMessages.USD_AMOUNT_ABOVE_ZERO);
-        collectViolation(violations, "rate", rate, ExpensesProperties.RATE_INTEGER_DIGITS,
-                LegacyMessages.RATE_ABOVE_ZERO);
+        collectViolation(violations, "rate", rate, STORED_INTEGER_DIGITS, LegacyMessages.RATE_ABOVE_ZERO);
         if (!violations.isEmpty()) {
             throw ApiException.validation(violations);
         }

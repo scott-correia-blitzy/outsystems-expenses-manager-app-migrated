@@ -86,6 +86,8 @@ All configuration is committed in `src/main/resources/application.properties`; n
 | `expenses.remember-me-days` | `30` | Session lifetime when "Remember me" is ticked |
 | `expenses.seed.enabled` | `true` | Seeds the demo data on first start |
 
+The two rates must be positive and below 1000 with at most 8 decimals, and the reference date, when set, must lie between 0001-01-01 and 9999-12-31; any other value stops startup with an error naming the key.
+
 The SPA reads the three rates from `GET /api/reference` for its live previews; the server recomputes every stored amount.
 
 ## Tests

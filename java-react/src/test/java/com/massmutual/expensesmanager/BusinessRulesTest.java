@@ -277,34 +277,93 @@ class BusinessRulesTest {
         assertThat(data.vatRate()).isEqualByComparingTo("0.23");
     }
 
-    @ParameterizedTest(name = "{0}")
-    @CsvSource({"expenses.mileage-reimbursement, mileageReimbursement", "expenses.dollars-to-euros, dollarsToEuros"})
-    void rateWithMoreIntegerDigitsThanTheCalculationsAcceptFailsBinding(String property, String field) {
+    @ParameterizedTest(name = "{0}={2}")
+    @CsvSource({
+            "expenses.mileage-reimbursement, mileageReimbursement, 1000",
+            "expenses.mileage-reimbursement, mileageReimbursement, 100000000000000",
+            "expenses.mileage-reimbursement, mileageReimbursement, 99999999999999.99999999",
+            "expenses.dollars-to-euros, dollarsToEuros, 1000",
+            "expenses.dollars-to-euros, dollarsToEuros, 100000000000000",
+            "expenses.dollars-to-euros, dollarsToEuros, 99999999999999.99999999"})
+    void rateOfOneThousandOrMoreFailsBindingNamingTheKey(String property, String field, String value) {
         new ApplicationContextRunner()
-                .withUserConfiguration(RatesBinding.class)
-                .withPropertyValues(property + "=1000000000000000")
+                .withUserConfiguration(PropertiesBinding.class)
+                .withPropertyValues(property + "=" + value)
                 .run(context -> {
                     assertThat(context).hasFailed();
                     assertThat(context.getStartupFailure()).rootCause()
-                            .isInstanceOf(BindValidationException.class)
+                            .isInstanceOfSatisfying(BindValidationException.class,
+                                    error -> assertThat(error.getValidationErrors().getAllErrors()).hasSize(1))
                             .hasMessageContaining("on field '%s'", field)
                             .hasMessageContaining("origin \"%s\"", property);
                 });
     }
 
     @Test
-    void largestBindableRatesAreAcceptedByTheConverter() {
+    void largestBindableRatesAreAcceptedByTheConverterAndLines() {
         new ApplicationContextRunner()
-                .withUserConfiguration(RatesBinding.class)
-                .withPropertyValues("expenses.mileage-reimbursement=999999999999999.99999999",
-                        "expenses.dollars-to-euros=999999999999999.99999999")
+                .withUserConfiguration(PropertiesBinding.class)
+                .withPropertyValues("expenses.mileage-reimbursement=999.99999999",
+                        "expenses.dollars-to-euros=999.99999999")
                 .run(context -> {
                     assertThat(context).hasNotFailed();
                     ExpensesProperties properties = context.getBean(ExpensesProperties.class);
-                    assertThat(properties.mileageReimbursement()).isEqualByComparingTo("999999999999999.99999999");
-                    assertThat(properties.dollarsToEuros()).isEqualByComparingTo("999999999999999.99999999");
-                    assertThat(new AmountCalculator(properties).usdToEur(BigDecimal.ONE, properties.dollarsToEuros()))
+                    assertThat(properties.mileageReimbursement()).isEqualByComparingTo("999.99999999");
+                    assertThat(properties.dollarsToEuros()).isEqualByComparingTo("999.99999999");
+                    AmountCalculator calculator = new AmountCalculator(properties);
+                    assertThat(calculator.usdToEur(BigDecimal.ONE, properties.dollarsToEuros()))
+                            .isEqualByComparingTo("1000.0000");
+                    assertThat(calculator.usdToEur(BigDecimal.ONE, new BigDecimal("999999999999999.99999999")))
                             .isEqualByComparingTo("1000000000000000.0000");
+                    BigDecimal largestLineValue = new BigDecimal("999999999999.9999");
+                    assertThat(calculator.lineAmounts(ReportKind.EXPENSE, ReferenceIds.EXPENSE_TYPE_KILOMETERS,
+                            null, null, largestLineValue).amountInEuros())
+                            .isEqualByComparingTo("999999999989999.9000");
+                    assertThat(calculator.lineAmounts(ReportKind.EXPENSE, ReferenceIds.EXPENSE_TYPE_TRAVEL,
+                            ReferenceIds.CURRENCY_DOLLAR, largestLineValue, null).amountInEuros())
+                            .isEqualByComparingTo("999999999989999.9000");
+                });
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {"-999999999-01-01", "0000-12-31", "+10000-01-01", "+999999999-12-31"})
+    void referenceDateOutsideTheSupportedYearsFailsBinding(String referenceDate) {
+        new ApplicationContextRunner()
+                .withUserConfiguration(PropertiesBinding.class)
+                .withPropertyValues("expenses.dashboard.reference-date=" + referenceDate)
+                .run(context -> {
+                    assertThat(context).hasFailed();
+                    assertThat(context.getStartupFailure()).rootCause()
+                            .isInstanceOfSatisfying(BindValidationException.class,
+                                    error -> assertThat(error.getValidationErrors().getAllErrors()).hasSize(1))
+                            .hasMessageContaining("on field 'dashboard.referenceDate'")
+                            .hasMessageContaining("default message [expenses.dashboard.reference-date must be between"
+                                    + " 0001-01-01 and 9999-12-31]");
+                });
+    }
+
+    // The blank row follows the Clock, fixed at 2024-05-23.
+    @ParameterizedTest(name = "reference date ''{0}'' gives {2} to {3}, last month {4} to {5}")
+    @CsvSource({
+            "0001-01-01, 0001-01-01, 0001-01-01, 0001-01-31, 0000-12-01, 0000-12-31",
+            "9999-12-31, 9999-12-31, 9999-12-01, 9999-12-31, 9999-11-01, 9999-11-30",
+            "'',         ,           2024-05-01, 2024-05-31, 2024-04-01, 2024-04-30"})
+    void bindableReferenceDateDrivesTheDashboardPeriods(String setting, LocalDate pinned,
+            LocalDate currentFrom, LocalDate currentTo, LocalDate lastFrom, LocalDate lastTo) {
+        Caller owner = newCaller(appUserRepository, Role.User);
+        new ApplicationContextRunner()
+                .withUserConfiguration(PropertiesBinding.class)
+                .withPropertyValues("expenses.dashboard.reference-date=" + setting)
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    ExpensesProperties properties = context.getBean(ExpensesProperties.class);
+                    assertThat(properties.dashboard().referenceDate()).isEqualTo(pinned);
+
+                    UserDashboard stats = new DashboardService(kindRepositories, reportAccessPolicy,
+                            amountCalculator, properties, clock).user(owner);
+
+                    assertThat(stats.currentMonth()).isEqualTo(new Period(currentFrom, currentTo));
+                    assertThat(stats.lastMonth()).isEqualTo(new Period(lastFrom, lastTo));
                 });
     }
 
@@ -1665,7 +1724,7 @@ class BusinessRulesTest {
 
     // Not a @Configuration, so @SpringBootTest still uses the application's configuration.
     @EnableConfigurationProperties(ExpensesProperties.class)
-    static class RatesBinding {
+    static class PropertiesBinding {
     }
 
     @TestConfiguration(proxyBeanMethods = false)
