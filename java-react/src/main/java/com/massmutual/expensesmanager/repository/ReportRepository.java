@@ -2,7 +2,9 @@ package com.massmutual.expensesmanager.repository;
 
 import com.massmutual.expensesmanager.domain.ReferenceIds;
 import com.massmutual.expensesmanager.domain.ReportEntity;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -15,6 +17,43 @@ import org.springframework.data.repository.query.Param;
 public interface ReportRepository<R extends ReportEntity> extends JpaRepository<R, Long> {
 
     // Scoped on SubmitedBy like the legacy list filter; ownership checks elsewhere use CreatedBy.
+    // Without approver or admin scope, a separate owner-only query lets H2 use the SubmitedBy index.
+    default List<ReportListRow> findListRows(
+            Long callerId,
+            boolean approver,
+            boolean admin,
+            Integer statusId,
+            String q,
+            LocalDateTime from,
+            LocalDateTime to) {
+        // CreatedOn lies within years 1 to 9999; wider bounds overflow the JDBC timestamp binding and are clamped.
+        if ((from != null && from.getYear() > 9999) || (to != null && to.getYear() < 1)) {
+            return List.of();
+        }
+        LocalDateTime lower = from != null && from.getYear() < 1 ? LocalDate.of(0, 12, 31).atTime(LocalTime.MAX) : from;
+        LocalDateTime upper = to != null && to.getYear() > 9999 ? LocalDate.of(9999, 12, 31).atTime(LocalTime.MAX) : to;
+        if (approver || admin) {
+            return findScopedListRows(callerId, approver, admin, statusId, q, lower, upper);
+        }
+        return findOwnListRows(callerId, statusId, q, lower, upper);
+    }
+
+    @Query("select new com.massmutual.expensesmanager.repository.ReportListRow("
+            + "r.id, r.code, r.title, r.statusId, r.createdOn, r.submitedOn, u.name)"
+            + " from #{#entityName} r left join AppUser u on u.id = r.submitedBy"
+            + " where r.submitedBy = :callerId"
+            + " and (:statusId is null or r.statusId = :statusId)"
+            + " and (:q is null or lower(r.code) like concat('%', :q, '%')"
+            + " or lower(r.title) like concat('%', :q, '%'))"
+            + " and (:from is null or r.createdOn > :from)"
+            + " and (:to is null or r.createdOn <= :to)")
+    List<ReportListRow> findOwnListRows(
+            @Param("callerId") Long callerId,
+            @Param("statusId") Integer statusId,
+            @Param("q") String q,
+            @Param("from") LocalDateTime from,
+            @Param("to") LocalDateTime to);
+
     @Query("select new com.massmutual.expensesmanager.repository.ReportListRow("
             + "r.id, r.code, r.title, r.statusId, r.createdOn, r.submitedOn, u.name)"
             + " from #{#entityName} r left join AppUser u on u.id = r.submitedBy"
@@ -26,7 +65,7 @@ public interface ReportRepository<R extends ReportEntity> extends JpaRepository<
             + " or lower(r.title) like concat('%', :q, '%'))"
             + " and (:from is null or r.createdOn > :from)"
             + " and (:to is null or r.createdOn <= :to)")
-    List<ReportListRow> findListRows(
+    List<ReportListRow> findScopedListRows(
             @Param("callerId") Long callerId,
             @Param("approver") boolean approver,
             @Param("admin") boolean admin,
