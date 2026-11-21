@@ -64,6 +64,7 @@ export function NewReportDialog({ open, onClose }: NewReportDialogProps) {
   const [errors, setErrors] = useState<FieldErrors>({});
   const [saving, setSaving] = useState(false);
   const [failedSaves, setFailedSaves] = useState(0);
+  const [errorFocus, setErrorFocus] = useState<{ field: FieldName } | null>(null);
 
   useEffect(() => {
     if (open) {
@@ -74,22 +75,31 @@ export function NewReportDialog({ open, onClose }: NewReportDialogProps) {
     }
   }, [open]);
 
-  // Submit is disabled while saving, so a click-started save loses focus; it is restored once enabled again.
+  // Saving disables Submit and the fields, so focus is lost; it is restored once they are enabled again.
   useEffect(() => {
     if (failedSaves > 0 && !formRef.current?.contains(document.activeElement)) {
       submitButton.current?.focus();
     }
   }, [failedSaves]);
 
+  useEffect(() => {
+    if (errorFocus?.field === 'title') {
+      titleInput.current?.focus();
+    } else if (errorFocus?.field === 'kind') {
+      kindGroup.current?.querySelector<HTMLButtonElement>('button')?.focus();
+    }
+  }, [errorFocus]);
+
   const clearError = (name: FieldName) =>
     setErrors((prev) => (prev[name] === undefined ? prev : { ...prev, [name]: undefined }));
 
+  // Focus waits for the render that re-enables a field a failed save left disabled.
   const showErrors = (next: FieldErrors) => {
     setErrors(next);
     if (next.title) {
-      titleInput.current?.focus();
+      setErrorFocus({ field: 'title' });
     } else if (next.kind) {
-      kindGroup.current?.querySelector<HTMLButtonElement>('button')?.focus();
+      setErrorFocus({ field: 'kind' });
     }
   };
 
@@ -130,7 +140,7 @@ export function NewReportDialog({ open, onClose }: NewReportDialogProps) {
       showFailure(err);
       return;
     }
-    // saving stays set until the next open, so the buttons remain disabled while the dialog fades out.
+    // saving stays set until the next open, so the form remains disabled while the dialog fades out.
     onClose();
     void navigate(reportPath(kind, created.id));
   };
@@ -167,6 +177,7 @@ export function NewReportDialog({ open, onClose }: NewReportDialogProps) {
             label="Report Title"
             autoFocus
             fullWidth
+            disabled={saving}
             value={title}
             onChange={(event) => {
               setTitle(event.target.value);
@@ -177,39 +188,45 @@ export function NewReportDialog({ open, onClose }: NewReportDialogProps) {
             inputRef={titleInput}
             slotProps={{ htmlInput: { 'aria-required': true } }}
           />
-          <FormControl error={Boolean(errors.kind)} fullWidth sx={{ gap: 1 }}>
-            <FormLabel id={kindLabelId} component="span" required>
-              Report Type
-            </FormLabel>
-            <ToggleButtonGroup
-              ref={kindGroup}
-              exclusive
-              fullWidth
-              color="primary"
-              value={kind}
-              onChange={(_event, value: Kind | null) => {
-                if (value !== null) {
-                  setKind(value);
-                  clearError('kind');
-                }
-              }}
-              aria-labelledby={kindLabelId}
-              aria-describedby={errors.kind ? kindHelperId : undefined}
-            >
-              <ToggleButton value="expense">Expense</ToggleButton>
-              <ToggleButton value="earning">Earning</ToggleButton>
-            </ToggleButtonGroup>
-            {errors.kind && <FormHelperText id={kindHelperId}>{errors.kind}</FormHelperText>}
+          <FormControl error={Boolean(errors.kind)} fullWidth>
+            <Stack spacing={1} useFlexGap>
+              <FormLabel id={kindLabelId} component="span" required>
+                Report Type
+              </FormLabel>
+              <ToggleButtonGroup
+                ref={kindGroup}
+                exclusive
+                fullWidth
+                size="small"
+                color="primary"
+                disabled={saving}
+                value={kind}
+                onChange={(_event, value: Kind | null) => {
+                  if (value !== null) {
+                    setKind(value);
+                    clearError('kind');
+                  }
+                }}
+                aria-labelledby={kindLabelId}
+                aria-describedby={errors.kind ? kindHelperId : undefined}
+              >
+                <ToggleButton value="expense">Expense</ToggleButton>
+                <ToggleButton value="earning">Earning</ToggleButton>
+              </ToggleButtonGroup>
+              {errors.kind && <FormHelperText id={kindHelperId}>{errors.kind}</FormHelperText>}
+            </Stack>
           </FormControl>
         </Stack>
       </DialogContent>
-      <DialogActions sx={{ justifyContent: 'flex-start', paddingInline: 3, paddingBlockEnd: 3 }}>
-        <Button ref={submitButton} type="submit" form={formId} variant="contained" loading={saving}>
-          Submit
-        </Button>
-        <Button variant="outlined" onClick={onClose} disabled={saving}>
-          Cancel
-        </Button>
+      <DialogActions>
+        <Stack direction="row" spacing={1} sx={{ flexGrow: 1, paddingInline: 2, paddingBlockEnd: 2 }}>
+          <Button ref={submitButton} type="submit" form={formId} variant="contained" loading={saving}>
+            Submit
+          </Button>
+          <Button variant="outlined" onClick={onClose} disabled={saving}>
+            Cancel
+          </Button>
+        </Stack>
       </DialogActions>
     </Dialog>
   );

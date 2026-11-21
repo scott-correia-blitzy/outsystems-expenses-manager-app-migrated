@@ -44,6 +44,7 @@ import {
 } from '../api/types';
 import { formatEuro } from '../format/format';
 import { useFeedback } from './Feedback';
+import { vatLabel } from './LineViewDialog';
 
 export type LineFormDialogProps = {
   open: boolean;
@@ -257,9 +258,12 @@ export function LineFormDialog({
   const titleId = useId();
   const formId = useId();
   const currencyLabelId = useId();
+  const currencyHelperId = useId();
   const uploadLabelId = useId();
+  const fileHelperId = useId();
   const formRef = useRef<HTMLFormElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  const saveButton = useRef<HTMLButtonElement>(null);
   const [form, setForm] = useState<FormState>(() => initialForm(line));
   const [file, setFile] = useState<File | null>(null);
   const [errors, setErrors] = useState<FieldErrors>({});
@@ -275,9 +279,15 @@ export function LineFormDialog({
     }
   }, [open, line]);
 
+  // Saving disables every control and drops focus, so a rejected save refocuses an invalid one or Save.
   useEffect(() => {
     if (rejectedSaves > 0) {
-      formRef.current?.querySelector<HTMLElement>(FIRST_INVALID_CONTROL)?.focus();
+      const invalid = formRef.current?.querySelector<HTMLElement>(FIRST_INVALID_CONTROL);
+      if (invalid) {
+        invalid.focus();
+      } else if (!formRef.current?.contains(document.activeElement)) {
+        saveButton.current?.focus();
+      }
     }
   }, [rejectedSaves]);
 
@@ -295,7 +305,6 @@ export function LineFormDialog({
       ? num(form.amount) * reference.dollarsToEuros
       : num(form.amount);
   const previewVat = previewTotal * reference.vatRate;
-  const vatPercent = Math.round(reference.vatRate * 100);
 
   const heading = line
     ? 'Edit Details'
@@ -326,7 +335,7 @@ export function LineFormDialog({
   const handleDrop = (event: DragEvent<HTMLElement>) => {
     event.preventDefault();
     const dropped = event.dataTransfer.files[0];
-    if (dropped) {
+    if (dropped && !saving) {
       chooseFile(dropped);
     }
   };
@@ -340,13 +349,13 @@ export function LineFormDialog({
 
   const showFailure = (err: unknown) => {
     const fieldErrors = err instanceof ApiError ? (err.fieldErrors ?? []) : [];
+    setRejectedSaves((count) => count + 1);
     if (fieldErrors.length === 0) {
       feedback.error(err);
       return;
     }
     const { placed, unplaced } = placeFieldErrors(fieldErrors, hiddenFields);
     setErrors(placed);
-    setRejectedSaves((count) => count + 1);
     if (unplaced > 0) {
       feedback.error(err);
     }
@@ -361,6 +370,7 @@ export function LineFormDialog({
       return;
     }
     const body = toBody(kind, form, typeId, isKilometers);
+    // Cleared only when the line is rejected: onSaved closes the dialog and the next open resets it.
     setSaving(true);
     let saved: LineView;
     try {
@@ -375,13 +385,11 @@ export function LineFormDialog({
         await uploadInvoice(kind, saved.id, file);
       } catch (err) {
         // The line itself was stored, so the parent still reloads before the upload error shows.
-        setSaving(false);
         onSaved(saved);
         feedback.error(err);
         return;
       }
     }
-    setSaving(false);
     if (line) {
       feedback.success(
         isExpense
@@ -432,6 +440,7 @@ export function LineFormDialog({
                 name="date"
                 label="Date"
                 fullWidth
+                disabled={saving}
                 value={form.date}
                 onChange={(event) => setField('date', event.target.value)}
                 error={Boolean(errors.date)}
@@ -445,6 +454,7 @@ export function LineFormDialog({
                 name={isExpense ? 'expenseTypeId' : 'earningTypeId'}
                 label={typeLabel}
                 fullWidth
+                disabled={saving}
                 value={typeValue}
                 onChange={(event) => setField('typeId', Number(event.target.value))}
                 error={Boolean(errors.typeId)}
@@ -463,6 +473,7 @@ export function LineFormDialog({
                 name="title"
                 label="Title"
                 fullWidth
+                disabled={saving}
                 value={form.title}
                 onChange={(event) => setField('title', event.target.value)}
                 error={Boolean(errors.title)}
@@ -476,6 +487,7 @@ export function LineFormDialog({
                   name="kilometers"
                   label="Distance"
                   fullWidth
+                  disabled={saving}
                   value={form.kilometers}
                   onChange={(event) => setField('kilometers', event.target.value)}
                   error={Boolean(errors.kilometers)}
@@ -493,7 +505,9 @@ export function LineFormDialog({
                   <ToggleButtonGroup
                     exclusive
                     fullWidth
+                    size="small"
                     color="primary"
+                    disabled={saving}
                     value={form.currencyId}
                     onChange={(_event, value: number | null) => {
                       if (value !== null) {
@@ -501,14 +515,25 @@ export function LineFormDialog({
                       }
                     }}
                     aria-labelledby={currencyLabelId}
+                    aria-describedby={errors.currencyId ? currencyHelperId : undefined}
                   >
+                    {/* The group cannot take focus, so the buttons carry the invalid state. */}
                     {reference.currencies.map((currency) => (
-                      <ToggleButton key={currency.id} value={currency.id}>
+                      <ToggleButton
+                        key={currency.id}
+                        value={currency.id}
+                        aria-describedby={errors.currencyId ? currencyHelperId : undefined}
+                        aria-invalid={errors.currencyId ? true : undefined}
+                      >
                         {currencyCode(currency)}
                       </ToggleButton>
                     ))}
                   </ToggleButtonGroup>
-                  {errors.currencyId && <FormHelperText error>{errors.currencyId}</FormHelperText>}
+                  {errors.currencyId && (
+                    <FormHelperText id={currencyHelperId} error>
+                      {errors.currencyId}
+                    </FormHelperText>
+                  )}
                 </Stack>
               )}
             </Grid>
@@ -519,6 +544,7 @@ export function LineFormDialog({
                 name="description"
                 label="Description"
                 fullWidth
+                disabled={saving}
                 value={form.description}
                 onChange={(event) => setField('description', event.target.value)}
                 error={Boolean(errors.description)}
@@ -532,6 +558,7 @@ export function LineFormDialog({
                   name="amount"
                   label="Amount"
                   fullWidth
+                  disabled={saving}
                   value={form.amount}
                   onChange={(event) => setField('amount', event.target.value)}
                   error={Boolean(errors.amount)}
@@ -557,6 +584,8 @@ export function LineFormDialog({
                 <Box
                   role="group"
                   aria-labelledby={uploadLabelId}
+                  aria-describedby={errors.file ? fileHelperId : undefined}
+                  aria-disabled={saving ? true : undefined}
                   onDragOver={(event) => event.preventDefault()}
                   onDrop={handleDrop}
                   sx={{
@@ -569,14 +598,18 @@ export function LineFormDialog({
                 >
                   <Stack spacing={1}>
                     <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
-                      <UploadIcon color="action" />
-                      <Typography variant="body2">Drop a file here or</Typography>
+                      <UploadIcon color={saving ? 'disabled' : 'action'} />
+                      <Typography variant="body2" color={saving ? 'text.disabled' : undefined}>
+                        Drop a file here or
+                      </Typography>
                       <Button
                         component="label"
                         variant="text"
                         size="small"
                         disabled={saving}
                         onClick={handleBrowseClick}
+                        aria-describedby={errors.file ? fileHelperId : undefined}
+                        aria-invalid={errors.file ? true : undefined}
                       >
                         browse
                         {/* The one native input: MUI has no file picker, so this label opens it. */}
@@ -607,7 +640,7 @@ export function LineFormDialog({
                     )}
                   </Stack>
                 </Box>
-                {errors.file && <FormHelperText error>{errors.file}</FormHelperText>}
+                {errors.file && <FormHelperText id={fileHelperId} error>{errors.file}</FormHelperText>}
               </Stack>
             </Grid>
             <Grid size={{ xs: 12, md: 4 }}>
@@ -617,19 +650,23 @@ export function LineFormDialog({
                 <Typography variant="h4" component="p" aria-live="polite">
                   {formatEuro(previewTotal)}
                 </Typography>
-                <Typography variant="body2">{`VAT (${vatPercent}%): ${formatEuro(previewVat)}`}</Typography>
+                <Typography variant="body2">
+                  {`${vatLabel(reference.vatRate)}: ${formatEuro(previewVat)}`}
+                </Typography>
               </Stack>
             </Grid>
           </Grid>
         </Box>
       </DialogContent>
-      <DialogActions sx={{ justifyContent: 'flex-start', paddingInline: 3, paddingBlockEnd: 3 }}>
-        <Button type="submit" form={formId} variant="contained" loading={saving}>
-          Save
-        </Button>
-        <Button variant="outlined" onClick={onClose} disabled={saving}>
-          Cancel
-        </Button>
+      <DialogActions>
+        <Stack direction="row" spacing={1} sx={{ flexGrow: 1, paddingInline: 2, paddingBlockEnd: 2 }}>
+          <Button ref={saveButton} type="submit" form={formId} variant="contained" loading={saving}>
+            Save
+          </Button>
+          <Button variant="outlined" onClick={onClose} disabled={saving}>
+            Cancel
+          </Button>
+        </Stack>
       </DialogActions>
     </Dialog>
   );
