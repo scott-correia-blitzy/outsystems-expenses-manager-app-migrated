@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react';
 import {
+  Alert,
+  Box,
+  Button,
   CircularProgress,
   Divider,
   Grid,
@@ -9,7 +12,7 @@ import {
   type Theme,
 } from '@mui/material';
 import { adminDashboard } from '../api/api';
-import type { AdminDashboard, Kind } from '../api/types';
+import { ApiError, MESSAGES, type AdminDashboard, type Kind } from '../api/types';
 import { LiveStatus, useFeedback } from '../components/Feedback';
 import { KpiCard } from '../components/KpiCard';
 import { ReportList } from '../components/ReportList';
@@ -48,6 +51,22 @@ function Counters({ counters }: { counters: AdminDashboard }) {
   );
 }
 
+const PLACEHOLDER_COUNTERS: AdminDashboard = { totalReports: 0, waiting: 0, approvedRate: 0 };
+
+// Hidden real cards hold the row's final height at every breakpoint, so nothing below moves on arrival.
+function CountersPlaceholder() {
+  return (
+    <Box sx={{ position: 'relative' }}>
+      <Box aria-hidden sx={{ visibility: 'hidden' }}>
+        <Counters counters={PLACEHOLDER_COUNTERS} />
+      </Box>
+      <Stack alignItems="center" justifyContent="center" sx={{ position: 'absolute', inset: 0 }}>
+        <CircularProgress aria-label="Loading report counters" />
+      </Stack>
+    </Box>
+  );
+}
+
 function counterSummary(counters: AdminDashboard): string {
   return [
     `Total Reports ${counters.totalReports}`,
@@ -61,6 +80,7 @@ export function AdminDashboardPage() {
   const [counters, setCounters] = useState<AdminDashboard | null>(null);
   const [announcement, setAnnouncement] = useState('');
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [kind, setKind] = useState<Kind>('expense');
   // Only the newest request may update state; bumping it on unmount drops every pending one.
   const latestRequest = useRef(0);
@@ -73,11 +93,13 @@ export function AdminDashboardPage() {
       .then((data) => {
         if (request === latestRequest.current) {
           setCounters(data);
+          setLoadError(null);
           setAnnouncement(counterSummary(data));
         }
       })
       .catch((err: unknown) => {
         if (request === latestRequest.current) {
+          setLoadError(err instanceof ApiError ? err.message : MESSAGES.GENERIC_ERROR);
           feedback.error(err);
         }
       })
@@ -95,20 +117,36 @@ export function AdminDashboardPage() {
     };
   }, [reloadCounters]);
 
+  const retryCounters = () => {
+    setLoadError(null);
+    setLoading(true);
+    reloadCounters();
+  };
+
   const changeKind = (_event: MouseEvent<HTMLElement>, next: Kind | null) => {
     if (next !== null) {
       setKind(next);
     }
   };
 
+  // Once counters have loaded they stay on screen; a failed refresh only raises the toast.
   let counterArea: ReactNode = null;
   if (counters) {
     counterArea = <Counters counters={counters} />;
   } else if (loading) {
+    counterArea = <CountersPlaceholder />;
+  } else if (loadError !== null) {
     counterArea = (
-      <Stack alignItems="center" sx={{ paddingBlock: 4 }}>
-        <CircularProgress aria-label="Loading report counters" />
-      </Stack>
+      <Alert
+        severity="error"
+        action={
+          <Button color="inherit" size="small" onClick={retryCounters}>
+            Retry
+          </Button>
+        }
+      >
+        {loadError}
+      </Alert>
     );
   }
 
@@ -120,7 +158,8 @@ export function AdminDashboardPage() {
         breadcrumbs={[{ label: 'Home', to: '/' }, { label: 'Dashboard' }]}
       />
       <LiveStatus message={announcement} />
-      <Stack spacing={3} useFlexGap>
+      {/* Keeps the footer below the fold until the counters arrive. */}
+      <Stack spacing={3} useFlexGap sx={{ minHeight: loading ? '100vh' : undefined }}>
         {counterArea}
         <Divider />
         <ToggleButtonGroup

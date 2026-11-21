@@ -354,6 +354,61 @@ const ANNOUNCE_CASES: AnnounceCase[] = [
   },
 ];
 
+describe('dashboard loading and errors', () => {
+  const failure = new ApiError(500, 'INTERNAL_ERROR', 'An error occurred, please try later');
+  const cases: {
+    path: string;
+    category: SessionCategory;
+    name: string;
+    endpoint: typeof api.userDashboard | typeof api.adminDashboard;
+    spinner: string;
+    loaded: string;
+    announcement: string;
+  }[] = [
+    {
+      path: '/dashboard',
+      category: 'user',
+      name: 'Dashboard',
+      endpoint: api.userDashboard,
+      spinner: 'Loading',
+      loaded: 'Total Balance',
+      announcement: 'Dashboard loaded',
+    },
+    {
+      path: '/admin',
+      category: 'administrator',
+      name: 'Administrator Dashboard',
+      endpoint: api.adminDashboard,
+      spinner: 'Loading report counters',
+      loaded: '5.88%',
+      announcement: 'Total Reports 17, Reports Waiting Verification 15, Approved Report Rate 5.88%',
+    },
+  ];
+
+  it.each(cases)(
+    '$path keeps an inline error with Retry after its first load fails',
+    async ({ path, category, name, endpoint, spinner, loaded, announcement }) => {
+      vi.mocked(endpoint).mockRejectedValueOnce(failure);
+      renderRoute(path, category);
+      expect(await heading(name)).toBeInTheDocument();
+
+      const retry = await screen.findByRole('button', { name: 'Retry' }, { timeout: FIND_TIMEOUT });
+      const alert = retry.closest('[role="alert"]');
+      expect(alert).toHaveTextContent(failure.message);
+      expect(alert?.closest('main')).not.toBeNull();
+      expect(screen.queryByText(loaded)).toBeNull();
+
+      fireEvent.click(retry);
+      expect(screen.getByRole('progressbar', { name: spinner })).toBeInTheDocument();
+      expect(await screen.findByText(announcement, {}, { timeout: FIND_TIMEOUT })).toBeInTheDocument();
+      expect(screen.getByText(loaded)).toBeInTheDocument();
+      expect(alert).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
+    },
+    TEST_TIMEOUT,
+  );
+});
+
 describe('route announcements', () => {
   it.each(ANNOUNCE_CASES)(
     'announces and focuses $path reached through $via',
@@ -1548,7 +1603,10 @@ describe('dashboard figures', () => {
     'shows every administrator counter in its own card',
     async () => {
       renderRoute('/admin', 'administrator');
-      expect(await screen.findByText('Total Reports', {}, { timeout: FIND_TIMEOUT })).toBeInTheDocument();
+      // The hidden loading placeholder repeats these labels, so wait for the counters themselves.
+      expect(
+        await screen.findByRole('progressbar', { name: 'Approved Report Rate' }, { timeout: FIND_TIMEOUT }),
+      ).toBeInTheDocument();
       expect(within(kpiCard('Total Reports')).getByText('17')).toBeInTheDocument();
       expect(within(kpiCard('Reports Waiting Verification')).getByText('15')).toBeInTheDocument();
       const rate = kpiCard('Approved Report Rate');
@@ -1583,6 +1641,105 @@ const CONVERTER_CASES: ConverterCase[] = [
     message: '100$ using exchange rate of 1.1 equals to 110€',
   },
 ];
+
+describe('dashboard charts', () => {
+  const perDateSection = 'Expenses & Earnings per date (last 30 days)';
+  const emptyCases: {
+    field: 'perDate' | 'expenseTypeShares' | 'earningTypeShares';
+    section: string;
+    message: string;
+    chart: (region: HTMLElement) => HTMLElement[];
+  }[] = [
+    {
+      field: 'perDate',
+      section: perDateSection,
+      message: 'No expenses or earnings in the last 30 days',
+      chart: (region) => [
+        ...within(region).queryAllByRole('img'),
+        ...within(region).queryAllByText(/^(Expenses|Earnings)$/),
+      ],
+    },
+    {
+      field: 'expenseTypeShares',
+      section: 'Expenses per type',
+      message: 'No expenses to show',
+      chart: (region) => within(region).queryAllByRole('list'),
+    },
+    {
+      field: 'earningTypeShares',
+      section: 'Earnings trends',
+      message: 'No earnings to show',
+      chart: (region) => within(region).queryAllByRole('progressbar'),
+    },
+  ];
+
+  it.each(emptyCases)(
+    'shows $message in place of the chart when $field is empty',
+    async ({ field, section, message, chart }) => {
+      vi.mocked(api.userDashboard).mockResolvedValueOnce({ ...USER_DASHBOARD, [field]: [] });
+      renderRoute('/dashboard', 'user');
+
+      const region = await screen.findByRole('region', { name: section }, { timeout: FIND_TIMEOUT });
+      expect(within(region).getByText(message)).toBeVisible();
+      expect(chart(region)).toEqual([]);
+      for (const other of emptyCases.filter((candidate) => candidate.field !== field)) {
+        const otherRegion = screen.getByRole('region', { name: other.section });
+        expect(within(otherRegion).queryByText(other.message)).toBeNull();
+        expect(other.chart(otherRegion)).not.toEqual([]);
+      }
+    },
+    TEST_TIMEOUT,
+  );
+
+  const captionCases: {
+    scenario: string;
+    perDate: typeof USER_DASHBOARD.perDate;
+    captions: string[];
+    bars: string[];
+  }[] = [
+    {
+      scenario: 'one seeded bar',
+      perDate: USER_DASHBOARD.perDate,
+      captions: ['21 May 2024'],
+      bars: ['Expenses on 21 May 2024: € 42,00'],
+    },
+    {
+      scenario: 'two dates with three bars',
+      perDate: [
+        { kind: 'earning', date: '2024-05-22', amountInEuros: 300 },
+        { kind: 'expense', date: '2024-05-21', amountInEuros: 42 },
+        { kind: 'expense', date: '2024-05-22', amountInEuros: 100 },
+      ],
+      captions: ['21 May 2024', '22 May 2024'],
+      bars: [
+        'Expenses on 21 May 2024: € 42,00',
+        'Expenses on 22 May 2024: € 100,00',
+        'Earnings on 22 May 2024: € 300,00',
+      ],
+    },
+  ];
+
+  it.each(captionCases)(
+    'captions each date under its bars ($scenario)',
+    async ({ perDate, captions, bars }) => {
+      vi.mocked(api.userDashboard).mockResolvedValueOnce({ ...USER_DASHBOARD, perDate });
+      renderRoute('/dashboard', 'user');
+
+      const region = await screen.findByRole('region', { name: perDateSection }, { timeout: FIND_TIMEOUT });
+      const shown = within(region).getAllByText(/^\d{1,2} [A-Z][a-z]{2} \d{4}$/);
+      expect(shown.map((caption) => caption.textContent)).toEqual(captions);
+      expect(within(region).getAllByRole('img').map((bar) => bar.getAttribute('aria-label'))).toEqual(bars);
+      for (const caption of shown) {
+        expect(caption).toBeVisible();
+        const column = within(caption.parentElement as HTMLElement).getAllByRole('img');
+        for (const bar of column) {
+          expect(bar).toHaveAccessibleName(new RegExp(` on ${caption.textContent}: `));
+        }
+      }
+    },
+    TEST_TIMEOUT,
+  );
+});
 
 describe('previews and tool forms', () => {
   it.each(PREVIEW_CASES)(

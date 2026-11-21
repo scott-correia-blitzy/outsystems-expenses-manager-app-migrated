@@ -1,4 +1,4 @@
-import { useEffect, useId, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { Link as RouterLink } from 'react-router';
 import {
   Alert,
@@ -10,6 +10,7 @@ import {
   CircularProgress,
   Grid,
   LinearProgress,
+  linearProgressClasses,
   List,
   ListItem,
   ListItemText,
@@ -18,8 +19,17 @@ import {
   Typography,
   type ChipProps,
 } from '@mui/material';
+import { darken, type PaletteColor, type Theme } from '@mui/material/styles';
 import { userDashboard } from '../api/api';
-import type { DatedAmount, Kind, StatusCounts, TypeShare, UserDashboard } from '../api/types';
+import {
+  ApiError,
+  MESSAGES,
+  type DatedAmount,
+  type Kind,
+  type StatusCounts,
+  type TypeShare,
+  type UserDashboard,
+} from '../api/types';
 import { LiveStatus, useFeedback } from '../components/Feedback';
 import { KpiCard } from '../components/KpiCard';
 import {
@@ -38,10 +48,19 @@ const KPI_SIZE = { xs: 12, sm: 6, md: 3 } as const;
 const WIDE_SIZE = { xs: 12, md: 8 } as const;
 const NARROW_SIZE = { xs: 12, md: 4 } as const;
 
-const SERIES: Record<Kind, { label: string; color: string }> = {
-  expense: { label: 'Expenses', color: 'error.main' },
-  earning: { label: 'Earnings', color: 'success.main' },
+const SERIES: Record<Kind, { label: string; palette: 'error' | 'success' }> = {
+  expense: { label: 'Expenses', palette: 'error' },
+  earning: { label: 'Earnings', palette: 'success' },
 };
+const SERIES_KINDS = Object.keys(SERIES) as Kind[];
+
+// Keyed by typeId so each earning type keeps its tone whatever order the rows arrive in.
+const EARNING_TONES: readonly ((tones: PaletteColor) => string)[] = [
+  (tones) => tones.main,
+  (tones) => tones.dark,
+  (tones) => tones.light,
+  (tones) => darken(tones.dark, 0.4),
+];
 
 const STATUS_ROWS: readonly { label: string; key: keyof StatusCounts; color: ChipProps['color'] }[] = [
   { label: 'Approved', key: 'approved', color: 'success' },
@@ -57,6 +76,19 @@ const ABOVE_LAST_MONTH = 'above of last month';
 
 function percentOf(part: number, whole: number): number {
   return whole > 0 ? Math.min(100, Math.max(0, (part / whole) * 100)) : 0;
+}
+
+function seriesColor(kind: Kind): string {
+  return `${SERIES[kind].palette}.main`;
+}
+
+function byDateThenSeries(a: DatedAmount, b: DatedAmount): number {
+  return a.date.localeCompare(b.date) || SERIES_KINDS.indexOf(a.kind) - SERIES_KINDS.indexOf(b.kind);
+}
+
+function earningTone(theme: Theme, typeId: number): string {
+  const count = EARNING_TONES.length;
+  return EARNING_TONES[(((typeId - 1) % count) + count) % count](theme.palette[SERIES.earning.palette]);
 }
 
 function Signal({ positive, children }: { positive: boolean; children: ReactNode }) {
@@ -113,56 +145,105 @@ const FOCUS_VISIBLE_SX = {
   '&:focus-visible': { outline: 2, outlineColor: 'primary.main', outlineOffset: 2 },
 } as const;
 
+function NoData({ children }: { children: string }) {
+  return (
+    <Typography variant="body2" color="text.secondary">
+      {children}
+    </Typography>
+  );
+}
+
 function PerDateChart({ points }: { points: DatedAmount[] }) {
-  const sorted = [...points].sort((a, b) => a.date.localeCompare(b.date));
+  if (points.length === 0) {
+    return <NoData>No expenses or earnings in the last 30 days</NoData>;
+  }
+  const columns = new Map<string, DatedAmount[]>();
+  for (const point of [...points].sort(byDateThenSeries)) {
+    const column = columns.get(point.date);
+    if (column) {
+      column.push(point);
+    } else {
+      columns.set(point.date, [point]);
+    }
+  }
   // A spread argument list overflows the engine limit on long series.
-  const largest = sorted.reduce((max, point) => Math.max(max, point.amountInEuros), 0);
+  const largest = points.reduce((max, point) => Math.max(max, point.amountInEuros), 0);
 
   return (
     <Stack spacing={2}>
-      <Box
-        sx={{
-          display: 'flex',
-          alignItems: 'flex-end',
-          justifyContent: 'center',
-          gap: 0.5,
-          height: (theme) => theme.spacing(25),
-          borderBottom: 1,
-          borderColor: 'divider',
-        }}
-      >
-        {sorted.map((point, index) => {
-          const series = SERIES[point.kind];
-          // Names the series so the bar's meaning never rests on its colour alone.
-          const text = `${series.label} on ${formatRowDate(point.date)}: ${formatEuro(point.amountInEuros)}`;
-          return (
-            <Tooltip key={`${point.kind}-${point.date}-${index}`} title={text}>
+      {/* Scrolls inside the card once the dates outgrow it; the top padding keeps focus outlines unclipped. */}
+      <Box sx={{ overflowX: 'auto', pt: 0.5 }}>
+        <Stack direction="row">
+          {[...columns].map(([date, column]) => (
+            <Stack
+              key={date}
+              spacing={0.5}
+              sx={{ flex: '1 1 0', minWidth: (theme) => theme.spacing(2.5), containerType: 'inline-size' }}
+            >
               <Box
-                role="img"
-                aria-label={text}
-                tabIndex={0}
                 sx={{
-                  ...FOCUS_VISIBLE_SX,
-                  flex: 1,
-                  maxWidth: (theme) => theme.spacing(6),
-                  minHeight: (theme) => (point.amountInEuros > 0 ? theme.spacing(0.5) : 0),
-                  height: `${percentOf(point.amountInEuros, largest)}%`,
-                  bgcolor: series.color,
+                  display: 'flex',
+                  alignItems: 'flex-end',
+                  justifyContent: 'center',
+                  gap: 0.25,
+                  height: (theme) => theme.spacing(25),
+                  px: 0.5,
+                  borderBottom: 1,
+                  borderColor: 'divider',
                 }}
-              />
-            </Tooltip>
-          );
-        })}
+              >
+                {column.map((point, index) => {
+                  const series = SERIES[point.kind];
+                  // Names the series so the bar's meaning never rests on its colour alone.
+                  const text = `${series.label} on ${formatRowDate(point.date)}: ${formatEuro(point.amountInEuros)}`;
+                  return (
+                    <Tooltip key={`${point.kind}-${index}`} title={text}>
+                      <Box
+                        role="img"
+                        aria-label={text}
+                        tabIndex={0}
+                        sx={{
+                          ...FOCUS_VISIBLE_SX,
+                          flex: 1,
+                          maxWidth: (theme) => theme.spacing(6),
+                          minHeight: (theme) => (point.amountInEuros > 0 ? theme.spacing(0.5) : 0),
+                          height: `${percentOf(point.amountInEuros, largest)}%`,
+                          bgcolor: seriesColor(point.kind),
+                        }}
+                      />
+                    </Tooltip>
+                  );
+                })}
+              </Box>
+              {/* Hidden from assistive technology because every bar's label already names its date. */}
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                aria-hidden
+                sx={(theme) => ({
+                  alignSelf: 'center',
+                  whiteSpace: 'nowrap',
+                  [`@container (max-width: ${theme.spacing(12)})`]: {
+                    writingMode: 'vertical-rl',
+                    transform: 'rotate(180deg)',
+                  },
+                })}
+              >
+                {formatRowDate(date)}
+              </Typography>
+            </Stack>
+          ))}
+        </Stack>
       </Box>
       <Stack direction="row" spacing={2} justifyContent="center" flexWrap="wrap" useFlexGap>
-        {(Object.keys(SERIES) as Kind[]).map((kind) => (
+        {SERIES_KINDS.map((kind) => (
           <Stack key={kind} direction="row" spacing={1} alignItems="center">
             <Box
               aria-hidden
               sx={{
                 width: (theme) => theme.spacing(1.5),
                 height: (theme) => theme.spacing(1.5),
-                bgcolor: SERIES[kind].color,
+                bgcolor: seriesColor(kind),
               }}
             />
             <Typography variant="body2">{SERIES[kind].label}</Typography>
@@ -174,6 +255,9 @@ function PerDateChart({ points }: { points: DatedAmount[] }) {
 }
 
 function ExpensesPerType({ shares }: { shares: TypeShare[] }) {
+  if (shares.length === 0) {
+    return <NoData>No expenses to show</NoData>;
+  }
   return (
     <List
       aria-label="Expenses per type"
@@ -202,13 +286,16 @@ function ExpensesPerType({ shares }: { shares: TypeShare[] }) {
 }
 
 function EarningsTrends({ shares }: { shares: EarningShare[] }) {
+  if (shares.length === 0) {
+    return <NoData>No earnings to show</NoData>;
+  }
   const total = shares.reduce((sum, share) => sum + Math.max(0, share.sum), 0);
 
   return (
     <Stack spacing={2}>
       {shares.map((share) => (
         <Stack key={share.typeId} spacing={0.5}>
-          <Stack direction="row" justifyContent="space-between" spacing={2}>
+          <Stack direction="row" justifyContent="space-between" alignItems="baseline" spacing={2}>
             <Typography variant="body1">{share.label}</Typography>
             <Typography variant="body2" sx={{ fontWeight: 'fontWeightBold' }}>
               {formatEuro(share.sum)}
@@ -216,9 +303,15 @@ function EarningsTrends({ shares }: { shares: EarningShare[] }) {
           </Stack>
           <LinearProgress
             variant="determinate"
+            color={SERIES.earning.palette}
             value={percentOf(share.sum, total)}
             aria-label={share.label}
             aria-valuetext={formatEuro(share.sum)}
+            // A neutral track keeps even the lightest tone at 3:1 contrast.
+            sx={(theme) => ({
+              bgcolor: 'grey.50',
+              [`& .${linearProgressClasses.bar}`]: { bgcolor: earningTone(theme, share.typeId) },
+            })}
           />
         </Stack>
       ))}
@@ -313,29 +406,43 @@ export function UserDashboardPage() {
   const feedback = useFeedback();
   const [dashboard, setDashboard] = useState<UserDashboard | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  // Only the newest request may update state; bumping it on unmount drops every pending one.
+  const latestRequest = useRef(0);
 
-  useEffect(() => {
-    let active = true;
+  const loadDashboard = useCallback(() => {
+    const request = ++latestRequest.current;
     userDashboard()
       .then((data) => {
-        if (active) {
+        if (request === latestRequest.current) {
           setDashboard(data);
         }
       })
       .catch((err: unknown) => {
-        if (active) {
+        if (request === latestRequest.current) {
+          setLoadError(err instanceof ApiError ? err.message : MESSAGES.GENERIC_ERROR);
           feedback.error(err);
         }
       })
       .finally(() => {
-        if (active) {
+        if (request === latestRequest.current) {
           setLoading(false);
         }
       });
-    return () => {
-      active = false;
-    };
   }, [feedback]);
+
+  useEffect(() => {
+    loadDashboard();
+    return () => {
+      latestRequest.current += 1;
+    };
+  }, [loadDashboard]);
+
+  const retry = () => {
+    setLoadError(null);
+    setLoading(true);
+    loadDashboard();
+  };
 
   return (
     <>
@@ -350,9 +457,22 @@ export function UserDashboardPage() {
         }
       />
       {loading && (
-        <Box sx={{ display: 'flex', justifyContent: 'center', paddingBlock: 8 }}>
+        // Viewport-tall so the footer stays below the fold until the dashboard arrives.
+        <Box sx={{ display: 'flex', justifyContent: 'center', paddingBlock: 8, minHeight: '100vh' }}>
           <CircularProgress aria-label="Loading" />
         </Box>
+      )}
+      {loadError !== null && (
+        <Alert
+          severity="error"
+          action={
+            <Button color="inherit" size="small" onClick={retry}>
+              Retry
+            </Button>
+          }
+        >
+          {loadError}
+        </Alert>
       )}
       {dashboard && <DashboardContent dashboard={dashboard} />}
       <LiveStatus message={dashboard ? 'Dashboard loaded' : ''} />
