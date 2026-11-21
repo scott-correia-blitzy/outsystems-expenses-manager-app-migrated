@@ -57,8 +57,9 @@ export function FeedbackProvider({ children }: { children: ReactNode }) {
       error: (err) => {
         if (err instanceof ApiError) {
           // A JSON null survives the constructor default, so fieldErrors may still be missing at run time.
-          const details = err.fieldErrors?.map((f) => `${f.field}: ${f.message}`) ?? [];
-          show('error', err.message, details);
+          const details = new Set(err.fieldErrors?.map((f) => f.message) ?? []);
+          details.delete(err.message);
+          show('error', err.message, [...details]);
         } else {
           show('error', MESSAGES.GENERIC_ERROR);
         }
@@ -84,7 +85,7 @@ export function FeedbackProvider({ children }: { children: ReactNode }) {
             key={message.key}
             open={open}
             autoHideDuration={6000}
-            anchorOrigin={{ vertical: 'top', horizontal: 'center' }}
+            anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
             onClose={handleSnackbarClose}
           >
             <Alert

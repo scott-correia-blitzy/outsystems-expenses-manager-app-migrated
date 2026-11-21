@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import * as api from '../api/api';
 import { ApiError, type FieldError } from '../api/types';
@@ -447,10 +447,28 @@ describe('server field errors', () => {
       await clickControl(submit);
 
       const toast = await screen.findByRole('alert', {}, { timeout: FIND_TIMEOUT });
-      expect(toast).toHaveTextContent(`${unknown.field}: ${unknown.message}`);
-      expect(toast).not.toHaveTextContent(`${field}: ${messages[1]}`);
+      const details = within(toast).getAllByRole('listitem').map((item) => item.textContent);
+      expect(details).toEqual([unknown.message]);
+      expect(toast).not.toHaveTextContent(`${unknown.field}:`);
+      expect(toast).not.toHaveTextContent(messages[1]);
       const helperId = screen.getByLabelText(label).getAttribute('aria-describedby') ?? '';
       expect(document.getElementById(helperId)?.textContent).toBe(messages.join('\n'));
+    },
+    TEST_TIMEOUT,
+  );
+
+  it.each(SERVER_ERROR_CASES)(
+    '$path shows a server error with no placeable field once',
+    async ({ path, category, name, fill, submit, endpoint, unknown }) => {
+      renderRoute(path, category);
+      expect(await heading(name)).toBeInTheDocument();
+      vi.mocked(endpoint).mockRejectedValueOnce(new ApiError(422, 'VALIDATION_FAILED', unknown.message, [unknown]));
+      await fill();
+      await clickControl(submit);
+
+      const toast = await screen.findByRole('alert', {}, { timeout: FIND_TIMEOUT });
+      expect(toast.textContent).toBe(unknown.message);
+      expect(within(toast).queryAllByRole('listitem')).toHaveLength(0);
     },
     TEST_TIMEOUT,
   );
