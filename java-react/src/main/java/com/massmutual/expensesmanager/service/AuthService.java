@@ -38,7 +38,13 @@ public class AuthService {
     public SessionUser sessionUser(AppUserPrincipal principal) {
         Set<Role> roles = principal.getRoles();
         List<String> roleNames = roles.stream().sorted().map(Role::name).toList();
-        return new SessionUser(principal.getUsername(), principal.getDisplayName(), roleNames, landingRoute(roles));
+        return new SessionUser(principal.getUsername(), displayName(principal), roleNames, landingRoute(roles));
+    }
+
+    // Name is optional for provisioned users, but the signed-in shell always shows one.
+    private static String displayName(AppUserPrincipal principal) {
+        String name = principal.getDisplayName();
+        return name == null || name.isBlank() ? principal.getUsername() : name;
     }
 
     public static String landingRoute(Set<Role> roles) {

@@ -94,7 +94,7 @@ export interface ReportDetail {
   title: string;
   status: StatusLabel;
   createdOn: string;
-  createdByName: string;
+  createdByName: string | null;
   submitedOn: string | null;
   processedOn: string | null;
   submittedBy: string | null;

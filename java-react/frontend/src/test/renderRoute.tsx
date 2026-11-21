@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { render, screen, waitFor, type RenderResult } from '@testing-library/react';
 import { expect } from 'vitest';
 import { CssBaseline } from '@mui/material';
@@ -14,17 +15,18 @@ function LocationProbe() {
   return <div data-testid="location">{pathname}</div>;
 }
 
-export function renderRoute(path: string, category: SessionCategory): RenderResult {
+export function renderRoute(path: string | string[], category: SessionCategory, probe?: ReactNode): RenderResult {
   installApiMocks(category);
   return render(
     <ThemeProvider theme={theme}>
       <CssBaseline />
       <AuthProvider>
         <FeedbackProvider>
-          <MemoryRouter initialEntries={[path]}>
+          <MemoryRouter initialEntries={typeof path === 'string' ? [path] : path}>
             <AppRoutes />
             {/* Outside the route tree, so it shows where every redirect ends up. */}
             <LocationProbe />
+            {probe}
           </MemoryRouter>
         </FeedbackProvider>
       </AuthProvider>

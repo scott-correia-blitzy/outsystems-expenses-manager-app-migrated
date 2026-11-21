@@ -1,8 +1,11 @@
-import { fireEvent, screen } from '@testing-library/react';
-import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { ApiError, MESSAGES } from '../api/types';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { useLocation, useNavigate } from 'react-router';
+import * as api from '../api/api';
+import { ApiError, MESSAGES, type SessionUser } from '../api/types';
+import { AuthProvider, useAuth, type AuthContextValue } from '../auth/AuthContext';
 import { safeRedirectTarget } from '../routes';
-import { expireSession, SESSION_CATEGORIES, SESSIONS, type SessionCategory } from './fixtures';
+import { expireSession, installApiMocks, SESSION_CATEGORIES, SESSIONS, type SessionCategory } from './fixtures';
 import { expectLocation, renderRoute } from './renderRoute';
 
 vi.mock('../api/api');
@@ -183,6 +186,25 @@ describe('route guards', () => {
     },
     15000,
   );
+
+  it(
+    'returns an anonymous visitor to the requested page after sign-in',
+    async () => {
+      renderRoute('/reports/expense/12', 'anonymous');
+      await expectLocation('/login');
+      expect(await screen.findByRole('heading', { name: 'Login' }, { timeout: 3000 })).toBeInTheDocument();
+
+      fireEvent.change(screen.getByLabelText(/Username/), { target: { value: SESSIONS.user.username } });
+      fireEvent.change(screen.getByLabelText(/Password/), { target: { value: '123456' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Login' }));
+
+      await expectLocation('/reports/expense/12');
+      expect(
+        await screen.findByRole('heading', { name: /^12\/2024 EX: London Trip/ }, { timeout: 3000 }),
+      ).toBeInTheDocument();
+    },
+    15000,
+  );
 });
 
 describe('expired session', () => {
@@ -207,6 +229,185 @@ describe('expired session', () => {
     },
     15000,
   );
+});
+
+describe('logout', () => {
+  function held<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (reason: unknown) => void;
+    const promise = new Promise<T>((settleWith, failWith) => {
+      resolve = settleWith;
+      reject = failWith;
+    });
+    return { promise, resolve, reject };
+  }
+
+  async function openReports(): Promise<void> {
+    renderRoute('/reports', 'user');
+    expect(await screen.findByRole('heading', { name: 'Reports' }, { timeout: 3000 })).toBeInTheDocument();
+  }
+
+  async function signInAgain(): Promise<void> {
+    expect(await screen.findByRole('heading', { name: 'Login' }, { timeout: 3000 })).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText(/Username/), { target: { value: SESSIONS.user.username } });
+    fireEvent.change(screen.getByLabelText(/Password/), { target: { value: '123456' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Login' }));
+    await screen.findByRole('button', { name: 'Logout' }, { timeout: 3000 });
+  }
+
+  // Waits for every callback and render the released answer triggers before the test asserts.
+  async function release(answer: () => void): Promise<void> {
+    await act(async () => {
+      answer();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it.each([
+    { outcome: 'a double click', clicks: 2, answer: () => Promise.resolve() },
+    {
+      outcome: 'a failed logout call',
+      clicks: 1,
+      answer: () => Promise.reject(new ApiError(0, 'NETWORK_ERROR', MESSAGES.GENERIC_ERROR)),
+    },
+  ])(
+    'shows Login after $outcome, refreshes the CSRF token and signs in again at the landing route',
+    async ({ clicks, answer }) => {
+      await openReports();
+      vi.mocked(api.logout).mockImplementationOnce(answer);
+
+      const logout = screen.getByRole('button', { name: 'Logout' });
+      for (let click = 0; click < clicks; click += 1) {
+        fireEvent.click(logout);
+      }
+
+      await expectLocation('/login');
+      expect(await screen.findByRole('heading', { name: 'Login' }, { timeout: 3000 })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Logout' })).not.toBeInTheDocument();
+      expect(api.logout).toHaveBeenCalledTimes(1);
+      const [loggedOutAt] = vi.mocked(api.logout).mock.invocationCallOrder;
+      expect(vi.mocked(api.me).mock.invocationCallOrder.some((calledAt) => calledAt > loggedOutAt)).toBe(true);
+
+      await signInAgain();
+      await expectLocation(SESSIONS.user.landingRoute);
+      expect(await screen.findByRole('heading', { name: 'Dashboard' }, { timeout: 3000 })).toBeInTheDocument();
+    },
+    15000,
+  );
+
+  function HistoryProbe({ go }: { go: string | number }) {
+    const navigate = useNavigate();
+    const { state } = useLocation();
+    const from = (state as { from?: unknown } | null)?.from;
+    return (
+      <>
+        <button onClick={() => (typeof go === 'number' ? navigate(go) : navigate(go))}>Visit</button>
+        <div data-testid="return-path">{typeof from === 'string' ? from : ''}</div>
+      </>
+    );
+  }
+
+  it.each([
+    { visit: 'Back', go: -1, path: '/reports/expense/12', heading: /^12\/2024 EX: London Trip/ },
+    { visit: 'a link', go: '/reports/earning/10', path: '/reports/earning/10', heading: /^10\/2024 EA: Sales Commission/ },
+  ])(
+    'returns to a protected page reached by $visit after logout once the user signs in',
+    async ({ go, path, heading }) => {
+      renderRoute(['/reports/expense/12', '/reports'], 'user', <HistoryProbe go={go} />);
+      expect(await screen.findByRole('heading', { name: 'Reports' }, { timeout: 3000 })).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Logout' }));
+      await expectLocation('/login');
+      expect(screen.getByTestId('return-path').textContent).toBe('');
+
+      fireEvent.click(screen.getByRole('button', { name: 'Visit' }));
+      await waitFor(() => expect(screen.getByTestId('return-path').textContent).toBe(path));
+      await expectLocation('/login');
+
+      await signInAgain();
+      await expectLocation(path);
+      expect(await screen.findByRole('heading', { name: heading }, { timeout: 3000 })).toBeInTheDocument();
+    },
+    15000,
+  );
+
+  it(
+    'keeps the next session on its page when the refresh after logout answers late',
+    async () => {
+      await openReports();
+      const refresh = held<SessionUser>();
+      vi.mocked(api.me).mockImplementationOnce(() => refresh.promise);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Logout' }));
+      await expectLocation('/login');
+      await signInAgain();
+      fireEvent.click(screen.getByRole('link', { name: 'Reports' }));
+      await expectLocation('/reports');
+      expect(await screen.findByRole('heading', { name: 'Reports' }, { timeout: 3000 })).toBeInTheDocument();
+
+      await release(() => refresh.reject(new ApiError(401, 'UNAUTHENTICATED', MESSAGES.UNAUTHENTICATED)));
+
+      expect(screen.getByTestId('location').textContent).toBe('/reports');
+      expect(screen.getByRole('heading', { name: 'Reports' })).toBeInTheDocument();
+    },
+    15000,
+  );
+
+  it(
+    'leaves a newer session signed in when the logout call answers after it began',
+    async () => {
+      await openReports();
+      const logoutCall = held<void>();
+      vi.mocked(api.logout).mockImplementationOnce(() => logoutCall.promise);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Logout' }));
+      expect(screen.getByRole('button', { name: 'Logout' })).toBeDisabled();
+      expireSession();
+      fireEvent.click(screen.getByRole('button', { name: 'Earnings' }));
+      await expectLocation('/login');
+      await signInAgain();
+      await expectLocation('/reports');
+
+      await release(() => logoutCall.resolve());
+
+      expect(screen.getByTestId('location').textContent).toBe('/reports');
+      expect(screen.getByRole('heading', { name: 'Reports' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Logout' })).toBeEnabled();
+    },
+    15000,
+  );
+
+  it('shares one logout call between concurrent callers of a session', async () => {
+    installApiMocks('user');
+    const auth: { current: AuthContextValue | null } = { current: null };
+    function Probe() {
+      auth.current = useAuth();
+      return null;
+    }
+    render(
+      <AuthProvider>
+        <Probe />
+      </AuthProvider>,
+    );
+    await waitFor(() => expect(auth.current?.status).toBe('signedIn'));
+    const session = auth.current;
+    if (session === null) {
+      throw new Error('AuthProvider rendered no context');
+    }
+
+    let ended: boolean[] = [];
+    await act(async () => {
+      ended = await Promise.all([session.logout(), session.logout()]);
+    });
+
+    expect(ended).toEqual([true, true]);
+    expect(api.logout).toHaveBeenCalledTimes(1);
+    expect(auth.current?.status).toBe('anonymous');
+  });
 });
 
 describe('login return path', () => {

@@ -482,4 +482,3 @@ export function installApiMocks(category: SessionCategory): void {
     })),
   );
 }
-

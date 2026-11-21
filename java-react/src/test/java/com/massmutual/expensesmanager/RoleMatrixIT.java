@@ -96,6 +96,8 @@ class RoleMatrixIT {
             EnumSet.of(Account.APPROVER, Account.USER_ADMIN, Account.USER_APPROVER);
     private static final List<Account> MATRIX_CALLERS =
             List.of(Account.ANONYMOUS, Account.EM_USER1, Account.EM_ADMIN, Account.APPROVER);
+    private static final String NULL_NAME_USERNAME = "nullname";
+    private static final String BLANK_NAME_USERNAME = "blankname";
     private static final List<String> SPA_ROUTES = List.of(
             "/login", "/invalid-permissions", "/dashboard", "/reports", "/reports/expense/1", "/reports/earning/1",
             "/admin", "/admin/reports/expense/1", "/admin/reports/earning/1",
@@ -203,6 +205,10 @@ class RoleMatrixIT {
                     EXPENSE, expenseReport(user.getId(), ReferenceIds.STATUS_DRAFT, "Own draft"),
                     EARNING, earningReport(user.getId(), ReferenceIds.STATUS_DRAFT, "Own draft")));
         }
+        appUsers.save(new AppUser(NULL_NAME_USERNAME, null, passwordEncoder.encode(FIXTURE_PASSWORD),
+                Set.of(Role.User)));
+        appUsers.save(new AppUser(BLANK_NAME_USERNAME, "   ", passwordEncoder.encode(FIXTURE_PASSWORD),
+                Set.of(Role.User)));
 
         long owner = userIds.get(Account.EM_USER1);
         protectedReportId = expenseReport(owner, ReferenceIds.STATUS_DRAFT, "Protected");
@@ -360,6 +366,24 @@ class RoleMatrixIT {
             Response response = fresh.login(account.username, account.password);
             assertThat(response.status()).as(response.toString()).isEqualTo(200);
             assertThat(response.json().path("username").asText()).isEqualTo(account.username);
+        }
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {NULL_NAME_USERNAME, BLANK_NAME_USERNAME})
+    @DisplayName("Login and me show the username when the user has no name")
+    void sessionDisplayNameFallsBackToUsername(String username) {
+        try (ApiClient fresh = new ApiClient(port)) {
+            Response login = fresh.login(username, FIXTURE_PASSWORD);
+            Response me = fresh.me();
+            for (Response response : List.of(login, me)) {
+                assertThat(response.status()).as(response.toString()).isEqualTo(200);
+                JsonNode body = response.json();
+                assertThat(body.fieldNames()).toIterable()
+                        .containsExactlyInAnyOrder("username", "displayName", "roles", "landingRoute");
+                assertThat(body.path("username").textValue()).isEqualTo(username);
+                assertThat(body.path("displayName").textValue()).isEqualTo(username);
+            }
         }
     }
 

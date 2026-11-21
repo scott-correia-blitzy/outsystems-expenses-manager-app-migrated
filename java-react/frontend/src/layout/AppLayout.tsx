@@ -137,11 +137,18 @@ export function AppLayout({ children }: { children: ReactNode }) {
   const { user, logout } = useAuth();
   const { pathname } = useLocation();
   const navigate = useNavigate();
+  const [loggingOut, setLoggingOut] = useState(false);
 
   const handleLogout = () => {
-    void logout()
-      .catch(() => undefined)
-      .finally(() => navigate(PATHS.login, { replace: true }));
+    setLoggingOut(true);
+    void logout().then((ended) => {
+      if (ended) {
+        // Open pages such as Invalid Permissions do not redirect an anonymous visitor to Login.
+        navigate(PATHS.login, { replace: true });
+      } else {
+        setLoggingOut(false);
+      }
+    });
   };
 
   return (
@@ -211,6 +218,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
                   color="inherit"
                   aria-label="Logout"
                   onClick={handleLogout}
+                  disabled={loggingOut}
                   sx={{ ...barFocusRing, flexShrink: 0 }}
                 >
                   <LogoutIcon />

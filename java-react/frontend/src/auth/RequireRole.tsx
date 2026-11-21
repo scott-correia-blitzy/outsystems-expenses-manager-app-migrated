@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { Navigate, useLocation } from 'react-router';
 import { Box, CircularProgress } from '@mui/material';
 import { useAuth } from './AuthContext';
@@ -6,8 +6,12 @@ import { canAccess, PATHS } from '../routes';
 import type { Role } from '../api/types';
 
 export function RequireRole({ roles, children }: { roles: readonly Role[]; children: ReactNode }) {
-  const { status, user } = useAuth();
+  const { status, user, loggedOut } = useAuth();
   const location = useLocation();
+  const [shownSignedIn, setShownSignedIn] = useState(false);
+  if (status === 'signedIn' && !shownSignedIn) {
+    setShownSignedIn(true);
+  }
 
   if (status === 'loading') {
     return (
@@ -18,8 +22,9 @@ export function RequireRole({ roles, children }: { roles: readonly Role[]; child
   }
 
   if (status === 'anonymous' || user === null) {
-    // The login page sends the visitor back to this path once they sign in.
-    return <Navigate to={PATHS.login} replace state={{ from: location.pathname + location.search }} />;
+    // The page a logout leaves is not a return path, so the next user starts at their own landing route.
+    const returnState = loggedOut && shownSignedIn ? undefined : { from: location.pathname + location.search };
+    return <Navigate to={PATHS.login} replace state={returnState} />;
   }
 
   if (!canAccess(user.roles, roles)) {
