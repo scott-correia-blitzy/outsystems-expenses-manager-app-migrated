@@ -9,7 +9,7 @@ import {
   type ReactNode,
 } from 'react';
 import * as api from '../api/api';
-import type { LoginRequest, Role, SessionUser } from '../api/types';
+import { ApiError, type LoginRequest, type Role, type SessionUser } from '../api/types';
 
 export type AuthStatus = 'loading' | 'anonymous' | 'signedIn';
 
@@ -35,10 +35,21 @@ export const AuthContext = createContext<AuthContextValue | null>(null);
 const ANONYMOUS: AuthState = { status: 'anonymous', user: null, loggedOut: false };
 const LOGGED_OUT: AuthState = { ...ANONYMOUS, loggedOut: true };
 
+function sameIdentity(a: SessionUser, b: SessionUser): boolean {
+  return (
+    a.username === b.username && a.roles.length === b.roles.length && a.roles.every((role) => b.roles.includes(role))
+  );
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<AuthState>({ status: 'loading', user: null, loggedOut: false });
+  const shownUser = useRef<SessionUser | null>(null);
   const sessionGeneration = useRef(0);
   const pendingLogout = useRef<{ generation: number; ended: Promise<boolean> } | null>(null);
+
+  useEffect(() => {
+    shownUser.current = state.user;
+  }, [state.user]);
 
   useEffect(() => {
     let active = true;
@@ -66,6 +77,48 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }),
     [],
   );
+
+  useEffect(() => {
+    let active = true;
+    let checkingGeneration: number | null = null;
+    // Concurrent 403s of one session share a check, and a login, logout or expiry meanwhile makes its answer stale.
+    const unsubscribe = api.onAccessDenied(() => {
+      const shown = shownUser.current;
+      const generation = sessionGeneration.current;
+      if (checkingGeneration === generation || shown === null || pendingLogout.current !== null) {
+        return;
+      }
+      checkingGeneration = generation;
+      const endCheck = () => {
+        if (checkingGeneration === generation) {
+          checkingGeneration = null;
+        }
+      };
+      const stillCurrent = () => active && sessionGeneration.current === generation && pendingLogout.current === null;
+      api.me().then(
+        (user) => {
+          endCheck();
+          if (stillCurrent() && !sameIdentity(shown, user)) {
+            sessionGeneration.current += 1;
+            api.startNewSession();
+            setState({ status: 'signedIn', user, loggedOut: false });
+          }
+        },
+        (err: unknown) => {
+          endCheck();
+          if (stillCurrent() && err instanceof ApiError && err.status === 401) {
+            sessionGeneration.current += 1;
+            api.startNewSession();
+            setState(ANONYMOUS);
+          }
+        },
+      );
+    });
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, []);
 
   const login = useCallback(async (credentials: LoginRequest): Promise<SessionUser> => {
     const user = await api.login({

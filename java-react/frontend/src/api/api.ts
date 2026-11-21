@@ -39,8 +39,14 @@ function seg(value: string | number): string {
 type SessionListener = () => void;
 
 const sessionListeners = new Set<SessionListener>();
-// Advances at login, logout and expiry, so a 401 from a request of an earlier session is ignored.
+const accessDeniedListeners = new Set<SessionListener>();
+// Advances at login, logout, expiry and startNewSession, so a 401 or 403 from an earlier session's request is ignored.
 let sessionEpoch = 0;
+
+// For a session change seen outside this module, such as me() naming a caller other than the one shown.
+export function startNewSession(): void {
+  sessionEpoch += 1;
+}
 
 export function onSessionExpired(listener: SessionListener): () => void {
   sessionListeners.add(listener);
@@ -49,13 +55,29 @@ export function onSessionExpired(listener: SessionListener): () => void {
   };
 }
 
+// Tabs share one session cookie, so a 403 can mean another tab signed in as a different user.
+export function onAccessDenied(listener: SessionListener): () => void {
+  accessDeniedListeners.add(listener);
+  return () => {
+    accessDeniedListeners.delete(listener);
+  };
+}
+
+function notify(listeners: Set<SessionListener>): void {
+  for (const listener of [...listeners]) {
+    listener();
+  }
+}
+
 function signedInRequest<T>(method: HttpMethod, url: string, body?: unknown): Promise<T> {
   const startedIn = sessionEpoch;
   return request<T>(method, url, body).catch((err: unknown) => {
-    if (err instanceof ApiError && err.status === 401 && startedIn === sessionEpoch) {
-      sessionEpoch += 1;
-      for (const listener of [...sessionListeners]) {
-        listener();
+    if (err instanceof ApiError && startedIn === sessionEpoch) {
+      if (err.status === 401) {
+        sessionEpoch += 1;
+        notify(sessionListeners);
+      } else if (err.status === 403) {
+        notify(accessDeniedListeners);
       }
     }
     throw err;

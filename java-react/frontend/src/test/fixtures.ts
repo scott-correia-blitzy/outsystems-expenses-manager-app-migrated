@@ -13,6 +13,7 @@ import {
   type RefItem,
   type ReportDetail,
   type ReportSummary,
+  type Role,
   type SessionUser,
   type StatusLabel,
   type UsdToEurResult,
@@ -298,19 +299,67 @@ export const MILEAGE_RESULT: MileageResult = { eur: 5, rate: 0.5 };
 
 let currentSession: SessionUser | null = null;
 const sessionListeners = new Set<() => void>();
+const accessDeniedListeners = new Set<() => void>();
+// As in api.ts, login, logout, a reported expiry and startNewSession start a new session.
+let sessionEpoch = 0;
+let heldAnswer: Promise<void> | null = null;
 
 export function expireSession(): void {
   currentSession = null;
 }
 
-// A protected call without a session answers 401 and reports the expiry, as api.ts does.
-function signedIn<A extends unknown[], R>(impl: (...args: A) => R | Promise<R>): (...args: A) => Promise<R> {
+// Keeps the next protected call's answer in flight until the returned function releases it.
+export function holdNextAnswer(): () => void {
+  let release!: () => void;
+  heldAnswer = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return release;
+}
+
+// Changes the server session without telling this tab, as a sign-in in another tab does.
+export function switchSession(category: SessionCategory): void {
+  currentSession = category === 'anonymous' ? null : SESSIONS[category];
+}
+
+type Access<A extends unknown[]> = (session: SessionUser, args: A) => boolean;
+
+function holding(...roles: Role[]): (session: SessionUser) => boolean {
+  return (session) => roles.some((role) => session.roles.includes(role));
+}
+
+function notify(listeners: Set<() => void>): void {
+  for (const listener of [...listeners]) {
+    listener();
+  }
+}
+
+// As on a server, the session at the call decides a 401 or 403 and the answer arrives later;
+// as in api.ts, only a call started in the current session reports it.
+function signedIn<A extends unknown[], R>(
+  impl: (...args: A) => R | Promise<R>,
+  access: Access<A> = () => true,
+): (...args: A) => Promise<R> {
   return async (...args: A) => {
-    if (currentSession === null) {
-      for (const listener of [...sessionListeners]) {
-        listener();
+    const startedIn = sessionEpoch;
+    const session = currentSession;
+    const allowed = session !== null && access(session, args);
+    const held = heldAnswer;
+    heldAnswer = null;
+    await held;
+    const current = startedIn === sessionEpoch;
+    if (session === null) {
+      if (current) {
+        sessionEpoch += 1;
+        notify(sessionListeners);
       }
       throw new ApiError(401, 'UNAUTHENTICATED', MESSAGES.UNAUTHENTICATED);
+    }
+    if (!allowed) {
+      if (current) {
+        notify(accessDeniedListeners);
+      }
+      throw new ApiError(403, 'FORBIDDEN', MESSAGES.FORBIDDEN);
     }
     return impl(...args);
   };
@@ -333,6 +382,18 @@ function rowsFor(kind: Kind, administrator: boolean): ReportSummary[] {
 function findRow(kind: Kind, id: number): ReportSummary {
   const rows = [...rowsFor(kind, false), ...rowsFor(kind, true)];
   return orNotFound(rows.find((row) => row.id === Number(id)));
+}
+
+function reportDetail(kind: Kind, id: number): ReportDetail {
+  const known: ReportDetail | undefined = REPORT_DETAILS[`${kind}/${Number(id)}`];
+  return known ?? detail(kind, findRow(kind, id), []);
+}
+
+function ownsOrAdministers(session: SessionUser, [kind, id]: [Kind, number]): boolean {
+  return (
+    session.roles.includes('Administrator') ||
+    (session.roles.includes('User') && reportDetail(kind, id).createdByName === session.displayName)
+  );
 }
 
 function findLine(kind: Kind, lineId: number): LineView | undefined {
@@ -375,6 +436,7 @@ function lineFromBody(kind: Kind, base: LineView, body: LineBody): LineView {
 
 export function installApiMocks(category: SessionCategory): void {
   currentSession = category === 'anonymous' ? null : SESSIONS[category];
+  heldAnswer = null;
 
   vi.mocked(api.me).mockImplementation(async () => {
     const session = currentSession;
@@ -386,11 +448,16 @@ export function installApiMocks(category: SessionCategory): void {
   vi.mocked(api.login).mockImplementation(async (credentials) => {
     const session =
       Object.values(SESSIONS).find((candidate) => candidate.username === credentials.username) ?? SESSIONS.user;
+    sessionEpoch += 1;
     currentSession = session;
     return session;
   });
   vi.mocked(api.logout).mockImplementation(async () => {
+    sessionEpoch += 1;
     currentSession = null;
+  });
+  vi.mocked(api.startNewSession).mockImplementation(() => {
+    sessionEpoch += 1;
   });
   sessionListeners.clear();
   vi.mocked(api.onSessionExpired).mockImplementation((listener) => {
@@ -399,12 +466,23 @@ export function installApiMocks(category: SessionCategory): void {
       sessionListeners.delete(listener);
     };
   });
+  accessDeniedListeners.clear();
+  vi.mocked(api.onAccessDenied).mockImplementation((listener) => {
+    accessDeniedListeners.add(listener);
+    return () => {
+      accessDeniedListeners.delete(listener);
+    };
+  });
+
+  const userOnly = holding('User');
+  const administratorOnly = holding('Administrator');
+  const anyAppRole = holding('User', 'Approver', 'Administrator');
 
   vi.mocked(api.reference).mockImplementation(signedIn(() => REFERENCE));
-  vi.mocked(api.userDashboard).mockImplementation(signedIn(() => USER_DASHBOARD));
-  vi.mocked(api.adminDashboard).mockImplementation(signedIn(() => ADMIN_DASHBOARD));
-  vi.mocked(api.usdToEur).mockImplementation(signedIn(() => USD_TO_EUR_RESULT));
-  vi.mocked(api.mileage).mockImplementation(signedIn(() => MILEAGE_RESULT));
+  vi.mocked(api.userDashboard).mockImplementation(signedIn(() => USER_DASHBOARD, userOnly));
+  vi.mocked(api.adminDashboard).mockImplementation(signedIn(() => ADMIN_DASHBOARD, administratorOnly));
+  vi.mocked(api.usdToEur).mockImplementation(signedIn(() => USD_TO_EUR_RESULT, anyAppRole));
+  vi.mocked(api.mileage).mockImplementation(signedIn(() => MILEAGE_RESULT, anyAppRole));
 
   vi.mocked(api.listReports).mockImplementation(
     signedIn(async (query) => {
@@ -413,48 +491,54 @@ export function installApiMocks(category: SessionCategory): void {
         (row) =>
           (query.status === undefined || row.status === query.status) && matches(query.q, row.code, row.title),
       );
-    }),
+    }, anyAppRole),
   );
-  vi.mocked(api.getReport).mockImplementation(
-    signedIn(async (kind, id) => {
-      const known: ReportDetail | undefined = REPORT_DETAILS[`${kind}/${Number(id)}`];
-      return known ?? detail(kind, findRow(kind, id), []);
-    }),
-  );
+  vi.mocked(api.getReport).mockImplementation(signedIn(async (kind, id) => reportDetail(kind, id), ownsOrAdministers));
   vi.mocked(api.createReport).mockImplementation(
     signedIn(async (body) => {
       const code = body.kind === 'expense' ? '13/2024 EX' : '11/2024 EA';
       return summary(Number.parseInt(code, 10), code, body.title, 'Draft', NOW, 0);
-    }),
+    }, userOnly),
   );
   vi.mocked(api.renameReport).mockImplementation(
-    signedIn(async (kind, id, title) => ({ ...findRow(kind, id), title })),
+    signedIn(async (kind, id, title) => ({ ...findRow(kind, id), title }), userOnly),
   );
   vi.mocked(api.submitReport).mockImplementation(
-    signedIn(async (kind, id) => ({
-      ...findRow(kind, id),
-      status: 'Submitted',
-      submitedOn: NOW,
-    })),
-  );
-  vi.mocked(api.decideReport).mockImplementation(
-    signedIn(async (kind, id, accept) => ({
-      ...findRow(kind, id),
-      status: accept ? 'Approved' : 'Declined',
-    })),
-  );
-  vi.mocked(api.deleteReport).mockImplementation(signedIn(() => undefined));
-
-  vi.mocked(api.createLine).mockImplementation(
-    signedIn(async (kind, reportId, body) => lineFromBody(kind, { ...FLIGHT_TICKETS, id: 122, reportId }, body)),
-  );
-  vi.mocked(api.updateLine).mockImplementation(
-    signedIn(async (kind, lineId, body) =>
-      lineFromBody(kind, findLine(kind, lineId) ?? { ...FLIGHT_TICKETS, id: lineId }, body),
+    signedIn(
+      async (kind, id) => ({
+        ...findRow(kind, id),
+        status: 'Submitted',
+        submitedOn: NOW,
+      }),
+      userOnly,
     ),
   );
-  vi.mocked(api.deleteLine).mockImplementation(signedIn(() => undefined));
-  vi.mocked(api.uploadInvoice).mockImplementation(signedIn(() => undefined));
+  vi.mocked(api.decideReport).mockImplementation(
+    signedIn(
+      async (kind, id, accept) => ({
+        ...findRow(kind, id),
+        status: accept ? 'Approved' : 'Declined',
+      }),
+      administratorOnly,
+    ),
+  );
+  vi.mocked(api.deleteReport).mockImplementation(signedIn(() => undefined, userOnly));
+
+  vi.mocked(api.createLine).mockImplementation(
+    signedIn(
+      async (kind, reportId, body) => lineFromBody(kind, { ...FLIGHT_TICKETS, id: 122, reportId }, body),
+      userOnly,
+    ),
+  );
+  vi.mocked(api.updateLine).mockImplementation(
+    signedIn(
+      async (kind, lineId, body) =>
+        lineFromBody(kind, findLine(kind, lineId) ?? { ...FLIGHT_TICKETS, id: lineId }, body),
+      userOnly,
+    ),
+  );
+  vi.mocked(api.deleteLine).mockImplementation(signedIn(() => undefined, userOnly));
+  vi.mocked(api.uploadInvoice).mockImplementation(signedIn(() => undefined, userOnly));
   vi.mocked(api.invoiceDownloadUrl).mockImplementation((kind, lineId) => `/api/lines/${kind}/${lineId}/invoice`);
 
   vi.mocked(api.listBlogPosts).mockImplementation(
@@ -462,23 +546,29 @@ export function installApiMocks(category: SessionCategory): void {
   );
   vi.mocked(api.getBlogPost).mockImplementation(signedIn(async (id) => findPost(id)));
   vi.mocked(api.createBlogPost).mockImplementation(
-    signedIn(async (body) => ({
-      id: 3,
-      title: body.title,
-      description: body.description,
-      createdOn: NOW,
-      createdByName: ADMIN,
-      updatedOn: NOW,
-      updatedByName: ADMIN,
-    })),
+    signedIn(
+      async (body) => ({
+        id: 3,
+        title: body.title,
+        description: body.description,
+        createdOn: NOW,
+        createdByName: ADMIN,
+        updatedOn: NOW,
+        updatedByName: ADMIN,
+      }),
+      administratorOnly,
+    ),
   );
   vi.mocked(api.updateBlogPost).mockImplementation(
-    signedIn(async (id, body) => ({
-      ...findPost(id),
-      title: body.title,
-      description: body.description,
-      updatedOn: NOW,
-      updatedByName: ADMIN,
-    })),
+    signedIn(
+      async (id, body) => ({
+        ...findPost(id),
+        title: body.title,
+        description: body.description,
+        updatedOn: NOW,
+        updatedByName: ADMIN,
+      }),
+      administratorOnly,
+    ),
   );
 }

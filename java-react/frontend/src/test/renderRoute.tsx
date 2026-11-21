@@ -22,7 +22,7 @@ export function renderRoute(path: string | string[], category: SessionCategory, 
       <CssBaseline />
       <AuthProvider>
         <FeedbackProvider>
-          <MemoryRouter initialEntries={typeof path === 'string' ? [path] : path}>
+          <MemoryRouter initialEntries={typeof path === 'string' ? [path] : path} useTransitions={false}>
             <AppRoutes />
             {/* Outside the route tree, so it shows where every redirect ends up. */}
             <LocationProbe />

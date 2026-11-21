@@ -1,11 +1,19 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { describe, expect, it, vi } from 'vitest';
 import { useLocation, useNavigate } from 'react-router';
 import * as api from '../api/api';
 import { ApiError, MESSAGES, type SessionUser } from '../api/types';
 import { AuthProvider, useAuth, type AuthContextValue } from '../auth/AuthContext';
 import { safeRedirectTarget } from '../routes';
-import { expireSession, installApiMocks, SESSION_CATEGORIES, SESSIONS, type SessionCategory } from './fixtures';
+import {
+  expireSession,
+  holdNextAnswer,
+  installApiMocks,
+  SESSION_CATEGORIES,
+  SESSIONS,
+  switchSession,
+  type SessionCategory,
+} from './fixtures';
 import { expectLocation, renderRoute } from './renderRoute';
 
 vi.mock('../api/api');
@@ -207,6 +215,44 @@ describe('route guards', () => {
   );
 });
 
+async function signInAgain(username: string = SESSIONS.user.username): Promise<void> {
+  expect(await screen.findByRole('heading', { name: 'Login' }, { timeout: 3000 })).toBeInTheDocument();
+  fireEvent.change(screen.getByLabelText(/Username/), { target: { value: username } });
+  fireEvent.change(screen.getByLabelText(/Password/), { target: { value: '123456' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Login' }));
+  await screen.findByRole('button', { name: 'Logout' }, { timeout: 3000 });
+}
+
+// Waits for every callback and render the released answer triggers before the test asserts.
+async function release(answer: () => void): Promise<void> {
+  await act(async () => {
+    answer();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+}
+
+function held<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((settleWith, failWith) => {
+    resolve = settleWith;
+    reject = failWith;
+  });
+  return { promise, resolve, reject };
+}
+
+function HistoryProbe({ go }: { go: string | number }) {
+  const navigate = useNavigate();
+  const { state } = useLocation();
+  const from = (state as { from?: unknown } | null)?.from;
+  return (
+    <>
+      <button onClick={() => (typeof go === 'number' ? navigate(go) : navigate(go))}>Visit</button>
+      <div data-testid="return-path">{typeof from === 'string' ? from : ''}</div>
+    </>
+  );
+}
+
 describe('expired session', () => {
   it(
     'shows Login after a protected call is rejected, then returns to the requested page',
@@ -229,43 +275,266 @@ describe('expired session', () => {
     },
     15000,
   );
+
+  it.each([
+    {
+      category: 'user',
+      path: '/reports/expense/12',
+      heading: /^12\/2024 EX: London Trip/,
+      calls: [api.reference, api.getReport],
+    },
+    {
+      category: 'administrator',
+      path: '/admin',
+      heading: 'Administrator Dashboard',
+      calls: [api.adminDashboard, api.listReports],
+    },
+  ] as const)(
+    'reports the concurrent 401s of $path once and returns there after sign-in',
+    async ({ category, path, heading, calls }) => {
+      renderRoute('/blog', category, <HistoryProbe go={path} />);
+      expect(await screen.findByRole('heading', { name: 'Blog' }, { timeout: 3000 })).toBeInTheDocument();
+      const expired = vi.fn();
+      api.onSessionExpired(expired);
+
+      expireSession();
+      fireEvent.click(screen.getByRole('button', { name: 'Visit' }));
+
+      await expectLocation('/login');
+      expect(screen.getByTestId('return-path').textContent).toBe(path);
+      for (const call of calls) {
+        expect(vi.mocked(call).mock.settledResults).toEqual([
+          { type: 'rejected', value: expect.objectContaining({ status: 401, code: 'UNAUTHENTICATED' }) },
+        ]);
+      }
+      expect(expired).toHaveBeenCalledTimes(1);
+
+      await signInAgain(SESSIONS[category].username);
+      await expectLocation(path);
+      expect(await screen.findByRole('heading', { name: heading }, { timeout: 3000 })).toBeInTheDocument();
+    },
+    15000,
+  );
+
+  it.each([
+    {
+      change: 'logout',
+      end: () => fireEvent.click(screen.getByRole('button', { name: 'Logout' })),
+      path: '/dashboard',
+      heading: 'Dashboard',
+    },
+    {
+      change: 'expiry',
+      end: () => fireEvent.click(screen.getByRole('button', { name: 'Expenses' })),
+      path: '/reports',
+      heading: 'Reports',
+    },
+  ])(
+    'keeps the session signed in again after a $change when an earlier call answers 401 late',
+    async ({ end, path, heading }) => {
+      renderRoute('/reports', 'user');
+      expect(await screen.findByRole('heading', { name: 'Reports' }, { timeout: 3000 })).toBeInTheDocument();
+      // The first list load must be over, or it would take the hold meant for the Earnings call.
+      expect(await screen.findByText('12/2024 EX', {}, { timeout: 3000 })).toBeInTheDocument();
+
+      expireSession();
+      const answerStale = holdNextAnswer();
+      fireEvent.click(screen.getByRole('button', { name: 'Earnings' }));
+      end();
+      await expectLocation('/login');
+      await signInAgain();
+      await expectLocation(path);
+      expect(await screen.findByRole('heading', { name: heading }, { timeout: 3000 })).toBeInTheDocument();
+
+      const stale = vi.mocked(api.listReports).mock.calls.findIndex(([query]) => query.kind === 'earning');
+      expect(vi.mocked(api.listReports).mock.settledResults[stale]).toBeUndefined();
+      await release(answerStale);
+
+      expect(vi.mocked(api.listReports).mock.settledResults[stale]).toEqual({
+        type: 'rejected',
+        value: expect.objectContaining({ status: 401, code: 'UNAUTHENTICATED' }),
+      });
+      expect(screen.getByTestId('location').textContent).toBe(path);
+      expect(screen.getByRole('heading', { name: heading })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Logout' })).toBeEnabled();
+    },
+    15000,
+  );
+});
+
+describe('session changed in another tab', () => {
+  // A registered-only caller is also refused the report list, so two refusals arrive together.
+  it.each([
+    { category: 'user', links: ['Dashboard', 'Reports', 'Blog'], dashboard: '/dashboard' },
+    { category: 'registered', links: ['Dashboard', 'Blog'], dashboard: '/invalid-permissions' },
+  ] as const)(
+    'follows a $category signed in elsewhere when the administrator dashboard is refused',
+    async ({ category, links, dashboard }) => {
+      renderRoute('/blog', 'administrator');
+      expect(await screen.findByRole('heading', { name: 'Blog' }, { timeout: 3000 })).toBeInTheDocument();
+      const meCalls = vi.mocked(api.me).mock.calls.length;
+
+      switchSession(category);
+      fireEvent.click(screen.getByRole('link', { name: 'Dashboard' }));
+
+      await expectLocation('/invalid-permissions');
+      expect(
+        await screen.findByRole('heading', { name: DESTINATION_HEADINGS['/invalid-permissions'] }, { timeout: 3000 }),
+      ).toBeInTheDocument();
+      expect(screen.getByText(SESSIONS[category].displayName)).toBeInTheDocument();
+      expect(screen.queryByText(SESSIONS.administrator.displayName)).not.toBeInTheDocument();
+      const menu = within(screen.getByRole('navigation', { name: 'Main menu' }));
+      expect(menu.getAllByRole('link').map((link) => link.textContent)).toEqual(links);
+      expect(menu.getByRole('link', { name: 'Dashboard' })).toHaveAttribute('href', dashboard);
+      expect(api.me).toHaveBeenCalledTimes(meCalls + 1);
+    },
+    15000,
+  );
+
+  it(
+    'shows Login with the return path when the refused caller has no session left',
+    async () => {
+      renderRoute('/blog', 'administrator', <HistoryProbe go="/admin" />);
+      expect(await screen.findByRole('heading', { name: 'Blog' }, { timeout: 3000 })).toBeInTheDocument();
+
+      switchSession('user');
+      vi.mocked(api.me).mockRejectedValueOnce(new ApiError(401, 'UNAUTHENTICATED', MESSAGES.UNAUTHENTICATED));
+      fireEvent.click(screen.getByRole('button', { name: 'Visit' }));
+
+      await expectLocation('/login');
+      expect(screen.getByTestId('return-path').textContent).toBe('/admin');
+
+      await signInAgain(SESSIONS.administrator.username);
+      await expectLocation('/admin');
+      expect(
+        await screen.findByRole('heading', { name: 'Administrator Dashboard' }, { timeout: 3000 }),
+      ).toBeInTheDocument();
+    },
+    15000,
+  );
+
+  it(
+    'keeps an unchanged caller signed in when a report it does not own is refused',
+    async () => {
+      renderRoute('/reports', 'user', <HistoryProbe go="/reports/expense/7" />);
+      expect(await screen.findByRole('heading', { name: 'Reports' }, { timeout: 3000 })).toBeInTheDocument();
+      const meCalls = vi.mocked(api.me).mock.calls.length;
+
+      fireEvent.click(screen.getByRole('button', { name: 'Visit' }));
+
+      await waitFor(() =>
+        expect(vi.mocked(api.me).mock.settledResults[meCalls]).toEqual({ type: 'fulfilled', value: SESSIONS.user }),
+      );
+      await expectLocation('/dashboard');
+      expect(await screen.findByRole('heading', { name: 'Dashboard' }, { timeout: 3000 })).toBeInTheDocument();
+      expect(await screen.findByText(MESSAGES.INVALID_REPORT, {}, { timeout: 3000 })).toBeInTheDocument();
+      expect(screen.getByText(SESSIONS.user.displayName)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Logout' })).toBeEnabled();
+      expect(api.me).toHaveBeenCalledTimes(meCalls + 1);
+    },
+    15000,
+  );
+
+  it.each([
+    { change: 'logout', end: () => fireEvent.click(screen.getByRole('button', { name: 'Logout' })) },
+    {
+      change: 'expiry',
+      end: () => {
+        expireSession();
+        fireEvent.click(screen.getByRole('button', { name: 'Earnings' }));
+      },
+    },
+  ])(
+    'follows a caller changed after a $change while the check of the earlier session is pending',
+    async ({ end }) => {
+      renderRoute('/blog', 'administrator');
+      expect(await screen.findByRole('heading', { name: 'Blog' }, { timeout: 3000 })).toBeInTheDocument();
+      const earlierCheck = held<SessionUser>();
+      vi.mocked(api.me).mockImplementationOnce(() => earlierCheck.promise);
+      const meCalls = vi.mocked(api.me).mock.calls.length;
+
+      switchSession('user');
+      fireEvent.click(screen.getByRole('link', { name: 'Dashboard' }));
+      await waitFor(() => expect(api.me).toHaveBeenCalledTimes(meCalls + 1));
+      end();
+      await signInAgain(SESSIONS.administrator.username);
+      await expectLocation('/admin');
+      fireEvent.click(screen.getByRole('link', { name: 'Blog' }));
+      expect(await screen.findByRole('heading', { name: 'Blog' }, { timeout: 3000 })).toBeInTheDocument();
+
+      switchSession('user');
+      fireEvent.click(screen.getByRole('link', { name: 'Dashboard' }));
+
+      await expectLocation('/invalid-permissions');
+      expect(screen.getByText(SESSIONS.user.displayName)).toBeInTheDocument();
+      await release(() => earlierCheck.resolve(SESSIONS.approver));
+
+      expect(screen.getByTestId('location').textContent).toBe('/invalid-permissions');
+      expect(screen.getByText(SESSIONS.user.displayName)).toBeInTheDocument();
+      expect(screen.queryByText(SESSIONS.approver.displayName)).not.toBeInTheDocument();
+    },
+    15000,
+  );
+
+  it.each([
+    {
+      resync: 'another caller',
+      answer: () => Promise.resolve(SESSIONS.administrator),
+      outcome: '/invalid-permissions',
+      user: SESSIONS.administrator,
+    },
+    {
+      resync: 'no session',
+      answer: () => Promise.reject(new ApiError(401, 'UNAUTHENTICATED', MESSAGES.UNAUTHENTICATED)),
+      outcome: '/login',
+      user: null,
+    },
+  ] as const)(
+    'ignores a late 401 of the earlier session once the check finds $resync',
+    async ({ answer, outcome, user }) => {
+      const auth: { current: AuthContextValue | null } = { current: null };
+      function Probe() {
+        auth.current = useAuth();
+        return null;
+      }
+      renderRoute('/reports', 'user', <Probe />);
+      expect(await screen.findByRole('heading', { name: 'Reports' }, { timeout: 3000 })).toBeInTheDocument();
+      expect(await screen.findByText('12/2024 EX', {}, { timeout: 3000 })).toBeInTheDocument();
+      const expired = vi.fn();
+      api.onSessionExpired(expired);
+
+      expireSession();
+      const answerStale = holdNextAnswer();
+      fireEvent.click(screen.getByRole('button', { name: 'Earnings' }));
+      switchSession('administrator');
+      vi.mocked(api.me).mockImplementationOnce(answer);
+      fireEvent.click(screen.getByRole('link', { name: 'Dashboard' }));
+      await expectLocation(outcome);
+      expect(
+        await screen.findByRole('heading', { name: DESTINATION_HEADINGS[outcome] }, { timeout: 3000 }),
+      ).toBeInTheDocument();
+
+      await release(answerStale);
+
+      const stale = vi.mocked(api.listReports).mock.calls.findIndex(([query]) => query.kind === 'earning');
+      expect(vi.mocked(api.listReports).mock.settledResults[stale]).toEqual({
+        type: 'rejected',
+        value: expect.objectContaining({ status: 401, code: 'UNAUTHENTICATED' }),
+      });
+      expect(expired).not.toHaveBeenCalled();
+      expect(screen.getByTestId('location').textContent).toBe(outcome);
+      expect(screen.getByRole('heading', { name: DESTINATION_HEADINGS[outcome] })).toBeInTheDocument();
+      expect(auth.current?.user ?? null).toEqual(user);
+    },
+    15000,
+  );
 });
 
 describe('logout', () => {
-  function held<T>() {
-    let resolve!: (value: T) => void;
-    let reject!: (reason: unknown) => void;
-    const promise = new Promise<T>((settleWith, failWith) => {
-      resolve = settleWith;
-      reject = failWith;
-    });
-    return { promise, resolve, reject };
-  }
-
   async function openReports(): Promise<void> {
     renderRoute('/reports', 'user');
     expect(await screen.findByRole('heading', { name: 'Reports' }, { timeout: 3000 })).toBeInTheDocument();
   }
-
-  async function signInAgain(): Promise<void> {
-    expect(await screen.findByRole('heading', { name: 'Login' }, { timeout: 3000 })).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText(/Username/), { target: { value: SESSIONS.user.username } });
-    fireEvent.change(screen.getByLabelText(/Password/), { target: { value: '123456' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Login' }));
-    await screen.findByRole('button', { name: 'Logout' }, { timeout: 3000 });
-  }
-
-  // Waits for every callback and render the released answer triggers before the test asserts.
-  async function release(answer: () => void): Promise<void> {
-    await act(async () => {
-      answer();
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
-  }
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
 
   it.each([
     { outcome: 'a double click', clicks: 2, answer: () => Promise.resolve() },
@@ -298,18 +567,6 @@ describe('logout', () => {
     },
     15000,
   );
-
-  function HistoryProbe({ go }: { go: string | number }) {
-    const navigate = useNavigate();
-    const { state } = useLocation();
-    const from = (state as { from?: unknown } | null)?.from;
-    return (
-      <>
-        <button onClick={() => (typeof go === 'number' ? navigate(go) : navigate(go))}>Visit</button>
-        <div data-testid="return-path">{typeof from === 'string' ? from : ''}</div>
-      </>
-    );
-  }
 
   it.each([
     { visit: 'Back', go: -1, path: '/reports/expense/12', heading: /^12\/2024 EX: London Trip/ },
@@ -429,111 +686,5 @@ describe('login return path', () => {
 
   it.each(['/reports', '/reports/expense/12', '/reports?kind=earning'])('keeps %s', (from) => {
     expect(safeRedirectTarget(from)).toBe(from);
-  });
-});
-
-describe('api.ts session expiry reporting', () => {
-  type Api = typeof import('../api/api');
-  let real: Api;
-  const unsubscribes: (() => void)[] = [];
-
-  const unauthenticated = { status: 401, code: 'UNAUTHENTICATED', message: MESSAGES.UNAUTHENTICATED };
-
-  function respond(status: number, body?: unknown): Response {
-    return new Response(body === undefined ? null : JSON.stringify(body), { status });
-  }
-
-  function stubFetch(answer: (url: string) => Response | Promise<Response>): void {
-    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => answer(String(input))));
-  }
-
-  function listen() {
-    const listener = vi.fn();
-    unsubscribes.push(real.onSessionExpired(listener));
-    return listener;
-  }
-
-  beforeAll(async () => {
-    real = await vi.importActual<Api>('../api/api');
-  });
-
-  afterEach(() => {
-    unsubscribes.splice(0).forEach((unsubscribe) => unsubscribe());
-    vi.unstubAllGlobals();
-  });
-
-  it('reports concurrent protected 401s once and rethrows each ApiError', async () => {
-    stubFetch(() => respond(401, unauthenticated));
-    const expired = listen();
-
-    const results = await Promise.allSettled([
-      real.listReports({ kind: 'expense' }),
-      real.reference(),
-      real.userDashboard(),
-    ]);
-
-    for (const result of results) {
-      const reason: unknown = result.status === 'rejected' ? result.reason : result;
-      expect(reason).toBeInstanceOf(ApiError);
-      expect(reason).toMatchObject(unauthenticated);
-    }
-    expect(expired).toHaveBeenCalledTimes(1);
-  });
-
-  it.each([
-    { probe: 'me', code: 'UNAUTHENTICATED', call: (api: Api) => api.me() },
-    {
-      probe: 'login',
-      code: 'BAD_CREDENTIALS',
-      call: (api: Api) => api.login({ username: SESSIONS.user.username, password: 'wrong', rememberMe: false }),
-    },
-    { probe: 'logout', code: 'UNAUTHENTICATED', call: (api: Api) => api.logout() },
-  ])('does not report a 401 from $probe', async ({ code, call }) => {
-    stubFetch(() => respond(401, { ...unauthenticated, code }));
-    const expired = listen();
-
-    await expect(call(real)).rejects.toMatchObject({ status: 401, code });
-    expect(expired).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    {
-      change: 'login',
-      answer: () => respond(200, SESSIONS.user),
-      act: (api: Api) => api.login({ username: SESSIONS.user.username, password: '123456', rememberMe: false }),
-    },
-    { change: 'logout', answer: () => respond(204), act: (api: Api) => api.logout() },
-  ])('ignores a 401 of a request started before $change', async ({ answer, act }) => {
-    let answerStale: (response: Response) => void = () => {};
-    stubFetch((url) => {
-      if (url.startsWith('/api/reports')) {
-        return new Promise<Response>((resolve) => {
-          answerStale = resolve;
-        });
-      }
-      return url.startsWith('/api/auth/') ? answer() : respond(401, unauthenticated);
-    });
-    const expired = listen();
-
-    const stale = real.listReports({ kind: 'expense' });
-    await act(real);
-    answerStale(respond(401, unauthenticated));
-
-    await expect(stale).rejects.toMatchObject(unauthenticated);
-    expect(expired).not.toHaveBeenCalled();
-
-    await expect(real.reference()).rejects.toMatchObject(unauthenticated);
-    expect(expired).toHaveBeenCalledTimes(1);
-  });
-
-  it('stops reporting to a listener once it unsubscribes', async () => {
-    stubFetch(() => respond(401, unauthenticated));
-    const kept = listen();
-    const dropped = vi.fn();
-    real.onSessionExpired(dropped)();
-
-    await expect(real.mileage(10)).rejects.toMatchObject(unauthenticated);
-    expect(kept).toHaveBeenCalledTimes(1);
-    expect(dropped).not.toHaveBeenCalled();
   });
 });

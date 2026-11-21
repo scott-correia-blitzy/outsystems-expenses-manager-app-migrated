@@ -5,5 +5,5 @@ export default defineConfig({
   plugins: [react()],
   build: { outDir: '../target/classes/static', emptyOutDir: true },
   server: { port: 5173, proxy: { '/api': 'http://localhost:8080' } },
-  test: { environment: 'jsdom', setupFiles: ['./src/test/setup.ts'] },
+  test: { environment: 'jsdom', setupFiles: ['./src/test/setup.ts'], mockReset: true },
 });

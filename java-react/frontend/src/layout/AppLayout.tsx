@@ -5,15 +5,19 @@ import {
   Box,
   Button,
   Container,
+  Divider,
   IconButton,
+  ListSubheader,
   Menu,
   MenuItem as MuiMenuItem,
   Stack,
   SvgIcon,
   Toolbar,
   Typography,
+  useMediaQuery,
 } from '@mui/material';
 import { Link as RouterLink, useLocation, useNavigate } from 'react-router';
+import type { SessionUser } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
 import { menuFor, PATHS, type MenuItem as NavItem } from '../routes';
 
@@ -31,6 +35,14 @@ function ChevronDown() {
   return (
     <SvgIcon fontSize="small">
       <path d="M7 10l5 5 5-5z" />
+    </SvgIcon>
+  );
+}
+
+function MenuIcon() {
+  return (
+    <SvgIcon>
+      <path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z" />
     </SvgIcon>
   );
 }
@@ -133,11 +145,103 @@ function NavEntry({ item, pathname }: { item: NavItem; pathname: string }) {
   );
 }
 
+function UserAvatar({ user }: { user: SessionUser }) {
+  return (
+    <Avatar
+      aria-hidden="true"
+      sx={{
+        flexShrink: 0,
+        width: (theme) => theme.spacing(4),
+        height: (theme) => theme.spacing(4),
+        typography: 'body2',
+      }}
+    >
+      {initials(user.displayName, user.username)}
+    </Avatar>
+  );
+}
+
+function CompactNav({ user, pathname }: { user: SessionUser; pathname: string }) {
+  const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
+  const buttonId = useId();
+  const menuId = useId();
+  const open = anchorEl !== null;
+  const close = () => setAnchorEl(null);
+
+  const linkItems = (item: NavItem) => {
+    if (item.path === undefined) {
+      return [];
+    }
+    const active = isActive(pathname, item.path);
+    return [
+      <MuiMenuItem
+        key={item.path}
+        component={RouterLink}
+        to={item.path}
+        selected={active}
+        aria-current={active ? 'page' : undefined}
+        onClick={close}
+      >
+        {item.label}
+      </MuiMenuItem>,
+    ];
+  };
+
+  return (
+    <Stack component="nav" aria-label="Main menu" direction="row" sx={{ flexShrink: 0 }}>
+      <IconButton
+        color="inherit"
+        edge="start"
+        id={buttonId}
+        aria-label="Menu"
+        aria-haspopup="true"
+        aria-controls={open ? menuId : undefined}
+        aria-expanded={open ? 'true' : undefined}
+        onClick={(event: MouseEvent<HTMLElement>) => setAnchorEl(event.currentTarget)}
+        sx={barFocusRing}
+      >
+        <MenuIcon />
+      </IconButton>
+      <Menu
+        id={menuId}
+        anchorEl={anchorEl}
+        open={open}
+        onClose={close}
+        slotProps={{ list: { 'aria-labelledby': buttonId } }}
+      >
+        {[
+          <ListSubheader key="user" role="none" disableSticky sx={{ py: 1 }}>
+            <Stack direction="row" spacing={1} useFlexGap alignItems="center">
+              <UserAvatar user={user} />
+              <Typography variant="body2" color="text.primary" sx={{ minWidth: 0, overflowWrap: 'anywhere' }}>
+                {user.displayName}
+              </Typography>
+            </Stack>
+          </ListSubheader>,
+          <Divider key="user-divider" component="li" />,
+          ...menuFor(user.roles).flatMap((item) =>
+            item.children === undefined
+              ? linkItems(item)
+              : [
+                  <ListSubheader key={item.label} role="none" disableSticky>
+                    {item.label}
+                  </ListSubheader>,
+                  ...item.children.flatMap(linkItems),
+                ],
+          ),
+        ]}
+      </Menu>
+    </Stack>
+  );
+}
+
 export function AppLayout({ children }: { children: ReactNode }) {
   const { user, logout } = useAuth();
   const { pathname } = useLocation();
   const navigate = useNavigate();
   const [loggingOut, setLoggingOut] = useState(false);
+  // Below md the full menu and user block no longer fit on one toolbar row.
+  const compact = useMediaQuery((theme) => theme.breakpoints.down('md'), { noSsr: true });
 
   const handleLogout = () => {
     setLoggingOut(true);
@@ -151,6 +255,19 @@ export function AppLayout({ children }: { children: ReactNode }) {
     });
   };
 
+  const logoutButton = (
+    <IconButton
+      color="inherit"
+      edge={compact ? 'end' : false}
+      aria-label="Logout"
+      onClick={handleLogout}
+      disabled={loggingOut}
+      sx={{ ...barFocusRing, flexShrink: 0 }}
+    >
+      <LogoutIcon />
+    </IconButton>
+  );
+
   return (
     <Stack sx={{ minHeight: '100vh' }}>
       <Button
@@ -162,24 +279,31 @@ export function AppLayout({ children }: { children: ReactNode }) {
           insetBlockStart: (theme) => theme.spacing(1),
           zIndex: 'tooltip',
           transform: 'translateY(-200%)',
-          '&:focus-visible': { transform: 'none' },
+          '&:focus-visible': { ...barFocusRing['&:focus-visible'], transform: 'none' },
         }}
       >
         Skip to main content
       </Button>
       <AppBar position="sticky" elevation={0}>
-        <Toolbar sx={{ gap: 2, flexWrap: 'wrap', py: 1 }}>
+        <Toolbar sx={{ gap: compact ? 1 : 2, flexWrap: compact ? 'nowrap' : 'wrap', py: 1 }}>
+          {user !== null && compact && <CompactNav user={user} pathname={pathname} />}
           <Typography
             variant="h6"
             component={RouterLink}
             to="/"
             color="inherit"
             noWrap
-            sx={{ ...barFocusRing, textDecoration: 'none', fontWeight: 'fontWeightBold' }}
+            sx={{
+              ...barFocusRing,
+              textDecoration: 'none',
+              fontWeight: 'fontWeightBold',
+              ...(compact && { flexGrow: 1, minWidth: 0 }),
+            }}
           >
             Expenses Manager V2
           </Typography>
-          {user !== null && (
+          {user !== null && compact && logoutButton}
+          {user !== null && !compact && (
             <>
               <Stack
                 component="nav"
@@ -200,29 +324,11 @@ export function AppLayout({ children }: { children: ReactNode }) {
                 alignItems="center"
                 sx={{ minWidth: 0, maxWidth: '100%' }}
               >
-                <Avatar
-                  aria-hidden="true"
-                  sx={{
-                    flexShrink: 0,
-                    width: (theme) => theme.spacing(4),
-                    height: (theme) => theme.spacing(4),
-                    typography: 'body2',
-                  }}
-                >
-                  {initials(user.displayName, user.username)}
-                </Avatar>
-                <Typography variant="body2" color="inherit" noWrap sx={{ minWidth: 0 }}>
+                <UserAvatar user={user} />
+                <Typography variant="body2" color="inherit" noWrap title={user.displayName} sx={{ minWidth: 0 }}>
                   {user.displayName}
                 </Typography>
-                <IconButton
-                  color="inherit"
-                  aria-label="Logout"
-                  onClick={handleLogout}
-                  disabled={loggingOut}
-                  sx={{ ...barFocusRing, flexShrink: 0 }}
-                >
-                  <LogoutIcon />
-                </IconButton>
+                {logoutButton}
               </Stack>
             </>
           )}

@@ -132,6 +132,7 @@ Every token lives in `frontend/src/theme/theme.ts`, mounted once through `ThemeP
 | `palette.text.primary` | `rgba(0, 0, 0, 0.85)` | `:root { --bds-color-text-primary }` |
 | `palette.text.secondary` | `#555555` | `:root { --bds-color-text-tertiary }` |
 | `palette.text.disabled` | `#767676` | `:root { --bds-color-text-disabled }` |
+| `palette.action.disabled` | `#767676` | `:root { --bds-color-text-disabled }`, reused so disabled controls match disabled text |
 | `palette.divider` | `#C6C6C6` | `:root { --bds-color-border-divider }` |
 | `palette.background.paper` | `#FFFFFF` | `:root { --bds-color-background-default }` |
 | `palette.background.default` | `#F8F8F8` | `:root { --bds-color-gray-25 }` |
@@ -140,9 +141,12 @@ Every token lives in `frontend/src/theme/theme.ts`, mounted once through `ThemeP
 | `palette.grey` 50, 100, 200, 300, 400, 500, 600, 700, 800, 900 | `#F1F1F1`, `#E2E2E2`, `#C6C6C6`, `#ABABAB`, `#919191`, `#767676`, `#5E5E5E`, `#474747`, `#303030`, `#1B1B1B` | `:root { --bds-color-gray-50 }` to `:root { --bds-color-gray-900 }` |
 | `typography.fontFamily` (body) | `"Lato", Helvetica, Arial, sans-serif` | `body{font-family:"Lato",Helvetica,Arial,sans-serif}` |
 | `typography.h1` to `typography.h6`, `typography.button` | `"MMSharpSans", Helvetica, Arial, sans-serif` | `.btn{font-family:"MMSharpSans",...}` and `h1,.h1,h2,.h2,...{font-family:"MMSharpSans",...}` |
+| `typography.button` `textTransform` | `'none'` | Not a bundle token: button and toggle labels keep the title case of `legacy/screenshots/` |
 | `shape.borderRadius` | `8` (px) | `:root { --bds-border-radius-large: 0.8rem }`; also `.alert{border-radius:.8rem}` |
 | `MuiButton` root `borderRadius` | `'9999rem'` (pill) | `:root { --bds-border-radius-full: 9999rem }`; `.btn{border-radius:9999rem}` |
 | `spacing` | `8` (px base) | `:root { --bds-space-xsmall: 0.8rem }` |
+
+The component overrides in `theme.ts` reuse these tokens: a 2px `primary.main` focus outline on buttons, toggles, menu items and accordion rows, `divider` row separators in tables, `grey.600` avatars with white initials, and white hover and disabled tints (from `nav.contrastText`) on the app bar controls.
 
 Enforcement: `frontend/src/test/noHardCodedColours.test.ts` fails on any hex, `rgb()`, `rgba()`, `hsl()` or `hsla()` literal in a `.ts` or `.tsx` file under `frontend/src` other than `theme.ts`, its own source included, and names each file and literal it finds.
 

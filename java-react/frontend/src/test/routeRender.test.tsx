@@ -24,6 +24,7 @@ import {
   MILEAGE_RESULT,
   REFERENCE,
   REPORT_DETAILS,
+  SESSIONS,
   USD_TO_EUR_RESULT,
   USER_DASHBOARD,
   type SessionCategory,
@@ -307,6 +308,79 @@ describe('in-app navigation', () => {
       await waitFor(() => expect(liveRegion().textContent).toBe('Login'));
       expect(screen.getByRole('textbox', { name: /Username/ })).toHaveFocus();
       expect(document.title).toBe(`Login - ${APP_NAME}`);
+    },
+    TEST_TIMEOUT,
+  );
+});
+
+type ScreenState = 'login' | 'app' | 'empty';
+
+// Only AppLayout's app bar renders a header; Login renders its main alone.
+function screenState(): ScreenState {
+  if (document.querySelector('main') === null) {
+    return 'empty';
+  }
+  return document.querySelector('header') === null ? 'login' : 'app';
+}
+
+function watchScreens(): { seen: ScreenState[]; stop: () => void } {
+  const seen: ScreenState[] = [screenState()];
+  const record = () => {
+    const state = screenState();
+    if (seen[seen.length - 1] !== state) {
+      seen.push(state);
+    }
+  };
+  const observer = new MutationObserver(record);
+  observer.observe(document.body, { childList: true, subtree: true });
+  return {
+    seen,
+    stop: () => {
+      if (observer.takeRecords().length > 0) {
+        record();
+      }
+      observer.disconnect();
+    },
+  };
+}
+
+type SessionSwapCase = { start: string; username: string; path: string; name: string | RegExp };
+
+const SESSION_SWAP_CASES: SessionSwapCase[] = [
+  { start: '/login', username: SESSIONS.user.username, path: '/dashboard', name: 'Dashboard' },
+  {
+    start: '/login',
+    username: SESSIONS.administrator.username,
+    path: '/admin',
+    name: 'Administrator Dashboard',
+  },
+  {
+    start: '/reports/expense/12',
+    username: SESSIONS.user.username,
+    path: '/reports/expense/12',
+    name: /^12\/2024 EX: London Trip/,
+  },
+];
+
+describe('session screen swaps', () => {
+  it.each(SESSION_SWAP_CASES)(
+    'signing in from $start as $username swaps Login for $path and logging out swaps back with no blank screen',
+    async ({ start, username, path, name }) => {
+      renderRoute(start, 'anonymous');
+      await arriveAt('/login', 'Login');
+      fireEvent.change(screen.getByLabelText(/Username/), { target: { value: username } });
+      fireEvent.change(screen.getByLabelText(/Password/), { target: { value: '123456' } });
+
+      const screens = watchScreens();
+      try {
+        fireEvent.click(screen.getByRole('button', { name: 'Login' }));
+        await arriveAt(path, name);
+        await clickControl(/log ?out/i);
+        await arriveAt('/login', 'Login');
+      } finally {
+        screens.stop();
+      }
+      expect(screens.seen).toEqual(['login', 'app', 'login']);
     },
     TEST_TIMEOUT,
   );

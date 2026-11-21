@@ -12,7 +12,8 @@ export function App() {
       <CssBaseline />
       <AuthProvider>
         <FeedbackProvider>
-          <BrowserRouter>
+          {/* Without transitions a navigation commits with the session change before it, so no guard paints a blank screen. */}
+          <BrowserRouter useTransitions={false}>
             <AppRoutes />
           </BrowserRouter>
         </FeedbackProvider>
