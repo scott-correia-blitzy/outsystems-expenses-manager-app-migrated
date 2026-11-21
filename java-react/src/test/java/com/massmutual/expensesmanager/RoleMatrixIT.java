@@ -2,6 +2,8 @@ package com.massmutual.expensesmanager;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.io.IOException;
+import java.io.InputStream;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
@@ -12,7 +14,9 @@ import java.util.Arrays;
 import java.util.Base64;
 import java.util.EnumMap;
 import java.util.EnumSet;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -21,6 +25,10 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import org.apache.catalina.Container;
+import org.apache.catalina.Context;
+import org.apache.catalina.Manager;
+import org.apache.catalina.Session;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
@@ -40,6 +48,8 @@ import org.springframework.boot.logging.LoggingSystem;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
+import org.springframework.boot.web.embedded.tomcat.TomcatWebServer;
+import org.springframework.boot.web.servlet.context.ServletWebServerApplicationContext;
 import org.springframework.core.env.Environment;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -56,19 +66,27 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.massmutual.expensesmanager.domain.AppUser;
 import com.massmutual.expensesmanager.domain.BlogPost;
+import com.massmutual.expensesmanager.domain.Earning;
 import com.massmutual.expensesmanager.domain.EarningReport;
 import com.massmutual.expensesmanager.domain.Expense;
 import com.massmutual.expensesmanager.domain.ExpenseReport;
+import com.massmutual.expensesmanager.domain.InvoiceEarning;
+import com.massmutual.expensesmanager.domain.InvoiceEntity;
 import com.massmutual.expensesmanager.domain.InvoiceExpense;
+import com.massmutual.expensesmanager.domain.LineEntity;
 import com.massmutual.expensesmanager.domain.ReferenceIds;
 import com.massmutual.expensesmanager.domain.ReportEntity;
 import com.massmutual.expensesmanager.domain.Role;
 import com.massmutual.expensesmanager.repository.AppUserRepository;
 import com.massmutual.expensesmanager.repository.BlogPostRepository;
 import com.massmutual.expensesmanager.repository.EarningReportRepository;
+import com.massmutual.expensesmanager.repository.EarningRepository;
 import com.massmutual.expensesmanager.repository.ExpenseReportRepository;
 import com.massmutual.expensesmanager.repository.ExpenseRepository;
+import com.massmutual.expensesmanager.repository.InvoiceEarningRepository;
 import com.massmutual.expensesmanager.repository.InvoiceExpenseRepository;
+import com.massmutual.expensesmanager.repository.LineRepository;
+import com.massmutual.expensesmanager.repository.ReportRepository;
 import com.massmutual.expensesmanager.service.ApiException;
 import com.massmutual.expensesmanager.service.LegacyMessages;
 import com.massmutual.expensesmanager.support.ApiClient;
@@ -86,6 +104,7 @@ class RoleMatrixIT {
     private static final String FIXTURE_PASSWORD = "matrix-fixture-pass";
     private static final String EXPENSE = "expense";
     private static final String EARNING = "earning";
+    private static final List<String> KINDS = List.of(EXPENSE, EARNING);
     private static final LocalDateTime FIXTURE_TIME = LocalDateTime.of(2024, 5, 1, 9, 0);
     private static final LocalDate LINE_DATE = LocalDate.of(2024, 5, 1);
     private static final String INVOICE_NAME = "invoice.png";
@@ -98,6 +117,7 @@ class RoleMatrixIT {
             List.of(Account.ANONYMOUS, Account.EM_USER1, Account.EM_ADMIN, Account.APPROVER);
     private static final String NULL_NAME_USERNAME = "nullname";
     private static final String BLANK_NAME_USERNAME = "blankname";
+    private static final String REGISTERED_ONLY_USERNAME = "registeredonly";
     private static final List<String> SPA_ROUTES = List.of(
             "/login", "/invalid-permissions", "/dashboard", "/reports", "/reports/expense/1", "/reports/earning/1",
             "/admin", "/admin/reports/expense/1", "/admin/reports/earning/1",
@@ -121,26 +141,15 @@ class RoleMatrixIT {
     private static final Map<Account, ApiClient> clients = new EnumMap<>(Account.class);
     private static final Map<Account, Long> userIds = new EnumMap<>(Account.class);
     private static final Map<Account, Map<String, Long>> ownDrafts = new EnumMap<>(Account.class);
+    // Every allowed call mutates a target of its own, so no case depends on another's outcome.
+    private static final Map<String, Targets> targets = new HashMap<>();
 
     private static int port;
     private static int nextCode = 100;
     private static ExpenseReportRepository expenseReports;
     private static EarningReportRepository earningReports;
     private static ExpenseRepository expenses;
-
-    // Every allowed call mutates a target of its own, so no case depends on another's outcome.
-    private static long protectedReportId;
-    private static long protectedLineId;
-    private static long renameReportId;
-    private static long submitReportId;
-    private static long deleteReportId;
-    private static long lineCreateReportId;
-    private static long lineUpdateLineId;
-    private static long lineDeleteLineId;
-    private static long uploadLineId;
-    private static long downloadLineId;
-    private static long adminDecisionReportId;
-    private static long userAdminDecisionReportId;
+    private static EarningRepository earnings;
     private static long blogPostId;
 
     enum Account {
@@ -178,6 +187,11 @@ class RoleMatrixIT {
         }
     }
 
+    record Targets(long protectedReport, long protectedLine, long renameReport, long submitReport, long deleteReport,
+            long lineCreateReport, long lineUpdateLine, long lineDeleteLine, long uploadLine, long downloadLine,
+            long adminDecisionReport, long userAdminDecisionReport) {
+    }
+
     @DynamicPropertySource
     static void database(DynamicPropertyRegistry registry) {
         TestDatabase.register(registry, () -> dir);
@@ -189,11 +203,13 @@ class RoleMatrixIT {
             @Autowired AppUserRepository appUsers, @Autowired ExpenseReportRepository expenseReportRepository,
             @Autowired EarningReportRepository earningReportRepository,
             @Autowired ExpenseRepository expenseRepository, @Autowired InvoiceExpenseRepository invoiceExpenses,
+            @Autowired EarningRepository earningRepository, @Autowired InvoiceEarningRepository invoiceEarnings,
             @Autowired BlogPostRepository blogPosts) {
         port = environment.getRequiredProperty("local.server.port", Integer.class);
         expenseReports = expenseReportRepository;
         earningReports = earningReportRepository;
         expenses = expenseRepository;
+        earnings = earningRepository;
 
         userIds.put(Account.EM_USER1, appUsers.findByUsername(Account.EM_USER1.username).orElseThrow().getId());
         userIds.put(Account.EM_ADMIN, appUsers.findByUsername(Account.EM_ADMIN.username).orElseThrow().getId());
@@ -209,30 +225,15 @@ class RoleMatrixIT {
                 Set.of(Role.User)));
         appUsers.save(new AppUser(BLANK_NAME_USERNAME, "   ", passwordEncoder.encode(FIXTURE_PASSWORD),
                 Set.of(Role.User)));
+        appUsers.save(new AppUser(REGISTERED_ONLY_USERNAME, "Registered only",
+                passwordEncoder.encode(FIXTURE_PASSWORD), Set.of()));
 
         long owner = userIds.get(Account.EM_USER1);
-        protectedReportId = expenseReport(owner, ReferenceIds.STATUS_DRAFT, "Protected");
-        protectedLineId = expenseLine(protectedReportId, owner);
-        renameReportId = expenseReport(owner, ReferenceIds.STATUS_DRAFT, "Rename target");
-        submitReportId = expenseReport(owner, ReferenceIds.STATUS_DRAFT, "Submit target");
-        expenseLine(submitReportId, owner);
-        deleteReportId = expenseReport(owner, ReferenceIds.STATUS_DRAFT, "Delete target");
-        lineCreateReportId = expenseReport(owner, ReferenceIds.STATUS_DRAFT, "Line create target");
-        lineUpdateLineId = expenseLine(expenseReport(owner, ReferenceIds.STATUS_DRAFT, "Line update target"), owner);
-        lineDeleteLineId = expenseLine(expenseReport(owner, ReferenceIds.STATUS_DRAFT, "Line delete target"), owner);
-        uploadLineId = expenseLine(expenseReport(owner, ReferenceIds.STATUS_DRAFT, "Upload target"), owner);
-        downloadLineId = expenseLine(expenseReport(owner, ReferenceIds.STATUS_DRAFT, "Download target"), owner);
-        adminDecisionReportId = expenseReport(owner, ReferenceIds.STATUS_SUBMITTED, "Admin decision target");
-        expenseLine(adminDecisionReportId, owner);
-        userAdminDecisionReportId = expenseReport(owner, ReferenceIds.STATUS_SUBMITTED, "User admin decision target");
-        expenseLine(userAdminDecisionReportId, owner);
-
-        InvoiceExpense invoice = new InvoiceExpense(downloadLineId);
-        invoice.setContent(PNG);
-        invoice.setFilename(INVOICE_NAME);
-        invoice.setFiletype(INVOICE_TYPE);
-        invoice.setDatetime(FIXTURE_TIME);
-        invoiceExpenses.save(invoice);
+        for (String kind : KINDS) {
+            targets.put(kind, provisionTargets(kind, owner));
+        }
+        invoiceExpenses.save(fixtureInvoice(new InvoiceExpense(targets.get(EXPENSE).downloadLine())));
+        invoiceEarnings.save(fixtureInvoice(new InvoiceEarning(targets.get(EARNING).downloadLine())));
 
         long adminId = userIds.get(Account.EM_ADMIN);
         BlogPost post = new BlogPost();
@@ -259,21 +260,23 @@ class RoleMatrixIT {
         clients.clear();
         userIds.clear();
         ownDrafts.clear();
+        targets.clear();
     }
 
     static Stream<Arguments> readCases() {
-        return Stream.of(
+        Stream<Arguments> kindReads = KINDS.stream().flatMap(kind -> Stream.of(
+                Arguments.of(get("/api/reports?kind=" + kind), 200, 200, 200),
+                Arguments.of(get(reportPath(kind, targets.get(kind).protectedReport())), 200, 200, 403),
+                Arguments.of(get(invoicePath(kind, targets.get(kind).downloadLine())), 200, 200, 403)));
+        return Stream.concat(Stream.of(
                 Arguments.of(get("/api/auth/me"), 200, 200, 200),
                 Arguments.of(get("/api/reference"), 200, 200, 200),
                 Arguments.of(get("/api/blog"), 200, 200, 200),
                 Arguments.of(get("/api/blog/" + blogPostId), 200, 200, 200),
-                Arguments.of(get("/api/reports?kind=expense"), 200, 200, 200),
                 Arguments.of(get("/api/tools/usd-to-eur?amount=100"), 200, 200, 200),
                 Arguments.of(get("/api/tools/mileage?km=10"), 200, 200, 200),
-                Arguments.of(get(reportPath(protectedReportId)), 200, 200, 403),
-                Arguments.of(get(invoicePath(downloadLineId)), 200, 200, 403),
                 Arguments.of(get("/api/dashboard/user"), 200, 403, 403),
-                Arguments.of(get("/api/dashboard/admin"), 403, 200, 403));
+                Arguments.of(get("/api/dashboard/admin"), 403, 200, 403)), kindReads);
     }
 
     @ParameterizedTest(name = "{0}")
@@ -287,85 +290,123 @@ class RoleMatrixIT {
     }
 
     static Stream<Arguments> writeCases() {
-        return Stream.of(
-                Arguments.of(createReport(), Account.EM_USER1, 201),
-                Arguments.of(renameReport(renameReportId), Account.EM_USER1, 200),
-                Arguments.of(submitReport(submitReportId), Account.EM_USER1, 200),
-                Arguments.of(deleteReport(deleteReportId), Account.EM_USER1, 204),
-                Arguments.of(createLine(lineCreateReportId), Account.EM_USER1, 201),
-                Arguments.of(updateLine(lineUpdateLineId), Account.EM_USER1, 200),
-                Arguments.of(deleteLine(lineDeleteLineId), Account.EM_USER1, 204),
-                Arguments.of(uploadInvoice(uploadLineId), Account.EM_USER1, 204),
-                Arguments.of(decide(adminDecisionReportId), Account.EM_ADMIN, 200),
-                Arguments.of(createPost(), Account.EM_ADMIN, 201),
-                Arguments.of(updatePost(blogPostId), Account.EM_ADMIN, 200));
+        Stream<Arguments> reportWrites = KINDS.stream().flatMap(kind -> {
+            Targets target = targets.get(kind);
+            return Stream.of(
+                    Arguments.of(createReport(kind), Account.EM_USER1, 201, summaryFields(kind, "Draft")),
+                    Arguments.of(renameReport(kind, target.renameReport()), Account.EM_USER1, 200,
+                            summaryFields(kind, "Draft")),
+                    Arguments.of(submitReport(kind, target.submitReport()), Account.EM_USER1, 200,
+                            summaryFields(kind, "Submitted")),
+                    Arguments.of(deleteReport(kind, target.deleteReport()), Account.EM_USER1, 204, Map.of()),
+                    Arguments.of(createLine(kind, target.lineCreateReport()), Account.EM_USER1, 201, lineFields(kind)),
+                    Arguments.of(updateLine(kind, target.lineUpdateLine()), Account.EM_USER1, 200, lineFields(kind)),
+                    Arguments.of(deleteLine(kind, target.lineDeleteLine()), Account.EM_USER1, 204, Map.of()),
+                    Arguments.of(uploadInvoice(kind, target.uploadLine()), Account.EM_USER1, 204, Map.of()),
+                    Arguments.of(decide(kind, target.adminDecisionReport()), Account.EM_ADMIN, 200,
+                            summaryFields(kind, "Approved")));
+        });
+        return Stream.concat(reportWrites, Stream.of(
+                Arguments.of(createPost(), Account.EM_ADMIN, 201, Map.of()),
+                Arguments.of(updatePost(blogPostId), Account.EM_ADMIN, 200, Map.of())));
     }
 
     @ParameterizedTest(name = "{0}")
     @MethodSource("writeCases")
     @DisplayName("Write endpoints deny every caller but the granted role")
-    void writeMatrix(Call call, Account allowed, int success) {
+    void writeMatrix(Call call, Account allowed, int success, Map<String, String> successFieldPatterns) {
         // Denied callers go first, so their status never depends on the allowed call having changed the target.
         for (Account caller : MATRIX_CALLERS) {
             if (caller != allowed) {
                 expect(caller, call, caller == Account.ANONYMOUS ? 401 : 403);
             }
         }
-        expect(allowed, call, success);
+        Response response = expect(allowed, call, success);
+        successFieldPatterns.forEach((field, pattern) ->
+                assertThat(response.json().path(field).asText()).as("%s %s", call, field).matches(pattern));
     }
 
-    static Stream<Call> protectedDraftWrites() {
-        return Stream.of(
-                renameReport(protectedReportId),
-                deleteReport(protectedReportId),
-                submitReport(protectedReportId),
-                createLine(protectedReportId),
-                updateLine(protectedLineId),
-                deleteLine(protectedLineId),
-                uploadInvoice(protectedLineId));
+    static Stream<Arguments> protectedDraftWrites() {
+        return KINDS.stream().flatMap(kind -> {
+            Targets target = targets.get(kind);
+            return Stream.of(
+                    renameReport(kind, target.protectedReport()),
+                    deleteReport(kind, target.protectedReport()),
+                    submitReport(kind, target.protectedReport()),
+                    createLine(kind, target.protectedReport()),
+                    updateLine(kind, target.protectedLine()),
+                    deleteLine(kind, target.protectedLine()),
+                    uploadInvoice(kind, target.protectedLine()))
+                    .map(call -> Arguments.of(kind, call));
+        });
+    }
+
+    @ParameterizedTest(name = "{1}")
+    @MethodSource("protectedDraftWrites")
+    @DisplayName("User plus Administrator cannot write another user's Draft")
+    void userAdministratorCannotWriteOthersDraft(String kind, Call call) {
+        expect(Account.USER_ADMIN, call, 403);
+
+        Targets target = targets.get(kind);
+        ReportEntity report = reportRepository(kind).findById(target.protectedReport()).orElseThrow();
+        assertThat(report.getStatusId()).isEqualTo(ReferenceIds.STATUS_DRAFT);
+        assertThat(report.getTitle()).isEqualTo("Protected");
+        assertThat(lineRepository(kind).findByReportId(target.protectedReport()))
+                .extracting(LineEntity::getId)
+                .containsExactly(target.protectedLine());
     }
 
     @ParameterizedTest(name = "{0}")
-    @MethodSource("protectedDraftWrites")
-    @DisplayName("User plus Administrator cannot write another user's Draft")
-    void userAdministratorCannotWriteOthersDraft(Call call) {
-        expect(Account.USER_ADMIN, call, 403);
-
-        ExpenseReport report = expenseReports.findById(protectedReportId).orElseThrow();
-        assertThat(report.getStatusId()).isEqualTo(ReferenceIds.STATUS_DRAFT);
-        assertThat(report.getTitle()).isEqualTo("Protected");
-        assertThat(expenses.findByReportId(protectedReportId))
-                .extracting(Expense::getId)
-                .containsExactly(protectedLineId);
-    }
-
-    @Test
+    @ValueSource(strings = {EXPENSE, EARNING})
     @DisplayName("User plus Administrator reads another user's Draft and decides a Submitted report")
-    void userAdministratorReadsAndDecides() {
-        expect(Account.USER_ADMIN, get(reportPath(protectedReportId)), 200);
-        Response decided = expect(Account.USER_ADMIN, decide(userAdminDecisionReportId), 200);
+    void userAdministratorReadsAndDecides(String kind) {
+        Targets target = targets.get(kind);
+        JsonNode detail = expect(Account.USER_ADMIN, get(reportPath(kind, target.protectedReport())), 200).json();
+        assertThat(detail.path("kind").asText()).isEqualTo(kind);
+        assertThat(detail.path("code").asText()).matches(codePattern(kind));
+        Response decided = expect(Account.USER_ADMIN, decide(kind, target.userAdminDecisionReport()), 200);
         assertThat(decided.json().path("status").asText()).isEqualTo("Approved");
     }
 
-    @Test
+    @ParameterizedTest(name = "{0} {1}")
+    @CsvSource({"expense, 7/2024 EX", "earning, 5/2024 EA"})
     @DisplayName("A User cannot read another user's report")
-    void userCannotReadOthersReport() {
-        long michaelsReport = expenseReports.findAll().stream()
-                .filter(report -> "7/2024 EX".equals(report.getCode()))
+    void userCannotReadOthersReport(String kind, String michaelsCode) {
+        long michaelsReport = reportRepository(kind).findAll().stream()
+                .filter(report -> michaelsCode.equals(report.getCode()))
                 .map(ReportEntity::getId)
                 .findFirst()
                 .orElseThrow();
-        expect(Account.EM_USER1, get(reportPath(michaelsReport)), 403);
+        expect(Account.EM_USER1, get(reportPath(kind, michaelsReport)), 403);
+    }
+
+    static Stream<Arguments> sessionUserCases() {
+        return Stream.of(
+                Arguments.of(Account.EM_USER1.username, Account.EM_USER1.password, "John Smith",
+                        List.of("User", "Registered"), "/dashboard"),
+                Arguments.of(Account.EM_ADMIN.username, Account.EM_ADMIN.password, "EM_Admin",
+                        List.of("Administrator", "Registered"), "/admin"),
+                Arguments.of(Account.APPROVER.username, Account.APPROVER.password, "Matrix approver",
+                        List.of("Approver", "Registered"), "/blog"),
+                Arguments.of(Account.USER_ADMIN.username, Account.USER_ADMIN.password, "Matrix useradmin",
+                        List.of("Administrator", "User", "Registered"), "/admin"),
+                Arguments.of(Account.USER_APPROVER.username, Account.USER_APPROVER.password, "Matrix userapprover",
+                        List.of("Approver", "User", "Registered"), "/dashboard"),
+                Arguments.of(REGISTERED_ONLY_USERNAME, FIXTURE_PASSWORD, "Registered only",
+                        List.of("Registered"), "/blog"));
     }
 
     @ParameterizedTest(name = "{0}")
-    @EnumSource(value = Account.class, mode = EnumSource.Mode.EXCLUDE, names = "ANONYMOUS")
-    @DisplayName("Login succeeds for every account")
-    void loginSucceeds(Account account) {
+    @MethodSource("sessionUserCases")
+    @DisplayName("Login and me return the stored roles plus Registered and the landing route they lead to")
+    void loginSucceeds(String username, String password, String displayName, List<String> roles,
+            String landingRoute) {
         try (ApiClient fresh = new ApiClient(port)) {
-            Response response = fresh.login(account.username, account.password);
-            assertThat(response.status()).as(response.toString()).isEqualTo(200);
-            assertThat(response.json().path("username").asText()).isEqualTo(account.username);
+            Response login = fresh.login(username, password);
+            Response me = fresh.me();
+            for (Response response : List.of(login, me)) {
+                assertSessionUser(response, username, displayName, roles, landingRoute);
+            }
         }
     }
 
@@ -377,14 +418,115 @@ class RoleMatrixIT {
             Response login = fresh.login(username, FIXTURE_PASSWORD);
             Response me = fresh.me();
             for (Response response : List.of(login, me)) {
-                assertThat(response.status()).as(response.toString()).isEqualTo(200);
-                JsonNode body = response.json();
-                assertThat(body.fieldNames()).toIterable()
-                        .containsExactlyInAnyOrder("username", "displayName", "roles", "landingRoute");
-                assertThat(body.path("username").textValue()).isEqualTo(username);
-                assertThat(body.path("displayName").textValue()).isEqualTo(username);
+                assertSessionUser(response, username, username, List.of("User", "Registered"), "/dashboard");
             }
         }
+    }
+
+    @ParameterizedTest(name = "{argumentsWithNames}")
+    @CsvSource({
+            ",      true,  2592000",
+            ",      false, 1200",
+            "true,  false, 1200",
+            "false, true,  2592000"})
+    @DisplayName("Login sets the session lifetime and sends an HttpOnly SameSite=Lax session cookie")
+    void loginSetsSessionLifetime(Boolean priorRememberMe, boolean rememberMe, int maxInactiveSeconds,
+            @Autowired ServletWebServerApplicationContext context) throws IOException {
+        Account account = Account.EM_USER1;
+        try (ApiClient client = new ApiClient(port)) {
+            String priorId = null;
+            if (priorRememberMe != null) {
+                assertStatus(account, "POST /api/auth/login",
+                        client.login(account.username, account.password, priorRememberMe), 200);
+                priorId = client.cookie(ApiClient.SESSION_COOKIE).orElseThrow();
+            }
+
+            Response login = assertStatus(account, "POST /api/auth/login",
+                    client.login(account.username, account.password, rememberMe), 200);
+            String sessionId = client.cookie(ApiClient.SESSION_COOKIE).orElseThrow();
+            assertThat(sessionId).isNotEqualTo(priorId);
+
+            List<String> cookies = sessionCookies(login);
+            assertThat(cookies).as(login.headerValues("Set-Cookie").toString()).isNotEmpty().allSatisfy(cookie -> {
+                assertThat(cookie).startsWith(ApiClient.SESSION_COOKIE + "=" + sessionId + ";");
+                assertThat(cookieAttributes(cookie))
+                        .containsEntry("path", "/")
+                        .containsEntry("httponly", "")
+                        .containsEntry("samesite", "Lax");
+            });
+            if (rememberMe) {
+                // A browser keeps the last cookie set under a name, so that one must carry the remembered lifetime.
+                assertThat(cookieAttributes(cookies.getLast()))
+                        .containsEntry("max-age", String.valueOf(maxInactiveSeconds));
+            } else {
+                assertThat(cookies).allSatisfy(
+                        cookie -> assertThat(cookieAttributes(cookie)).doesNotContainKeys("max-age", "expires"));
+            }
+
+            Session session = sessionManager(context).findSession(sessionId);
+            assertThat(session).as("server session %s", sessionId).isNotNull();
+            assertThat(session.getMaxInactiveInterval()).isEqualTo(maxInactiveSeconds);
+            assertStatus(account, "GET /api/auth/me", client.me(), 200);
+        }
+    }
+
+    @Test
+    @DisplayName("Signing in again replaces the session id, and the old id no longer authenticates")
+    void reauthenticationRotatesSessionId(@Autowired ServletWebServerApplicationContext context) throws IOException {
+        Account account = Account.EM_USER1;
+        try (ApiClient client = freshClient(account); ApiClient replay = new ApiClient(port)) {
+            String oldId = client.cookie(ApiClient.SESSION_COOKIE).orElseThrow();
+            assertStatus(account, "POST /api/auth/login", client.login(account.username, account.password), 200);
+            String newId = client.cookie(ApiClient.SESSION_COOKIE).orElseThrow();
+
+            assertThat(newId).isNotEqualTo(oldId);
+            Manager sessions = sessionManager(context);
+            assertThat(sessions.findSession(oldId)).isNull();
+            assertThat(sessions.findSession(newId)).isNotNull();
+            assertStatus(Account.ANONYMOUS, "GET /api/auth/me with the replaced session id",
+                    meWithSessionId(replay, oldId), 401);
+            Response current = assertStatus(account, "GET /api/auth/me with the current session id",
+                    meWithSessionId(replay, newId), 200);
+            assertThat(current.json().path("username").textValue()).isEqualTo(account.username);
+        }
+    }
+
+    private static void assertSessionUser(Response response, String username, String displayName, List<String> roles,
+            String landingRoute) {
+        assertThat(response.status()).as(response.toString()).isEqualTo(200);
+        JsonNode body = response.json();
+        assertThat(body.fieldNames()).toIterable()
+                .containsExactlyInAnyOrder("username", "displayName", "roles", "landingRoute");
+        assertThat(body.path("username").textValue()).isEqualTo(username);
+        assertThat(body.path("displayName").textValue()).isEqualTo(displayName);
+        assertThat(body.path("roles").isArray()).as(body.toString()).isTrue();
+        assertThat(body.path("roles")).extracting(JsonNode::textValue).containsExactlyInAnyOrderElementsOf(roles);
+        assertThat(body.path("landingRoute").textValue()).isEqualTo(landingRoute);
+    }
+
+    private static Manager sessionManager(ServletWebServerApplicationContext context) {
+        Container[] contexts = ((TomcatWebServer) context.getWebServer()).getTomcat().getHost().findChildren();
+        assertThat(contexts).hasSize(1);
+        return ((Context) contexts[0]).getManager();
+    }
+
+    private static Response meWithSessionId(ApiClient client, String sessionId) {
+        return client.sendWithoutCsrf("GET", "/api/auth/me", null,
+                Map.of("Cookie", ApiClient.SESSION_COOKIE + "=" + sessionId));
+    }
+
+    private static List<String> sessionCookies(Response response) {
+        return response.headerValues("Set-Cookie").stream()
+                .filter(cookie -> cookie.startsWith(ApiClient.SESSION_COOKIE + "="))
+                .toList();
+    }
+
+    private static Map<String, String> cookieAttributes(String setCookie) {
+        return Arrays.stream(setCookie.split(";"))
+                .skip(1)
+                .map(attribute -> attribute.trim().split("=", 2))
+                .collect(Collectors.toMap(pair -> pair[0].toLowerCase(Locale.ROOT),
+                        pair -> pair.length > 1 ? pair[1] : ""));
     }
 
     @Test
@@ -609,7 +751,7 @@ class RoleMatrixIT {
         String longDescription = "d".repeat(1500) + descriptionEnd;
         String malformedLogin = "{\"username\":\"%s\",\"password\":%s,\"rememberMe\":false}"
                 .formatted(Account.EM_USER1.username, password);
-        String linesPath = reportPath(lineCreateReportId) + "/lines";
+        String linesPath = reportPath(EXPENSE, targets.get(EXPENSE).lineCreateReport()) + "/lines";
 
         try (ApiClient anonymous = new ApiClient(port); ApiClient user = freshClient(Account.EM_USER1)) {
             String sessionId = user.cookie(ApiClient.SESSION_COOKIE).orElseThrow();
@@ -617,9 +759,9 @@ class RoleMatrixIT {
                 assertStatus(Account.ANONYMOUS, "POST /api/auth/login",
                         anonymous.postJson("/api/auth/login", malformedLogin), 422);
                 assertStatus(Account.EM_USER1, "POST " + linesPath,
-                        user.postJson(linesPath, lineBody().put("expenseTypeId", typeId)), 422);
+                        user.postJson(linesPath, lineBody(EXPENSE).put("expenseTypeId", typeId)), 422);
                 assertStatus(Account.EM_USER1, "POST " + linesPath,
-                        user.postJson(linesPath, lineBody().put("description", longDescription)), 422);
+                        user.postJson(linesPath, lineBody(EXPENSE).put("description", longDescription)), 422);
                 assertStatus(Account.EM_USER1, "POST /api/auth/logout", user.logout(), 204);
             });
 
@@ -703,11 +845,18 @@ class RoleMatrixIT {
     @ParameterizedTest(name = "{0} opens {1}")
     @MethodSource("deepLinkCases")
     @DisplayName("Every SPA route, and a direct visit to the error path, loads index.html")
-    void deepLink(Account account, String path) {
+    void deepLink(Account account, String path) throws IOException {
         Response response = client(account).get(path);
         assertThat(response.status()).as("%s as %s: %s", path, account, response).isEqualTo(200);
         assertThat(response.header("Content-Type")).startsWith("text/html");
-        assertThat(response.text()).contains("<title>Expenses Manager V2</title>");
+        assertThat(response.body()).as("body of GET %s as %s", path, account).isEqualTo(classpathIndexHtml());
+    }
+
+    private static byte[] classpathIndexHtml() throws IOException {
+        try (InputStream in = RoleMatrixIT.class.getResourceAsStream("/static/index.html")) {
+            assertThat(in).as("built SPA at classpath:/static/index.html").isNotNull();
+            return in.readAllBytes();
+        }
     }
 
     private static boolean visibleTo(Account account, ReportEntity report) {
@@ -781,38 +930,44 @@ class RoleMatrixIT {
         return new Call("GET " + path, c -> c.get(path));
     }
 
-    private static Call createReport() {
-        return new Call("POST /api/reports", c -> c.postJson("/api/reports", titleBody("Matrix").put("kind", EXPENSE)));
+    private static Call createReport(String kind) {
+        return new Call("POST /api/reports (" + kind + ")",
+                c -> c.postJson("/api/reports", titleBody("Matrix").put("kind", kind)));
     }
 
-    private static Call renameReport(long reportId) {
-        return new Call("PUT " + reportPath(reportId), c -> c.putJson(reportPath(reportId), titleBody("Renamed")));
+    private static Call renameReport(String kind, long reportId) {
+        String path = reportPath(kind, reportId);
+        return new Call("PUT " + path, c -> c.putJson(path, titleBody("Renamed")));
     }
 
-    private static Call submitReport(long reportId) {
-        return new Call("POST " + reportPath(reportId) + "/submit", c -> c.post(reportPath(reportId) + "/submit"));
+    private static Call submitReport(String kind, long reportId) {
+        String path = reportPath(kind, reportId) + "/submit";
+        return new Call("POST " + path, c -> c.post(path));
     }
 
-    private static Call deleteReport(long reportId) {
-        return new Call("DELETE " + reportPath(reportId), c -> c.delete(reportPath(reportId)));
+    private static Call deleteReport(String kind, long reportId) {
+        String path = reportPath(kind, reportId);
+        return new Call("DELETE " + path, c -> c.delete(path));
     }
 
-    private static Call decide(long reportId) {
-        String path = reportPath(reportId) + "/decision";
+    private static Call decide(String kind, long reportId) {
+        String path = reportPath(kind, reportId) + "/decision";
         return new Call("POST " + path, c -> c.postJson(path, ApiClient.object().put("accept", true)));
     }
 
-    private static Call createLine(long reportId) {
-        String path = reportPath(reportId) + "/lines";
-        return new Call("POST " + path, c -> c.postJson(path, lineBody()));
+    private static Call createLine(String kind, long reportId) {
+        String path = reportPath(kind, reportId) + "/lines";
+        return new Call("POST " + path, c -> c.postJson(path, lineBody(kind)));
     }
 
-    private static Call updateLine(long lineId) {
-        return new Call("PUT " + linePath(lineId), c -> c.putJson(linePath(lineId), lineBody()));
+    private static Call updateLine(String kind, long lineId) {
+        String path = linePath(kind, lineId);
+        return new Call("PUT " + path, c -> c.putJson(path, lineBody(kind)));
     }
 
-    private static Call deleteLine(long lineId) {
-        return new Call("DELETE " + linePath(lineId), c -> c.delete(linePath(lineId)));
+    private static Call deleteLine(String kind, long lineId) {
+        String path = linePath(kind, lineId);
+        return new Call("DELETE " + path, c -> c.delete(path));
     }
 
     private static Call createPost() {
@@ -824,9 +979,9 @@ class RoleMatrixIT {
         return new Call("PUT " + path, c -> c.putJson(path, blogBody()));
     }
 
-    private static Call uploadInvoice(long lineId) {
-        return new Call("PUT " + invoicePath(lineId),
-                c -> c.putFile(invoicePath(lineId), INVOICE_NAME, INVOICE_TYPE, PNG));
+    private static Call uploadInvoice(String kind, long lineId) {
+        String path = invoicePath(kind, lineId);
+        return new Call("PUT " + path, c -> c.putFile(path, INVOICE_NAME, INVOICE_TYPE, PNG));
     }
 
     private static List<Long> ids(JsonNode rows) {
@@ -836,16 +991,29 @@ class RoleMatrixIT {
         return ids;
     }
 
-    private static String reportPath(long reportId) {
-        return "/api/reports/expense/" + reportId;
+    private static String reportPath(String kind, long reportId) {
+        return "/api/reports/" + kind + "/" + reportId;
     }
 
-    private static String linePath(long lineId) {
-        return "/api/lines/expense/" + lineId;
+    private static String linePath(String kind, long lineId) {
+        return "/api/lines/" + kind + "/" + lineId;
     }
 
-    private static String invoicePath(long lineId) {
-        return linePath(lineId) + "/invoice";
+    private static String invoicePath(String kind, long lineId) {
+        return linePath(kind, lineId) + "/invoice";
+    }
+
+    // Ids repeat across the expense and earning tables, so the code suffix and type label show which kind answered.
+    private static Map<String, String> summaryFields(String kind, String status) {
+        return Map.of("code", codePattern(kind), "status", status);
+    }
+
+    private static Map<String, String> lineFields(String kind) {
+        return Map.of("typeLabel", EXPENSE.equals(kind) ? "Travel" : "Salary");
+    }
+
+    private static String codePattern(String kind) {
+        return "\\d+/\\d{4} " + (EXPENSE.equals(kind) ? "EX" : "EA");
     }
 
     private static ObjectNode titleBody(String title) {
@@ -856,14 +1024,66 @@ class RoleMatrixIT {
         return titleBody("Matrix post").put("description", "Body");
     }
 
-    private static ObjectNode lineBody() {
-        return ApiClient.object()
-                .put("expenseTypeId", ReferenceIds.EXPENSE_TYPE_TRAVEL)
+    private static ObjectNode lineBody(String kind) {
+        ObjectNode body = EXPENSE.equals(kind)
+                ? ApiClient.object().put("expenseTypeId", ReferenceIds.EXPENSE_TYPE_TRAVEL)
+                : ApiClient.object().put("earningTypeId", ReferenceIds.EARNING_TYPE_SALARY);
+        return body
                 .put("currencyId", ReferenceIds.CURRENCY_EURO)
                 .put("amount", new BigDecimal("10.00"))
                 .put("title", "Taxi")
                 .put("description", "")
                 .put("date", LINE_DATE.toString());
+    }
+
+    private static Targets provisionTargets(String kind, long ownerId) {
+        long protectedReport = report(kind, ownerId, ReferenceIds.STATUS_DRAFT, "Protected");
+        long submitReport = report(kind, ownerId, ReferenceIds.STATUS_DRAFT, "Submit target");
+        line(kind, submitReport, ownerId);
+        long adminDecisionReport = report(kind, ownerId, ReferenceIds.STATUS_SUBMITTED, "Admin decision target");
+        line(kind, adminDecisionReport, ownerId);
+        long userAdminDecisionReport =
+                report(kind, ownerId, ReferenceIds.STATUS_SUBMITTED, "User admin decision target");
+        line(kind, userAdminDecisionReport, ownerId);
+        return new Targets(
+                protectedReport,
+                line(kind, protectedReport, ownerId),
+                report(kind, ownerId, ReferenceIds.STATUS_DRAFT, "Rename target"),
+                submitReport,
+                report(kind, ownerId, ReferenceIds.STATUS_DRAFT, "Delete target"),
+                report(kind, ownerId, ReferenceIds.STATUS_DRAFT, "Line create target"),
+                line(kind, report(kind, ownerId, ReferenceIds.STATUS_DRAFT, "Line update target"), ownerId),
+                line(kind, report(kind, ownerId, ReferenceIds.STATUS_DRAFT, "Line delete target"), ownerId),
+                line(kind, report(kind, ownerId, ReferenceIds.STATUS_DRAFT, "Upload target"), ownerId),
+                line(kind, report(kind, ownerId, ReferenceIds.STATUS_DRAFT, "Download target"), ownerId),
+                adminDecisionReport,
+                userAdminDecisionReport);
+    }
+
+    private static <I extends InvoiceEntity> I fixtureInvoice(I invoice) {
+        invoice.setContent(PNG);
+        invoice.setFilename(INVOICE_NAME);
+        invoice.setFiletype(INVOICE_TYPE);
+        invoice.setDatetime(FIXTURE_TIME);
+        return invoice;
+    }
+
+    private static ReportRepository<? extends ReportEntity> reportRepository(String kind) {
+        return EXPENSE.equals(kind) ? expenseReports : earningReports;
+    }
+
+    private static LineRepository<? extends LineEntity> lineRepository(String kind) {
+        return EXPENSE.equals(kind) ? expenses : earnings;
+    }
+
+    private static long report(String kind, long ownerId, int statusId, String title) {
+        return EXPENSE.equals(kind)
+                ? expenseReport(ownerId, statusId, title)
+                : earningReport(ownerId, statusId, title);
+    }
+
+    private static long line(String kind, long reportId, long ownerId) {
+        return EXPENSE.equals(kind) ? expenseLine(reportId, ownerId) : earningLine(reportId, ownerId);
     }
 
     private static long expenseReport(long ownerId, int statusId, String title) {
@@ -895,10 +1115,21 @@ class RoleMatrixIT {
     }
 
     private static long expenseLine(long reportId, long ownerId) {
-        BigDecimal amount = new BigDecimal("25.0000");
         Expense line = new Expense();
+        stampLine(line, reportId, ReferenceIds.EXPENSE_TYPE_TRAVEL, ownerId);
+        return expenses.save(line).getId();
+    }
+
+    private static long earningLine(long reportId, long ownerId) {
+        Earning line = new Earning();
+        stampLine(line, reportId, ReferenceIds.EARNING_TYPE_SALARY, ownerId);
+        return earnings.save(line).getId();
+    }
+
+    private static void stampLine(LineEntity line, long reportId, int typeId, long ownerId) {
+        BigDecimal amount = new BigDecimal("25.0000");
         line.setReportId(reportId);
-        line.setTypeId(ReferenceIds.EXPENSE_TYPE_TRAVEL);
+        line.setTypeId(typeId);
         line.setDate(LINE_DATE);
         line.setTitle("Matrix line");
         line.setDescription("");
@@ -910,6 +1141,5 @@ class RoleMatrixIT {
         line.setUpdatedBy(ownerId);
         line.setUpdatedOn(FIXTURE_TIME);
         line.setIsActive(false);
-        return expenses.save(line).getId();
     }
 }
