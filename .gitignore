@@ -23,3 +23,7 @@ Thumbs.db
 # Note: legacy/project_files/*.oml and *.oap are deliberately NOT ignored here.
 # They are the original binaries and the repo exists partly to show them. They are
 # excluded from Blitzy ingestion instead, via .blitzyignore.
+
+java-react/data/
+target/
+node_modules/
