@@ -81,13 +81,21 @@ public final class ApiClient implements AutoCloseable {
 
     public static ApiClient loggedIn(int port, String username, String password) {
         ApiClient client = new ApiClient(port);
-        Response response = client.login(username, password);
-        if (response.status() != 200) {
-            client.close();
-            throw new IllegalStateException(
-                    "Login failed for " + username + ": HTTP " + response.status() + " " + response.text());
+        try {
+            Response response = client.login(username, password);
+            if (response.status() != 200) {
+                throw new IllegalStateException(
+                        "Login failed for " + username + ": HTTP " + response.status() + " " + response.text());
+            }
+            return client;
+        } catch (Throwable e) {
+            try {
+                client.close();
+            } catch (Throwable closeFailure) {
+                e.addSuppressed(closeFailure);
+            }
+            throw e;
         }
-        return client;
     }
 
     public String baseUrl() {
