@@ -74,8 +74,8 @@ public class SpaWebConfig implements WebMvcConfigurer {
 
         @RequestMapping("${server.error.path:/error}")
         void error(HttpServletRequest request, HttpServletResponse response) throws ServletException, IOException {
-            if (request.getAttribute(RequestDispatcher.ERROR_STATUS_CODE) instanceof Integer status) {
-                jsonSecurityHandlers.write(response, ErrorResponse.forStatus(status));
+            if (request.getAttribute(RequestDispatcher.ERROR_STATUS_CODE) instanceof Integer) {
+                jsonSecurityHandlers.write(response, jsonSecurityHandlers.errorDispatchBody(request));
                 return;
             }
             request.getRequestDispatcher("/" + INDEX_HTML).forward(request, response);

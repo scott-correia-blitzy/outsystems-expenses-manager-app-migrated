@@ -85,9 +85,7 @@ public class JsonSecurityHandlers implements AuthenticationEntryPoint, AccessDen
         log.debug("Firewall rejected a request ({} dispatch)", request.getDispatcherType());
         // A rejected error dispatch keeps the status of the error being reported.
         if (request.getDispatcherType() == DispatcherType.ERROR) {
-            respond(request, response, ErrorResponse.forStatus(
-                    request.getAttribute(RequestDispatcher.ERROR_STATUS_CODE) instanceof Integer status
-                            ? status : HttpStatus.INTERNAL_SERVER_ERROR.value()));
+            respond(request, response, errorDispatchBody(request));
             return;
         }
         reject(request, response);
@@ -145,6 +143,19 @@ public class JsonSecurityHandlers implements AuthenticationEntryPoint, AccessDen
     private static boolean isApiPath(String path) {
         return path.startsWith(API_PATH) && (path.length() == API_PATH.length()
                 || API_PATH_SEPARATORS.indexOf(path.charAt(API_PATH.length())) >= 0);
+    }
+
+    // Container errors never reach ApiExceptionHandler, so a 500 answered here needs its own log line.
+    ErrorResponse errorDispatchBody(HttpServletRequest request) {
+        int status = request.getAttribute(RequestDispatcher.ERROR_STATUS_CODE) instanceof Integer code
+                ? code : HttpStatus.INTERNAL_SERVER_ERROR.value();
+        ErrorResponse body = ErrorResponse.forStatus(status);
+        if (body.status() == HttpStatus.INTERNAL_SERVER_ERROR.value()) {
+            String uri = request.getAttribute(RequestDispatcher.ERROR_REQUEST_URI) instanceof String errorUri
+                    ? errorUri : request.getRequestURI();
+            log.warn("Container error {} on {} {} answered as 500", status, request.getMethod(), uri);
+        }
+        return body;
     }
 
     void write(HttpServletResponse response, ErrorResponse body) throws IOException {

@@ -514,10 +514,36 @@ class RoleMatrixIT {
         assertThat(response.header("Content-Type")).startsWith(MediaType.APPLICATION_JSON_VALUE);
         assertThat(response.as(ErrorResponse.class)).isEqualTo(INTERNAL_ERROR_BODY);
         assertThat(output.getAll().substring(logStart)).doesNotContain(marker);
-        List<String> handlerLines = handlerLogLines(output, logStart);
+        List<String> handlerLines = handlerLogLines(output, logStart, ApiExceptionHandler.class);
         assertThat(handlerLines).noneMatch(line -> line.contains("ERROR"));
         assertThat(handlerLines).anyMatch(line ->
                 line.contains("WARN") && line.contains(HttpMediaTypeNotAcceptableException.class.getName()));
+    }
+
+    @ParameterizedTest(name = "{0} {1}")
+    @CsvSource({"TRACE, /api/blog, X-Request-Marker, %s, 405", "GET, /reports, Range, bytes=%s, 416"})
+    @ExtendWith(OutputCaptureExtension.class)
+    @DisplayName("A container error without a contract code answers 500 and logs one WARN without request data")
+    void containerErrorIsLogged(String method, String path, String header, String valueTemplate, int containerStatus,
+            CapturedOutput output) {
+        String marker = "REQUEST_MARKER_" + UUID.randomUUID().toString().replace("-", "");
+        ApiClient user = client(Account.EM_USER1);
+        List<String> cookieValues = Stream.of(ApiClient.SESSION_COOKIE, ApiClient.CSRF_COOKIE)
+                .map(name -> user.cookie(name).orElseThrow())
+                .toList();
+        int logStart = output.getAll().length();
+
+        Response response = user.sendWithoutCsrf(method, path, null, Map.of(header, valueTemplate.formatted(marker)));
+
+        assertThat(response.status()).as(response.toString()).isEqualTo(500);
+        assertThat(response.header("Content-Type")).startsWith(MediaType.APPLICATION_JSON_VALUE);
+        assertThat(response.as(ErrorResponse.class)).isEqualTo(INTERNAL_ERROR_BODY);
+        assertThat(handlerLogLines(output, logStart, JsonSecurityHandlers.class)).singleElement()
+                .satisfies(line -> assertThat(line).contains("WARN",
+                        "Container error " + containerStatus + " on " + method + " " + path + " answered as 500"));
+        String logged = output.getAll().substring(logStart);
+        assertThat(logged).doesNotContain(marker);
+        assertThat(cookieValues).allSatisfy(value -> assertThat(logged).doesNotContain(value));
     }
 
     @Test
@@ -613,9 +639,9 @@ class RoleMatrixIT {
         return Objects.equals(report.getSubmitedBy(), userIds.get(account));
     }
 
-    private static List<String> handlerLogLines(CapturedOutput output, int logStart) {
+    private static List<String> handlerLogLines(CapturedOutput output, int logStart, Class<?> handler) {
         return output.getAll().substring(logStart).lines()
-                .filter(line -> line.contains(ApiExceptionHandler.class.getSimpleName()))
+                .filter(line -> line.contains(handler.getSimpleName()))
                 .toList();
     }
 
