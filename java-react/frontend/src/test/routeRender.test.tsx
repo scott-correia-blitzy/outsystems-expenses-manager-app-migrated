@@ -1,5 +1,5 @@
 import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as api from '../api/api';
 import {
   ApiError,
@@ -8,16 +8,20 @@ import {
   type Kind,
   type LineBody,
   type LineView,
+  type MileageResult,
+  type ReferenceData,
   type ReportDetail,
   type ReportListQuery,
   type ReportSummary,
   type StatusLabel,
   type UsdToEurResult,
 } from '../api/types';
+import { PATHS } from '../routes';
 import { theme } from '../theme/theme';
 import {
   ADMIN_EXPENSE_ROWS,
   EXPENSE_ROWS,
+  MILEAGE_RESULT,
   REFERENCE,
   REPORT_DETAILS,
   USD_TO_EUR_RESULT,
@@ -32,6 +36,16 @@ vi.mock('../api/api');
 beforeEach(() => {
   vi.resetAllMocks();
 });
+
+// jsdom has no layout, so it implements no scrolling either.
+const scrollIntoView = Element.prototype.scrollIntoView;
+beforeAll(() => {
+  Element.prototype.scrollIntoView = vi.fn();
+});
+afterAll(() => {
+  Element.prototype.scrollIntoView = scrollIntoView;
+});
+
 
 const FIND_TIMEOUT = 3000;
 const TEST_TIMEOUT = 15_000;
@@ -482,6 +496,26 @@ describe('narrow line list', () => {
   );
 });
 
+describe('blog search', () => {
+  it(
+    'uses the shared search field and queries by keyword',
+    async () => {
+      renderRoute('/blog', 'user');
+      expect(await heading('Blog')).toBeInTheDocument();
+      const search = screen.getByRole('searchbox', { name: 'Search' });
+      expect(search).toHaveAttribute('placeholder', 'Search');
+      expect(search.closest('.MuiFormControl-root')?.querySelector('label')).toBeNull();
+      expect(search.parentElement?.querySelector('.MuiInputAdornment-positionStart svg')).not.toBeNull();
+
+      fireEvent.change(search, { target: { value: 'Mileage' } });
+      await waitFor(() => expect(vi.mocked(api.listBlogPosts)).toHaveBeenLastCalledWith('Mileage'), {
+        timeout: FIND_TIMEOUT,
+      });
+    },
+    TEST_TIMEOUT,
+  );
+});
+
 async function fillField(label: string | RegExp, value: string): Promise<void> {
   fireEvent.change(await screen.findByLabelText(label, {}, { timeout: FIND_TIMEOUT }), { target: { value } });
 }
@@ -566,6 +600,332 @@ describe('server field errors', () => {
       expect(toast).not.toHaveTextContent(messages[1]);
       const helperId = screen.getByLabelText(label).getAttribute('aria-describedby') ?? '';
       expect(document.getElementById(helperId)?.textContent).toBe(messages.join('\n'));
+      expect(screen.getByLabelText(label)).toHaveFocus();
+    },
+    TEST_TIMEOUT,
+  );
+});
+
+async function defaultRateLoaded(): Promise<void> {
+  await waitFor(() => expect(screen.getByLabelText('Exchange Rate USD/EUR')).toHaveValue(REFERENCE.dollarsToEuros), {
+    timeout: FIND_TIMEOUT,
+  });
+}
+
+function submitButton(name: string): HTMLElement {
+  return screen.getByRole('button', { name });
+}
+
+type ValidationFocusCase = {
+  path: string;
+  category: SessionCategory;
+  name: string;
+  fill: () => Promise<void>;
+  submit: string;
+  focused: string | RegExp;
+};
+
+const VALIDATION_FOCUS_CASES: ValidationFocusCase[] = [
+  {
+    path: '/login',
+    category: 'anonymous',
+    name: 'Login',
+    fill: () => fillField(/^Username/, 'em_user1'),
+    submit: 'Login',
+    focused: /^Password/,
+  },
+  {
+    path: '/tools/usd-to-eur',
+    category: 'user',
+    name: 'USD/EUR Currency Converter',
+    fill: defaultRateLoaded,
+    submit: 'Convert',
+    focused: 'USD Amount',
+  },
+  {
+    path: '/tools/usd-to-eur',
+    category: 'user',
+    name: 'USD/EUR Currency Converter',
+    fill: async () => {
+      await defaultRateLoaded();
+      await fillField('USD Amount', '100');
+      await fillField('Exchange Rate USD/EUR', '0');
+    },
+    submit: 'Convert',
+    focused: 'Exchange Rate USD/EUR',
+  },
+  {
+    path: '/tools/mileage',
+    category: 'user',
+    name: 'Mileage Reimbursement',
+    fill: () => fillField('Mileage', '-5'),
+    submit: 'Convert',
+    focused: 'Mileage',
+  },
+  {
+    path: '/blog/posts/new',
+    category: 'administrator',
+    name: 'New Blog Post',
+    fill: async () => undefined,
+    submit: 'Save',
+    focused: /^Title/,
+  },
+  {
+    path: '/blog/posts/new',
+    category: 'administrator',
+    name: 'New Blog Post',
+    fill: async () => {
+      await fillField(/^Title/, 'Quarterly update');
+      await fillField('Description', 'x'.repeat(10_001));
+    },
+    submit: 'Save',
+    focused: 'Description',
+  },
+];
+
+describe('focus after a failed submit', () => {
+  it.each(VALIDATION_FOCUS_CASES)(
+    '$path focuses $focused when client validation fails',
+    async ({ path, category, name, fill, submit, focused }) => {
+      renderRoute(path, category);
+      expect(await heading(name)).toBeInTheDocument();
+      await fill();
+      const button = submitButton(submit);
+      button.focus();
+      fireEvent.click(button);
+
+      await waitFor(() => expect(screen.getByLabelText(focused)).toHaveFocus());
+      expect(screen.getByLabelText(focused)).toHaveAttribute('aria-invalid', 'true');
+    },
+    TEST_TIMEOUT,
+  );
+
+  it.each([
+    {
+      failure: 'a 401',
+      error: new ApiError(401, 'BAD_CREDENTIALS', MESSAGES.BAD_CREDENTIALS),
+      message: MESSAGES.BAD_CREDENTIALS,
+      focused: /^Password/,
+    },
+    {
+      failure: 'a network error',
+      error: new TypeError('Failed to fetch'),
+      message: MESSAGES.GENERIC_ERROR,
+      focused: /^Password/,
+    },
+    {
+      failure: 'a 422 on the username',
+      error: new ApiError(422, 'VALIDATION_FAILED', MESSAGES.MAX_LENGTH_50, [
+        { field: 'username', message: MESSAGES.MAX_LENGTH_50 },
+      ]),
+      message: MESSAGES.MAX_LENGTH_50,
+      focused: /^Username/,
+    },
+  ])(
+    'login focuses $focused after $failure',
+    async ({ error, message, focused }) => {
+      renderRoute('/login', 'anonymous');
+      expect(await heading('Login')).toBeInTheDocument();
+      vi.mocked(api.login).mockRejectedValueOnce(error);
+      await fillField(/^Username/, 'em_user1');
+      await fillField(/^Password/, 'wrong');
+      const button = submitButton('Login');
+      button.focus();
+      fireEvent.click(button);
+
+      expect(await screen.findByRole('alert', {}, { timeout: FIND_TIMEOUT })).toHaveTextContent(message);
+      await waitFor(() => expect(screen.getByLabelText(focused)).toHaveFocus());
+    },
+    TEST_TIMEOUT,
+  );
+});
+
+type RestoreFocusCase = {
+  path: string;
+  category: SessionCategory;
+  name: string;
+  fill: () => Promise<void>;
+  submit: string;
+  endpoint: typeof api.createBlogPost | typeof api.usdToEur | typeof api.mileage;
+  outcome: 'success' | 'a server error';
+};
+
+const USD_FILL = async () => {
+  await defaultRateLoaded();
+  await fillField('USD Amount', '100');
+};
+
+const RESTORE_FOCUS_CASES: RestoreFocusCase[] = [
+  {
+    path: '/tools/usd-to-eur',
+    category: 'user',
+    name: 'USD/EUR Currency Converter',
+    fill: USD_FILL,
+    submit: 'Convert',
+    endpoint: api.usdToEur,
+    outcome: 'success',
+  },
+  {
+    path: '/tools/usd-to-eur',
+    category: 'user',
+    name: 'USD/EUR Currency Converter',
+    fill: USD_FILL,
+    submit: 'Convert',
+    endpoint: api.usdToEur,
+    outcome: 'a server error',
+  },
+  {
+    path: '/tools/mileage',
+    category: 'user',
+    name: 'Mileage Reimbursement',
+    fill: () => fillField('Mileage', '10'),
+    submit: 'Convert',
+    endpoint: api.mileage,
+    outcome: 'success',
+  },
+  {
+    path: '/tools/mileage',
+    category: 'user',
+    name: 'Mileage Reimbursement',
+    fill: () => fillField('Mileage', '10'),
+    submit: 'Convert',
+    endpoint: api.mileage,
+    outcome: 'a server error',
+  },
+  {
+    path: '/blog/posts/new',
+    category: 'administrator',
+    name: 'New Blog Post',
+    fill: () => fillField(/^Title/, 'Quarterly update'),
+    submit: 'Save',
+    endpoint: api.createBlogPost,
+    outcome: 'a server error',
+  },
+];
+
+describe('focus after a request', () => {
+  // The browser blurs the disabled loading button, so each click starts with focus on body.
+  it.each(RESTORE_FOCUS_CASES)(
+    '$path returns focus to $submit after $outcome',
+    async ({ path, category, name, fill, submit, endpoint, outcome }) => {
+      renderRoute(path, category);
+      expect(await heading(name)).toBeInTheDocument();
+      if (outcome !== 'success') {
+        vi.mocked(endpoint).mockRejectedValueOnce(new ApiError(500, 'INTERNAL_ERROR', MESSAGES.GENERIC_ERROR));
+      }
+      await fill();
+      const button = submitButton(submit);
+      expect(document.body).toHaveFocus();
+      fireEvent.click(button);
+
+      await waitFor(() => expect(button).toHaveFocus(), { timeout: FIND_TIMEOUT });
+      if (outcome !== 'success') {
+        expect(screen.getByRole('alert')).toHaveTextContent(MESSAGES.GENERIC_ERROR);
+      }
+    },
+    TEST_TIMEOUT,
+  );
+
+  it(
+    'leaves focus in Mileage when the user edits it during a conversion',
+    async () => {
+      renderRoute('/tools/mileage', 'user');
+      expect(await heading('Mileage Reimbursement')).toBeInTheDocument();
+      let resolve: (result: MileageResult) => void = () => undefined;
+      vi.mocked(api.mileage).mockReturnValueOnce(new Promise<MileageResult>((done) => (resolve = done)));
+      await fillField('Mileage', '10');
+      fireEvent.click(submitButton('Convert'));
+      await waitFor(() => expect(submitButton('Convert')).toBeDisabled());
+
+      const field = screen.getByLabelText('Mileage');
+      field.focus();
+      fireEvent.change(field, { target: { value: '12' } });
+      await waitFor(() => expect(submitButton('Convert')).toBeEnabled());
+      await act(async () => resolve(MILEAGE_RESULT));
+
+      expect(field).toHaveFocus();
+      expect(screen.getByLabelText('Result in EUR')).toHaveValue('');
+    },
+    TEST_TIMEOUT,
+  );
+});
+
+function setBadInput(field: HTMLElement, badInput: boolean): void {
+  Object.defineProperty(field, 'validity', { configurable: true, value: { badInput } });
+  fireEvent.input(field);
+}
+
+describe('number fields with unparsable text', () => {
+  it.each([
+    { path: '/tools/usd-to-eur', name: 'USD/EUR Currency Converter', label: 'USD Amount' },
+    { path: '/tools/usd-to-eur', name: 'USD/EUR Currency Converter', label: 'Exchange Rate USD/EUR' },
+    { path: '/tools/mileage', name: 'Mileage Reimbursement', label: 'Mileage' },
+  ])(
+    '$path keeps the $label label raised while its text is unparsable',
+    async ({ path, name, label }) => {
+      renderRoute(path, 'user');
+      expect(await heading(name)).toBeInTheDocument();
+      if (path === '/tools/usd-to-eur') {
+        await defaultRateLoaded();
+      }
+      const field = screen.getByLabelText(label);
+      fireEvent.change(field, { target: { value: '' } });
+      const fieldLabel = document.querySelector(`label[for="${field.id}"]`);
+      const legend = field.parentElement?.querySelector('legend');
+      const notchWidth = () => (legend ? getComputedStyle(legend).maxWidth : null);
+      expect(fieldLabel).toHaveAttribute('data-shrink', 'false');
+      expect(notchWidth()).toBe('0.01px');
+
+      setBadInput(field, true);
+      await waitFor(() => expect(fieldLabel).toHaveAttribute('data-shrink', 'true'));
+      expect(field).toHaveValue(null);
+      expect(notchWidth()).toBe('100%');
+
+      setBadInput(field, false);
+      await waitFor(() => expect(fieldLabel).toHaveAttribute('data-shrink', 'false'));
+      expect(notchWidth()).toBe('0.01px');
+    },
+    TEST_TIMEOUT,
+  );
+});
+
+describe('converter default rate', () => {
+  it.each([
+    { outcome: 'loads', rate: REFERENCE.dollarsToEuros, toast: null },
+    { outcome: 'fails', rate: null, toast: MESSAGES.GENERIC_ERROR },
+  ])(
+    'disables the rate and Convert until the default rate $outcome',
+    async ({ outcome, rate, toast }) => {
+      renderRoute('/tools/usd-to-eur', 'user');
+      let settle: { resolve: (data: ReferenceData) => void; reject: (err: unknown) => void } | null = null;
+      vi.mocked(api.reference).mockReturnValueOnce(
+        new Promise<ReferenceData>((resolve, reject) => (settle = { resolve, reject })),
+      );
+      expect(await heading('USD/EUR Currency Converter')).toBeInTheDocument();
+      const rateField = screen.getByLabelText('Exchange Rate USD/EUR');
+      const loadingRate = { name: 'Loading exchange rate' };
+      expect(screen.getByRole('progressbar', loadingRate)).toBeInTheDocument();
+      expect(rateField).toBeDisabled();
+      expect(rateField).toHaveValue(null);
+      expect(submitButton('Convert')).toBeDisabled();
+
+      await act(async () => {
+        if (outcome === 'loads') {
+          settle?.resolve(REFERENCE);
+        } else {
+          settle?.reject(new ApiError(500, 'INTERNAL_ERROR', MESSAGES.GENERIC_ERROR));
+        }
+      });
+
+      expect(screen.queryByRole('progressbar', loadingRate)).toBeNull();
+      expect(rateField).toBeEnabled();
+      expect(rateField).toHaveValue(rate);
+      expect(submitButton('Convert')).toBeEnabled();
+      if (toast === null) {
+        expect(screen.queryByRole('alert')).toBeNull();
+      } else {
+        expect(screen.getByRole('alert')).toHaveTextContent(toast);
+      }
     },
     TEST_TIMEOUT,
   );
@@ -892,11 +1252,11 @@ const LINE_CASES: LineCase[] = [
 ];
 
 const UPLOAD_CASES = [
-  { outcome: 'accepted', failure: null, message: 'Expense was added' },
+  { outcome: 'accepted', failure: null, fileError: null },
   {
     outcome: 'rejected',
     failure: new ApiError(415, 'UNSUPPORTED_MEDIA_TYPE', MESSAGES.FILE_TYPE_NOT_SUPPORTED),
-    message: MESSAGES.FILE_TYPE_NOT_SUPPORTED,
+    fileError: MESSAGES.FILE_TYPE_NOT_SUPPORTED,
   },
 ];
 
@@ -978,7 +1338,7 @@ describe('line forms', () => {
 
   it.each(UPLOAD_CASES)(
     'uploads the invoice to the saved line and reloads it when the file is $outcome',
-    async ({ failure, message }) => {
+    async ({ failure, fileError }) => {
       renderRoute('/reports/expense/12', 'user');
       expect(await heading(LONDON_TRIP)).toBeInTheDocument();
       vi.mocked(api.createLine).mockResolvedValueOnce({ ...REPORT_DETAILS['expense/12'].lines[0], id: 777 });
@@ -998,11 +1358,16 @@ describe('line forms', () => {
       expect(within(dialog).getByText('Selected file: receipt.pdf')).toBeInTheDocument();
       press(dialog, 'Save');
 
-      await toast(message);
-      expect(alertTexts()).toEqual([message]);
+      await toast('Expense was added');
+      expect(alertTexts()).toEqual(['Expense was added']);
       expect(api.uploadInvoice).toHaveBeenCalledExactlyOnceWith('expense', 777, invoice);
-      await dialogClosed();
       await waitFor(() => expect(api.getReport).toHaveBeenCalledTimes(2), { timeout: FIND_TIMEOUT });
+      if (fileError === null) {
+        await dialogClosed();
+      } else {
+        expect(dialog).toHaveAccessibleName('Edit Details');
+        expect(within(dialog).getByText(fileError)).toBeInTheDocument();
+      }
     },
     TEST_TIMEOUT,
   );
@@ -1152,8 +1517,8 @@ describe('report actions', () => {
       expect(await toast(MESSAGES.DETAIL_CANT_BE_DELETED)).toBeInTheDocument();
       expect(api.deleteLine).toHaveBeenCalledExactlyOnceWith('expense', 121);
       await dialogClosed();
+      await waitFor(() => expect(api.getReport).toHaveBeenCalledTimes(2), { timeout: FIND_TIMEOUT });
       expect(lineRow(table, 'Flight tickets')).toHaveTextContent('€ 42,00');
-      expect(api.getReport).toHaveBeenCalledTimes(1);
     },
     TEST_TIMEOUT,
   );
@@ -1881,6 +2246,566 @@ describe('new report dialog', () => {
       await arriveAt('/reports/expense/13', /^13\/2024 EX: Double Create/);
       expect(api.createReport).toHaveBeenCalledTimes(1);
       expect(api.createReport).toHaveBeenCalledWith({ kind: 'expense', title: 'Double Create' });
+    },
+    TEST_TIMEOUT,
+  );
+});
+
+const OWNER_REPORT = '/reports/expense/12';
+const OWNER_HEADING = /^12\/2024 EX: London Trip/;
+const ADMIN_REPORT = '/admin/reports/expense/7';
+const ADMIN_HEADING = /^7\/2024 EX: Household Expenses/;
+
+async function button(name: string | RegExp): Promise<HTMLElement> {
+  return screen.findByRole('button', { name }, { timeout: FIND_TIMEOUT });
+}
+
+async function fillNewExpense(): Promise<void> {
+  await clickControl('Add Expense');
+  fireEvent.mouseDown(await screen.findByRole('combobox', { name: /Expense Type/ }, { timeout: FIND_TIMEOUT }));
+  fireEvent.click(await screen.findByRole('option', { name: 'Restaurant' }, { timeout: FIND_TIMEOUT }));
+  await fillField(/^Title/, 'Taxi');
+  await fillField(/^Amount/, '15');
+}
+
+function chooseInvoice(name: string, type: string): void {
+  const input = document.querySelector<HTMLInputElement>('input[type="file"]');
+  if (input === null) {
+    throw new Error('The line form has no file input');
+  }
+  fireEvent.change(input, { target: { files: [new File(['invoice'], name, { type })] } });
+}
+
+function helperText(control: HTMLElement): string | null | undefined {
+  return document.getElementById(control.getAttribute('aria-describedby') ?? '')?.textContent;
+}
+
+// One act scope keeps React from re-rendering between the clicks, as when both land in one browser task.
+function clickInOneTask(first: HTMLElement, second: HTMLElement): void {
+  act(() => {
+    fireEvent.click(first);
+    fireEvent.click(second);
+  });
+}
+
+type DoubleClickCase = {
+  action: string;
+  path: string;
+  category: SessionCategory;
+  name: RegExp;
+  prepare?: () => Promise<void>;
+  clicks: [string, string];
+  endpoint:
+    | typeof api.createLine
+    | typeof api.submitReport
+    | typeof api.decideReport
+    | typeof api.deleteLine
+    | typeof api.deleteReport;
+  args: unknown[];
+  done: string;
+};
+
+const DOUBLE_CLICK_CASES: DoubleClickCase[] = [
+  {
+    action: 'Save twice on a new line',
+    path: OWNER_REPORT,
+    category: 'user',
+    name: OWNER_HEADING,
+    prepare: fillNewExpense,
+    clicks: ['Save', 'Save'],
+    endpoint: api.createLine,
+    args: ['expense', 12, expect.objectContaining({ title: 'Taxi', amount: 15 })],
+    done: 'Expense was added',
+  },
+  {
+    action: 'Submit Report twice',
+    path: OWNER_REPORT,
+    category: 'user',
+    name: OWNER_HEADING,
+    clicks: ['Submit Report', 'Submit Report'],
+    endpoint: api.submitReport,
+    args: ['expense', 12],
+    done: 'Expense report was submitted',
+  },
+  {
+    action: 'Yes, delete it twice on a line',
+    path: OWNER_REPORT,
+    category: 'user',
+    name: OWNER_HEADING,
+    prepare: () => clickControl('Delete'),
+    clicks: ['Yes, delete it', 'Yes, delete it'],
+    endpoint: api.deleteLine,
+    args: ['expense', 121],
+    done: 'Expense was deleted',
+  },
+  {
+    action: 'Yes, delete it twice on a report',
+    path: OWNER_REPORT,
+    category: 'user',
+    name: OWNER_HEADING,
+    prepare: () => clickControl('Delete Report'),
+    clicks: ['Yes, delete it', 'Yes, delete it'],
+    endpoint: api.deleteReport,
+    args: ['expense', 12],
+    done: 'Expense report was deleted',
+  },
+  {
+    action: 'Approve Report twice',
+    path: ADMIN_REPORT,
+    category: 'administrator',
+    name: ADMIN_HEADING,
+    clicks: ['Approve Report', 'Approve Report'],
+    endpoint: api.decideReport,
+    args: ['expense', 7, true],
+    done: 'Expense report was approved',
+  },
+  {
+    action: 'Decline Report twice',
+    path: ADMIN_REPORT,
+    category: 'administrator',
+    name: ADMIN_HEADING,
+    clicks: ['Decline Report', 'Decline Report'],
+    endpoint: api.decideReport,
+    args: ['expense', 7, false],
+    done: 'Expense report was declined',
+  },
+  {
+    action: 'Approve then Decline Report',
+    path: ADMIN_REPORT,
+    category: 'administrator',
+    name: ADMIN_HEADING,
+    clicks: ['Approve Report', 'Decline Report'],
+    endpoint: api.decideReport,
+    args: ['expense', 7, true],
+    done: 'Expense report was approved',
+  },
+];
+
+type ConflictCase = {
+  action: string;
+  prepare?: () => Promise<void>;
+  send: string;
+  endpoint:
+    | typeof api.submitReport
+    | typeof api.deleteReport
+    | typeof api.deleteLine
+    | typeof api.createLine
+    | typeof api.uploadInvoice;
+  message: string;
+};
+
+const CONFLICT_CASES: ConflictCase[] = [
+  { action: 'Submit Report', send: 'Submit Report', endpoint: api.submitReport, message: MESSAGES.CANNOT_SUBMIT },
+  {
+    action: 'Delete Report',
+    prepare: () => clickControl('Delete Report'),
+    send: 'Yes, delete it',
+    endpoint: api.deleteReport,
+    message: MESSAGES.REPORT_CANT_BE_DELETED,
+  },
+  {
+    action: 'a line delete',
+    prepare: () => clickControl('Delete'),
+    send: 'Yes, delete it',
+    endpoint: api.deleteLine,
+    message: MESSAGES.DETAIL_CANT_BE_DELETED,
+  },
+  {
+    action: 'a line save',
+    prepare: fillNewExpense,
+    send: 'Save',
+    endpoint: api.createLine,
+    message: MESSAGES.NOT_DRAFT,
+  },
+  {
+    action: 'an invoice upload',
+    prepare: async () => {
+      await fillNewExpense();
+      chooseInvoice('invoice.pdf', 'application/pdf');
+    },
+    send: 'Save',
+    endpoint: api.uploadInvoice,
+    message: MESSAGES.NOT_DRAFT,
+  },
+];
+
+const SERVER_FAILURE = new ApiError(500, 'INTERNAL_ERROR', MESSAGES.INTERNAL_ERROR);
+
+// Browsers move focus to the body when the focused button turns disabled; jsdom leaves it in place.
+function clickAndLoseFocus(control: HTMLElement): void {
+  control.focus();
+  fireEvent.click(control);
+  expect(control).toBeDisabled();
+  control.blur();
+}
+
+type ActionFocusCase = {
+  outcome: string;
+  path: string;
+  category: SessionCategory;
+  name: RegExp;
+  trigger: string;
+  endpoint: typeof api.submitReport | typeof api.decideReport;
+  rejection?: ApiError;
+};
+
+const ACTION_FOCUS_CASES: ActionFocusCase[] = [
+  {
+    outcome: 'a rejected Submit Report',
+    path: OWNER_REPORT,
+    category: 'user',
+    name: OWNER_HEADING,
+    trigger: 'Submit Report',
+    endpoint: api.submitReport,
+    rejection: new ApiError(422, 'NO_LINES', MESSAGES.NO_LINES),
+  },
+  {
+    outcome: 'a rejected Approve Report',
+    path: ADMIN_REPORT,
+    category: 'administrator',
+    name: ADMIN_HEADING,
+    trigger: 'Approve Report',
+    endpoint: api.decideReport,
+    rejection: SERVER_FAILURE,
+  },
+  {
+    outcome: 'a rejected Decline Report',
+    path: ADMIN_REPORT,
+    category: 'administrator',
+    name: ADMIN_HEADING,
+    trigger: 'Decline Report',
+    endpoint: api.decideReport,
+    rejection: SERVER_FAILURE,
+  },
+  {
+    outcome: 'a successful Submit Report',
+    path: OWNER_REPORT,
+    category: 'user',
+    name: OWNER_HEADING,
+    trigger: 'Submit Report',
+    endpoint: api.submitReport,
+  },
+  {
+    outcome: 'a successful Approve Report',
+    path: ADMIN_REPORT,
+    category: 'administrator',
+    name: ADMIN_HEADING,
+    trigger: 'Approve Report',
+    endpoint: api.decideReport,
+  },
+];
+
+type DecisionFocusCase = {
+  outcome: string;
+  filter?: string;
+  arrange: () => void;
+  meanwhile?: () => void;
+  focused: () => HTMLElement;
+};
+
+const DECISION_FOCUS_CASES: DecisionFocusCase[] = [
+  {
+    outcome: 'a failure refocuses Approve',
+    arrange: () => vi.mocked(api.decideReport).mockRejectedValueOnce(SERVER_FAILURE),
+    focused: () => screen.getByRole('button', { name: 'Approve' }),
+  },
+  {
+    outcome: 'a success focuses View Report Details',
+    arrange: () => undefined,
+    focused: () => screen.getByRole('button', { name: 'View Report Details' }),
+  },
+  {
+    outcome: 'a success off-filter focuses Search',
+    filter: 'Submited',
+    arrange: () =>
+      vi
+        .mocked(api.listReports)
+        .mockResolvedValueOnce(ADMIN_EXPENSE_ROWS.filter((row) => row.status === 'Submitted' && row.id !== 7)),
+    focused: () => screen.getByRole('textbox', { name: 'Search by title' }),
+  },
+  {
+    outcome: 'a failure keeps focus moved meanwhile',
+    arrange: () => vi.mocked(api.decideReport).mockRejectedValueOnce(SERVER_FAILURE),
+    meanwhile: () => screen.getByRole('button', { name: 'View Report Details' }).focus(),
+    focused: () => screen.getByRole('button', { name: 'View Report Details' }),
+  },
+];
+
+// Holds the next report load, so the closing dialog returns focus before the reload settles, as over a network.
+function holdNextReport(detail: ReportDetail): () => void {
+  let release = () => {};
+  const held = new Promise<ReportDetail>((resolve) => {
+    release = () => resolve(detail);
+  });
+  vi.mocked(api.getReport).mockReturnValueOnce(held);
+  return release;
+}
+
+const SUBMITTED_OWNER_REPORT: ReportDetail = { ...REPORT_DETAILS['expense/12'], status: 'Submitted' };
+
+type DialogFocusCase = {
+  outcome: string;
+  opener: string;
+  prepare: () => Promise<void>;
+  send: string;
+  endpoint: typeof api.deleteLine | typeof api.deleteReport | typeof api.createLine | typeof api.uploadInvoice;
+  rejection?: ApiError;
+  reloaded: ReportDetail;
+  focus: 'page heading' | 'opener';
+};
+
+const DIALOG_FOCUS_CASES: DialogFocusCase[] = [
+  {
+    outcome: 'a successful line delete',
+    opener: 'Delete',
+    prepare: () => clickControl('Delete'),
+    send: 'Yes, delete it',
+    endpoint: api.deleteLine,
+    reloaded: { ...REPORT_DETAILS['expense/12'], lines: [] },
+    focus: 'page heading',
+  },
+  {
+    outcome: 'a 409 on Delete Report',
+    opener: 'Delete Report',
+    prepare: () => clickControl('Delete Report'),
+    send: 'Yes, delete it',
+    endpoint: api.deleteReport,
+    rejection: new ApiError(409, 'NOT_DRAFT', MESSAGES.REPORT_CANT_BE_DELETED),
+    reloaded: SUBMITTED_OWNER_REPORT,
+    focus: 'page heading',
+  },
+  {
+    outcome: 'a 409 on a line delete',
+    opener: 'Delete',
+    prepare: () => clickControl('Delete'),
+    send: 'Yes, delete it',
+    endpoint: api.deleteLine,
+    rejection: new ApiError(409, 'NOT_DRAFT', MESSAGES.DETAIL_CANT_BE_DELETED),
+    reloaded: SUBMITTED_OWNER_REPORT,
+    focus: 'page heading',
+  },
+  {
+    outcome: 'a 409 on a line save',
+    opener: 'Add Expense',
+    prepare: fillNewExpense,
+    send: 'Save',
+    endpoint: api.createLine,
+    rejection: new ApiError(409, 'NOT_DRAFT', MESSAGES.NOT_DRAFT),
+    reloaded: SUBMITTED_OWNER_REPORT,
+    focus: 'page heading',
+  },
+  {
+    outcome: 'a 409 on an invoice upload',
+    opener: 'Add Expense',
+    prepare: async () => {
+      await fillNewExpense();
+      chooseInvoice('invoice.pdf', 'application/pdf');
+    },
+    send: 'Save',
+    endpoint: api.uploadInvoice,
+    rejection: new ApiError(409, 'NOT_DRAFT', MESSAGES.NOT_DRAFT),
+    reloaded: SUBMITTED_OWNER_REPORT,
+    focus: 'page heading',
+  },
+  {
+    outcome: 'a successful line save',
+    opener: 'Add Expense',
+    prepare: fillNewExpense,
+    send: 'Save',
+    endpoint: api.createLine,
+    reloaded: REPORT_DETAILS['expense/12'],
+    focus: 'opener',
+  },
+];
+
+describe('write guards', () => {
+  it.each(DOUBLE_CLICK_CASES)(
+    '$action in one task sends one request',
+    async ({ path, category, name, prepare, clicks, endpoint, args, done }) => {
+      renderRoute(path, category);
+      expect(await heading(name)).toBeInTheDocument();
+      await prepare?.();
+      clickInOneTask(await button(clicks[0]), await button(clicks[1]));
+
+      expect(await screen.findByText(done, {}, { timeout: FIND_TIMEOUT })).toBeInTheDocument();
+      expect(endpoint).toHaveBeenCalledTimes(1);
+      expect(endpoint).toHaveBeenCalledWith(...args);
+    },
+    TEST_TIMEOUT,
+  );
+
+  it.each([
+    new ApiError(415, 'UNSUPPORTED_MEDIA_TYPE', MESSAGES.FILE_TYPE_NOT_SUPPORTED),
+    new ApiError(422, 'VALIDATION_FAILED', MESSAGES.FILE_NAME_TOO_LONG, [
+      { field: 'file', message: MESSAGES.FILE_NAME_TOO_LONG },
+    ]),
+  ])(
+    'an invoice rejected with $status keeps the stored line open for another upload',
+    async (rejection) => {
+      renderRoute(OWNER_REPORT, 'user');
+      expect(await heading(OWNER_HEADING)).toBeInTheDocument();
+      await fillNewExpense();
+      vi.mocked(api.uploadInvoice).mockRejectedValueOnce(rejection);
+      chooseInvoice('notes.txt', 'text/plain');
+      fireEvent.click(await button('Save'));
+
+      expect(await screen.findByText('Expense was added', {}, { timeout: FIND_TIMEOUT })).toBeInTheDocument();
+      const browse = await button(/browse/);
+      await waitFor(() => expect(browse).toHaveFocus());
+      expect(helperText(screen.getByRole('group', { name: 'Upload Invoice' }))).toBe(rejection.message);
+      expect(screen.getByRole('dialog', { name: 'Edit Details' })).toBeInTheDocument();
+      await waitFor(() => expect(api.getReport).toHaveBeenCalledTimes(2));
+
+      chooseInvoice('invoice.pdf', 'application/pdf');
+      expect(helperText(screen.getByRole('group', { name: 'Upload Invoice' }))).toBeUndefined();
+      fireEvent.click(await button('Save'));
+
+      expect(
+        await screen.findByText('Your expense detail was successfully edited', {}, { timeout: FIND_TIMEOUT }),
+      ).toBeInTheDocument();
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+      expect(api.createLine).toHaveBeenCalledTimes(1);
+      expect(api.updateLine).toHaveBeenCalledExactlyOnceWith(
+        'expense',
+        122,
+        expect.objectContaining({ title: 'Taxi' }),
+      );
+      expect(api.uploadInvoice).toHaveBeenCalledTimes(2);
+      expect(api.uploadInvoice).toHaveBeenLastCalledWith(
+        'expense',
+        122,
+        expect.objectContaining({ name: 'invoice.pdf' }),
+      );
+    },
+    TEST_TIMEOUT,
+  );
+
+  it(
+    'a rejected save scrolls the message under the focused field into view',
+    async () => {
+      renderRoute(OWNER_REPORT, 'user');
+      expect(await heading(OWNER_HEADING)).toBeInTheDocument();
+      await fillNewExpense();
+      await fillField(/^Description/, 'Z'.repeat(1501));
+      fireEvent.click(await button('Save'));
+
+      const description = screen.getByRole('textbox', { name: 'Description' });
+      await waitFor(() => expect(description).toHaveFocus());
+      const helper = document.getElementById(description.getAttribute('aria-describedby') ?? '');
+      expect(helper).toHaveTextContent(MESSAGES.MAX_LENGTH_1500);
+      expect(vi.mocked(Element.prototype.scrollIntoView).mock.contexts).toContain(helper);
+      expect(Element.prototype.scrollIntoView).toHaveBeenCalledWith({ block: 'nearest' });
+      expect(api.createLine).not.toHaveBeenCalled();
+    },
+    TEST_TIMEOUT,
+  );
+
+  it.each(CONFLICT_CASES)(
+    'a 409 on $action reloads the report and drops its Draft controls',
+    async ({ prepare, send, endpoint, message }) => {
+      renderRoute(OWNER_REPORT, 'user');
+      expect(await heading(OWNER_HEADING)).toBeInTheDocument();
+      await prepare?.();
+      vi.mocked(endpoint).mockRejectedValueOnce(new ApiError(409, 'NOT_DRAFT', message));
+      vi.mocked(api.getReport).mockResolvedValueOnce({ ...REPORT_DETAILS['expense/12'], status: 'Submitted' });
+      fireEvent.click(await button(send));
+
+      expect(await screen.findByText(message, {}, { timeout: FIND_TIMEOUT })).toBeInTheDocument();
+      await waitFor(() => expect(screen.queryByRole('button', { name: 'Submit Report' })).toBeNull());
+      expect(api.getReport).toHaveBeenCalledTimes(2);
+      expect(screen.queryByRole('button', { name: 'Add Expense' })).toBeNull();
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+      await expectLocation(OWNER_REPORT);
+    },
+    TEST_TIMEOUT,
+  );
+
+  it.each(ACTION_FOCUS_CASES)(
+    'after $outcome, focus is restored',
+    async ({ path, category, name, trigger, endpoint, rejection }) => {
+      renderRoute(path, category);
+      const page = await heading(name);
+      if (rejection) {
+        vi.mocked(endpoint).mockRejectedValueOnce(rejection);
+      }
+      const control = await button(trigger);
+      clickAndLoseFocus(control);
+
+      await waitFor(() => expect(endpoint).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(rejection ? control : page).toHaveFocus());
+      expect(control).toBeEnabled();
+    },
+    TEST_TIMEOUT,
+  );
+
+  it.each(DIALOG_FOCUS_CASES)(
+    'after $outcome and its reload, focus ends on the $focus',
+    async ({ opener, prepare, send, endpoint, rejection, reloaded, focus }) => {
+      renderRoute(OWNER_REPORT, 'user');
+      const page = await heading(OWNER_HEADING);
+      const control = await button(opener);
+      control.focus();
+      await prepare();
+      if (rejection) {
+        vi.mocked(endpoint).mockRejectedValueOnce(rejection);
+      }
+      const finishReload = holdNextReport(reloaded);
+      fireEvent.click(await button(send));
+
+      await waitFor(() => expect(control).toHaveFocus());
+      await act(async () => finishReload());
+      await waitFor(() => expect(focus === 'opener' ? control : page).toHaveFocus());
+      expect(control.isConnected).toBe(focus === 'opener');
+    },
+    TEST_TIMEOUT,
+  );
+
+  it.each(DECISION_FOCUS_CASES)(
+    'on the admin list, $outcome',
+    async ({ filter, arrange, meanwhile, focused }) => {
+      renderRoute(PATHS.admin, 'administrator');
+      expect(await heading('Administrator Dashboard')).toBeInTheDocument();
+      if (filter) {
+        await clickControl(filter);
+      }
+      fireEvent.click(await screen.findByText('7/2024 EX', {}, { timeout: FIND_TIMEOUT }));
+      const approve = await button('Approve');
+      await waitFor(() => expect(api.getReport).toHaveBeenCalledWith('expense', 7));
+      arrange();
+      clickAndLoseFocus(approve);
+      meanwhile?.();
+
+      await waitFor(() => expect(api.decideReport).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(focused()).toHaveFocus());
+    },
+    TEST_TIMEOUT,
+  );
+
+  it(
+    'on the admin list, a success waits for its own reload past a list load that settled meanwhile',
+    async () => {
+      renderRoute(PATHS.admin, 'administrator');
+      expect(await heading('Administrator Dashboard')).toBeInTheDocument();
+      await clickControl('Submited');
+      fireEvent.click(await screen.findByText('7/2024 EX', {}, { timeout: FIND_TIMEOUT }));
+      const approve = await button('Approve');
+      await waitFor(() => expect(api.getReport).toHaveBeenCalledWith('expense', 7));
+      const submitted = ADMIN_EXPENSE_ROWS.filter((row) => row.status === 'Submitted');
+      let finishDecision = () => {};
+      vi.mocked(api.decideReport).mockReturnValueOnce(
+        new Promise<ReportSummary>((resolve) => {
+          finishDecision = () => resolve({ ...submitted.filter((row) => row.id === 7)[0], status: 'Approved' });
+        }),
+      );
+      clickAndLoseFocus(approve);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Code' }));
+      await waitFor(() => expect(document.querySelector('[aria-busy="true"]')).toBeNull());
+      vi.mocked(api.listReports).mockResolvedValueOnce(submitted.filter((row) => row.id !== 7));
+      await act(async () => finishDecision());
+
+      await waitFor(() => expect(screen.getByRole('textbox', { name: 'Search by title' })).toHaveFocus());
+      expect(screen.queryByText('7/2024 EX')).toBeNull();
     },
     TEST_TIMEOUT,
   );

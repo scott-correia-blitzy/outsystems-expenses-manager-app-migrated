@@ -57,6 +57,8 @@ type FilterOption = { value: StatusFilter; label: string };
 
 type SortState = { column: ReportSortColumn; dir: SortDir } | null;
 
+type DecisionFocus = { rowId: number; trigger: HTMLElement | null; succeeded: boolean; loadsBefore: number };
+
 type Column = {
   key: ReportSortColumn;
   label: string;
@@ -265,7 +267,7 @@ function ReportRow({
                 </Button>
               </>
             )}
-            <Button variant="contained" onClick={() => onOpen(row)}>
+            <Button id={`${idBase}-${row.id}-open`} variant="contained" onClick={() => onOpen(row)}>
               View Report Details
             </Button>
           </Stack>
@@ -296,12 +298,16 @@ export function ReportList({ mode, kind, onDecided }: ReportListProps) {
   const [rows, setRows] = useState<ReportSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadFailed, setLoadFailed] = useState(false);
+  const startedLoads = useRef(0);
+  const [settledLoad, setSettledLoad] = useState(0);
   const [reloadKey, setReloadKey] = useState(0);
   const [page, setPage] = useState(0);
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [details, setDetails] = useState<Record<number, ReportDetail>>({});
   const decisionPending = useRef(false);
   const [deciding, setDeciding] = useState(false);
+  const [decisionFocus, setDecisionFocus] = useState<DecisionFocus | null>(null);
+  const searchInput = useRef<HTMLInputElement>(null);
   const [reference, setReference] = useState<ReferenceData | null>(null);
   const [viewer, setViewer] = useState<{ kind: Kind; line: LineView } | null>(null);
 
@@ -315,6 +321,7 @@ export function ReportList({ mode, kind, onDecided }: ReportListProps) {
     setDetails({});
     setPage(0);
     setViewer(null);
+    setDecisionFocus(null);
   }
 
   const shownKind = useRef(kind);
@@ -324,6 +331,8 @@ export function ReportList({ mode, kind, onDecided }: ReportListProps) {
 
   useEffect(() => {
     let cancelled = false;
+    startedLoads.current += 1;
+    const loadId = startedLoads.current;
     const query: ReportListQuery = {
       kind,
       status: status === 'All' ? undefined : status,
@@ -352,12 +361,33 @@ export function ReportList({ mode, kind, onDecided }: ReportListProps) {
       .finally(() => {
         if (!cancelled) {
           setLoading(false);
+          setSettledLoad(loadId);
         }
       });
     return () => {
       cancelled = true;
     };
   }, [kind, status, q, sort, from, to, reloadKey, feedback]);
+
+  // A pending decision disables its focused button, which drops focus to the body. A failure returns it to that
+  // button; a success waits for its reload, which may remove the row's buttons or the row itself.
+  useEffect(() => {
+    if (decisionFocus === null || (decisionFocus.succeeded && settledLoad <= decisionFocus.loadsBefore)) {
+      return;
+    }
+    setDecisionFocus(null);
+    const active = document.activeElement;
+    if (active !== null && active !== document.body) {
+      return;
+    }
+    const candidates = [
+      decisionFocus.succeeded ? null : decisionFocus.trigger,
+      document.getElementById(`${idBase}-${decisionFocus.rowId}-open`),
+      document.getElementById(`${idBase}-${decisionFocus.rowId}-summary`),
+      searchInput.current,
+    ];
+    candidates.find((candidate) => candidate?.isConnected && !candidate.matches(':disabled'))?.focus();
+  }, [decisionFocus, settledLoad, idBase]);
 
   const detailMissing = expandedId !== null && details[expandedId] === undefined;
 
@@ -442,6 +472,8 @@ export function ReportList({ mode, kind, onDecided }: ReportListProps) {
       return;
     }
     decisionPending.current = true;
+    const focused = document.activeElement;
+    const trigger = focused instanceof HTMLElement && focused !== document.body ? focused : null;
     setDeciding(true);
     try {
       await decideReport(kind, row.id, accept);
@@ -458,8 +490,11 @@ export function ReportList({ mode, kind, onDecided }: ReportListProps) {
       }
       setReloadKey((key) => key + 1);
       onDecided?.();
+      // Loads started before now, even one that settles meanwhile, are not this decision's reload.
+      setDecisionFocus({ rowId: row.id, trigger, succeeded: true, loadsBefore: startedLoads.current });
     } catch (err) {
       feedback.error(err);
+      setDecisionFocus({ rowId: row.id, trigger, succeeded: false, loadsBefore: startedLoads.current });
     } finally {
       decisionPending.current = false;
       setDeciding(false);
@@ -538,6 +573,7 @@ export function ReportList({ mode, kind, onDecided }: ReportListProps) {
         placeholder="Search by title"
         value={q}
         onChange={changeSearch}
+        inputRef={searchInput}
         sx={{ flexGrow: 1, minInlineSize: (theme) => ({ md: theme.spacing(30) }) }}
         slotProps={{
           htmlInput: { 'aria-label': 'Search by title' },

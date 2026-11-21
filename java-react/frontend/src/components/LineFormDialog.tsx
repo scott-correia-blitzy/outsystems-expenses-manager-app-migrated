@@ -56,6 +56,8 @@ export type LineFormDialogProps = {
   reference: ReferenceData;
   onClose: () => void;
   onSaved: (saved: LineView) => void;
+  onStored: (saved: LineView) => void;
+  onConflict: () => void;
 };
 
 type FieldName =
@@ -255,6 +257,8 @@ export function LineFormDialog({
   reference,
   onClose,
   onSaved,
+  onStored,
+  onConflict,
 }: LineFormDialogProps) {
   const feedback = useFeedback();
   const titleId = useId();
@@ -267,11 +271,16 @@ export function LineFormDialog({
   const formRef = useRef<HTMLFormElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const saveButton = useRef<HTMLButtonElement>(null);
+  // Set synchronously: a second Save in the same task still reads the previous saving state.
+  const inFlight = useRef(false);
   const [form, setForm] = useState<FormState>(() => initialForm(line));
   const [file, setFile] = useState<File | null>(null);
   const [errors, setErrors] = useState<FieldErrors>({});
   const [saving, setSaving] = useState(false);
   const [rejectedSaves, setRejectedSaves] = useState(0);
+  // A line stored before its invoice was rejected; later saves update it instead of adding another.
+  const [storedLine, setStoredLine] = useState<LineView | undefined>(undefined);
+  const target = storedLine ?? line;
 
   useEffect(() => {
     if (open) {
@@ -279,6 +288,8 @@ export function LineFormDialog({
       setFile(null);
       setErrors({});
       setSaving(false);
+      setStoredLine(undefined);
+      inFlight.current = false;
     }
   }, [open, line]);
 
@@ -288,6 +299,10 @@ export function LineFormDialog({
       const invalid = formRef.current?.querySelector<HTMLElement>(FIRST_INVALID_CONTROL);
       if (invalid) {
         invalid.focus();
+        // Focus scrolls only the control into view, which can leave its message below the dialog's visible area.
+        for (const helperId of invalid.getAttribute('aria-describedby')?.split(/\s+/) ?? []) {
+          document.getElementById(helperId)?.scrollIntoView({ block: 'nearest' });
+        }
       } else if (!formRef.current?.contains(document.activeElement)) {
         saveButton.current?.focus();
       }
@@ -309,7 +324,7 @@ export function LineFormDialog({
       : num(form.amount);
   const previewVat = previewTotal * reference.vatRate;
 
-  const heading = line
+  const heading = target
     ? 'Edit Details'
     : `${isExpense ? 'New Expense' : 'New Earning'}: ${form.title}`.trimEnd();
 
@@ -350,11 +365,15 @@ export function LineFormDialog({
     }
   };
 
-  const showFailure = (err: unknown) => {
+  const showFailure = (err: unknown, fallbackField?: FieldName) => {
     const fieldErrors = err instanceof ApiError ? (err.fieldErrors ?? []) : [];
     setRejectedSaves((count) => count + 1);
     if (fieldErrors.length === 0) {
-      feedback.error(err);
+      if (fallbackField) {
+        setErrors({ [fallbackField]: err instanceof ApiError ? err.message : MESSAGES.GENERIC_ERROR });
+      } else {
+        feedback.error(err);
+      }
       return;
     }
     const { placed, unplaced } = placeFieldErrors(fieldErrors, hiddenFields);
@@ -362,6 +381,16 @@ export function LineFormDialog({
     if (unplaced > 0) {
       feedback.error(err);
     }
+  };
+
+  // A 409 means the report left Draft in another session, so no retry here can succeed.
+  const closeOnConflict = (err: unknown): boolean => {
+    if (!(err instanceof ApiError && err.status === 409)) {
+      return false;
+    }
+    feedback.error(err);
+    onConflict();
+    return true;
   };
 
   const save = async () => {
@@ -373,41 +402,53 @@ export function LineFormDialog({
       return;
     }
     const body = toBody(kind, form, typeId, isKilometers);
-    // Cleared only when the line is rejected: onSaved closes the dialog and the next open resets it.
+    // Cleared only when the dialog stays open; a closing dialog is reset by its next open.
+    inFlight.current = true;
     setSaving(true);
     let saved: LineView;
     try {
-      saved = line ? await updateLine(kind, line.id, body) : await createLine(kind, report.id, body);
+      saved = target ? await updateLine(kind, target.id, body) : await createLine(kind, report.id, body);
     } catch (err) {
+      if (closeOnConflict(err)) {
+        return;
+      }
+      inFlight.current = false;
       setSaving(false);
       showFailure(err);
       return;
+    }
+    let savedMessage: string;
+    if (target) {
+      savedMessage = isExpense
+        ? 'Your expense detail was successfully edited'
+        : 'Your earning detail was successfully edited';
+    } else {
+      savedMessage = isExpense ? 'Expense was added' : 'Earning was added';
     }
     if (file) {
       try {
         await uploadInvoice(kind, saved.id, file);
       } catch (err) {
-        // The line itself was stored, so the parent still reloads before the upload error shows.
-        onSaved(saved);
-        feedback.error(err);
+        if (closeOnConflict(err)) {
+          return;
+        }
+        // The line itself was stored, so the parent reloads while the dialog stays on it to retry the upload.
+        onStored(saved);
+        setStoredLine(saved);
+        inFlight.current = false;
+        setSaving(false);
+        feedback.success(savedMessage);
+        showFailure(err, 'file');
         return;
       }
     }
-    if (line) {
-      feedback.success(
-        isExpense
-          ? 'Your expense detail was successfully edited'
-          : 'Your earning detail was successfully edited',
-      );
-    } else {
-      feedback.success(isExpense ? 'Expense was added' : 'Earning was added');
-    }
+    feedback.success(savedMessage);
     onSaved(saved);
   };
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!saving) {
+    if (!inFlight.current) {
       void save();
     }
   };
@@ -441,7 +482,7 @@ export function LineFormDialog({
           <CloseIcon />
         </IconButton>
       </Stack>
-      <DialogContent>
+      <DialogContent sx={{ scrollPaddingBlock: (theme) => theme.spacing(1) }}>
         <Box component="form" ref={formRef} id={formId} noValidate onSubmit={handleSubmit}>
           <Grid container spacing={2}>
             <Grid size={{ xs: 12, md: 8 }}>
@@ -639,13 +680,13 @@ export function LineFormDialog({
                         {`Selected file: ${file.name}`}
                       </Typography>
                     ) : (
-                      line?.invoice && (
+                      target?.invoice && (
                         <Typography
                           variant="body2"
                           color="text.secondary"
                           sx={{ overflowWrap: 'anywhere' }}
                         >
-                          {`Current invoice: ${line.invoice.filename}. A new file replaces it.`}
+                          {`Current invoice: ${target.invoice.filename}. A new file replaces it.`}
                         </Typography>
                       )
                     )}

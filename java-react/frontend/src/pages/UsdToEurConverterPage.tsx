@@ -1,5 +1,15 @@
 import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
-import { Alert, Box, Button, Card, CardContent, InputAdornment, Stack, TextField } from '@mui/material';
+import {
+  Alert,
+  Box,
+  Button,
+  Card,
+  CardContent,
+  CircularProgress,
+  InputAdornment,
+  Stack,
+  TextField,
+} from '@mui/material';
 import { reference, usdToEur } from '../api/api';
 import { ApiError, MESSAGES, type FieldError, type UsdToEurResult } from '../api/types';
 import { useFeedback } from '../components/Feedback';
@@ -32,19 +42,41 @@ export function UsdToEurConverterPage() {
   const [result, setResult] = useState<UsdToEurResult | null>(null);
   const [convertedAmount, setConvertedAmount] = useState('');
   const [converting, setConverting] = useState(false);
+  const [rateLoading, setRateLoading] = useState(true);
+  const [badInput, setBadInput] = useState<Record<ConverterField, boolean>>({ amount: false, rate: false });
   const rateEdited = useRef(false);
+  const amountInput = useRef<HTMLInputElement>(null);
+  const rateInput = useRef<HTMLInputElement>(null);
+  const convertButton = useRef<HTMLButtonElement>(null);
+  const restoreFocus = useRef(false);
+
+  useEffect(() => {
+    if (converting || !restoreFocus.current) {
+      return;
+    }
+    restoreFocus.current = false;
+    // A loading button is disabled and loses focus to body; restore it unless the user has moved on.
+    if (document.activeElement === null || document.activeElement === document.body) {
+      convertButton.current?.focus();
+    }
+  }, [converting]);
 
   useEffect(() => {
     let active = true;
+    setRateLoading(true);
     reference()
       .then((ref) => {
-        if (active && !rateEdited.current) {
-          setRate(String(ref.dollarsToEuros));
+        if (active) {
+          if (!rateEdited.current) {
+            setRate(String(ref.dollarsToEuros));
+          }
+          setRateLoading(false);
         }
       })
       .catch((err: unknown) => {
         if (active) {
           feedback.error(err);
+          setRateLoading(false);
         }
       });
     return () => {
@@ -63,9 +95,26 @@ export function UsdToEurConverterPage() {
     setErrors((prev) => ({ ...prev, rate: '' }));
   };
 
+  // Unparsable text reads as '' (so MUI drops the label and React skips onChange); the input event still reports it.
+  const trackBadInput = (field: ConverterField) => (event: FormEvent<HTMLInputElement>) => {
+    const bad = event.currentTarget.validity.badInput;
+    setBadInput((prev) => (prev[field] === bad ? prev : { ...prev, [field]: bad }));
+  };
+
+  const focusFirstInvalid = (fieldErrors: FieldErrors): boolean => {
+    if (fieldErrors.amount !== '') {
+      amountInput.current?.focus();
+    } else if (fieldErrors.rate !== '') {
+      rateInput.current?.focus();
+    } else {
+      return false;
+    }
+    return true;
+  };
+
   const handleConvert = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (converting) {
+    if (converting || rateLoading) {
       return;
     }
     const nextErrors: FieldErrors = {
@@ -74,11 +123,12 @@ export function UsdToEurConverterPage() {
     };
     setErrors(nextErrors);
     setResult(null);
-    if (nextErrors.amount !== '' || nextErrors.rate !== '') {
+    if (focusFirstInvalid(nextErrors)) {
       return;
     }
 
     const usd = Number(amount);
+    restoreFocus.current = true;
     setConverting(true);
     try {
       const converted = await usdToEur(usd, Number(rate));
@@ -102,7 +152,7 @@ export function UsdToEurConverterPage() {
           unplaced = new ApiError(err.status, err.code, err.message, otherErrors);
         }
       }
-      if (serverErrors.amount !== '' || serverErrors.rate !== '') {
+      if (focusFirstInvalid(serverErrors)) {
         setErrors(serverErrors);
         if (unplaced) {
           feedback.error(unplaced);
@@ -127,11 +177,13 @@ export function UsdToEurConverterPage() {
                 type="number"
                 value={amount}
                 onChange={handleAmountChange}
+                inputRef={amountInput}
                 error={errors.amount !== ''}
                 helperText={errors.amount || undefined}
                 slotProps={{
                   input: { endAdornment: <InputAdornment position="end">$</InputAdornment> },
-                  htmlInput: { step: 'any' },
+                  htmlInput: { step: 'any', onInput: trackBadInput('amount') },
+                  inputLabel: { shrink: badInput.amount || undefined },
                   formHelperText: { sx: { whiteSpace: 'pre-line' } },
                 }}
               />
@@ -140,14 +192,31 @@ export function UsdToEurConverterPage() {
                 type="number"
                 value={rate}
                 onChange={handleRateChange}
+                inputRef={rateInput}
+                disabled={rateLoading}
                 error={errors.rate !== ''}
                 helperText={errors.rate || undefined}
                 slotProps={{
-                  htmlInput: { step: 'any' },
+                  input: {
+                    endAdornment: rateLoading ? (
+                      <InputAdornment position="end">
+                        <CircularProgress size={20} aria-label="Loading exchange rate" />
+                      </InputAdornment>
+                    ) : undefined,
+                  },
+                  htmlInput: { step: 'any', onInput: trackBadInput('rate') },
+                  inputLabel: { shrink: badInput.rate || undefined },
                   formHelperText: { sx: { whiteSpace: 'pre-line' } },
                 }}
               />
-              <Button type="submit" variant="contained" loading={converting} sx={{ alignSelf: 'flex-start' }}>
+              <Button
+                ref={convertButton}
+                type="submit"
+                variant="contained"
+                disabled={rateLoading}
+                loading={converting}
+                sx={{ alignSelf: 'flex-start' }}
+              >
                 Convert
               </Button>
               {result && (

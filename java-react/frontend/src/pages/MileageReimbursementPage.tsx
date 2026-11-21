@@ -1,4 +1,4 @@
-import { useRef, useState, type ChangeEvent, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
 import { Box, Button, Card, CardContent, InputAdornment, Stack, TextField } from '@mui/material';
 import { mileage } from '../api/api';
 import { ApiError, MESSAGES, type MileageResult } from '../api/types';
@@ -24,7 +24,22 @@ export function MileageReimbursementPage() {
   const [staleResult, setStaleResult] = useState<MileageResult | null>(null);
   const [error, setError] = useState('');
   const [converting, setConverting] = useState(false);
+  const [kmBadInput, setKmBadInput] = useState(false);
   const latestRequest = useRef(0);
+  const kmInput = useRef<HTMLInputElement>(null);
+  const convertButton = useRef<HTMLButtonElement>(null);
+  const restoreFocus = useRef(false);
+
+  useEffect(() => {
+    if (converting || !restoreFocus.current) {
+      return;
+    }
+    restoreFocus.current = false;
+    // A loading button is disabled and loses focus to body; restore it unless the user has moved on.
+    if (document.activeElement === null || document.activeElement === document.body) {
+      convertButton.current?.focus();
+    }
+  }, [converting]);
 
   const handleKmChange = (event: ChangeEvent<HTMLInputElement>) => {
     latestRequest.current += 1;
@@ -34,10 +49,16 @@ export function MileageReimbursementPage() {
     setConverting(false);
   };
 
+  // Unparsable text reads as '' (so MUI drops the label and React skips onChange); the input event still reports it.
+  const handleKmInput = (event: FormEvent<HTMLInputElement>) => {
+    setKmBadInput(event.currentTarget.validity.badInput);
+  };
+
   const convert = async (distance: number) => {
     latestRequest.current += 1;
     const requestId = latestRequest.current;
     setError('');
+    restoreFocus.current = true;
     setConverting(true);
     try {
       const converted = await mileage(distance);
@@ -56,6 +77,7 @@ export function MileageReimbursementPage() {
           feedback.error(err);
         } else {
           setError(kmError);
+          kmInput.current?.focus();
           if (err instanceof ApiError && unplaced.length > 0) {
             feedback.error(new ApiError(err.status, err.code, err.message, unplaced));
           }
@@ -74,6 +96,7 @@ export function MileageReimbursementPage() {
     if (distance === null) {
       setResult(null);
       setError(MESSAGES.DISTANCE_POSITIVE);
+      kmInput.current?.focus();
       return;
     }
     setStaleResult(result);
@@ -96,12 +119,14 @@ export function MileageReimbursementPage() {
                 name={KM_FIELD}
                 value={km}
                 onChange={handleKmChange}
+                inputRef={kmInput}
                 error={error !== ''}
                 helperText={error || undefined}
                 fullWidth
                 slotProps={{
                   input: { endAdornment: <InputAdornment position="end">km</InputAdornment> },
-                  htmlInput: { min: 0, step: 'any' },
+                  htmlInput: { min: 0, step: 'any', onInput: handleKmInput },
+                  inputLabel: { shrink: kmBadInput || undefined },
                   formHelperText: { sx: { whiteSpace: 'pre-line' } },
                 }}
               />
@@ -111,7 +136,7 @@ export function MileageReimbursementPage() {
                 fullWidth
                 slotProps={{ input: { readOnly: true } }}
               />
-              <Button type="submit" variant="contained" loading={converting}>
+              <Button ref={convertButton} type="submit" variant="contained" loading={converting}>
                 Convert
               </Button>
             </Stack>

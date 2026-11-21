@@ -85,12 +85,18 @@ export function LoginPage() {
       const from = (location.state as { from?: unknown } | null)?.from;
       navigate(safeRedirectTarget(from) ?? user.landingRoute, { replace: true });
     } catch (err) {
+      let focusTarget = passwordInput;
       if (err instanceof ApiError) {
+        const fieldErrors = serverFieldErrors(err.fieldErrors);
         setFormError(err.message);
-        setErrors(serverFieldErrors(err.fieldErrors));
+        setErrors(fieldErrors);
+        if (fieldErrors.username !== '') {
+          focusTarget = usernameInput;
+        }
       } else {
         setFormError(MESSAGES.GENERIC_ERROR);
       }
+      focusTarget.current?.focus();
       // Not in a finally block: on success the session redirect unmounts this page.
       setSubmitting(false);
     }

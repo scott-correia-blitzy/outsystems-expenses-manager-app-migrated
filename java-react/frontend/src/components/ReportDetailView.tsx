@@ -40,6 +40,8 @@ export type ReportDetailViewProps = {
 
 type PendingAction = 'submit' | 'approve' | 'decline';
 
+type SettledAction = { trigger: HTMLElement | null; succeeded: boolean };
+
 type LineDialog = { open: boolean; line?: LineView };
 
 type LoadState =
@@ -85,6 +87,11 @@ function hidden(dialog: LineDialog): LineDialog {
 
 function errorMessage(err: unknown): string {
   return err instanceof ApiError ? err.message : MESSAGES.GENERIC_ERROR;
+}
+
+// Every 409 on a report or line write means the report has left Draft in another session.
+function isConflict(err: unknown): boolean {
+  return err instanceof ApiError && err.status === 409;
 }
 
 export function ReportDetailView({ kind, mode, id }: ReportDetailViewProps) {
@@ -146,6 +153,7 @@ function ReportDetailContent({
   const reportId = parseReportId(id);
   const [loadState, setLoadState] = useState<LoadState>({ phase: 'loading' });
   const [pending, setPending] = useState<PendingAction | null>(null);
+  const [settledAction, setSettledAction] = useState<SettledAction | null>(null);
   const [lineForm, setLineForm] = useState<LineDialog>(CLOSED_DIALOG);
   const [lineView, setLineView] = useState<LineDialog>(CLOSED_DIALOG);
   const [lineToDelete, setLineToDelete] = useState<LineView | null>(null);
@@ -154,6 +162,9 @@ function ReportDetailContent({
   const reportShown = useRef(false);
   const ownership = useRef<boolean | null>(null);
   const alive = useRef(false);
+  // Pending state disables the action buttons only after a re-render, too late for a click in the same task.
+  const actionInFlight = useRef(false);
+  const header = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     alive.current = true;
@@ -245,6 +256,40 @@ function ReportDetailContent({
     }
   }, [referenceFailed]);
 
+  // A pending action disables its focused button, which drops focus to the body. A failure returns it to that
+  // button; a success, or a reload that removed the button, moves it to the page heading.
+  useEffect(() => {
+    if (settledAction === null) {
+      return undefined;
+    }
+    const recoverFocus = () => {
+      const active = document.activeElement;
+      if (active !== null && active !== document.body) {
+        return;
+      }
+      const { trigger, succeeded } = settledAction;
+      if (!succeeded && trigger?.isConnected && !trigger.matches(':disabled')) {
+        trigger.focus();
+      } else {
+        header.current?.querySelector<HTMLElement>('h1')?.focus();
+      }
+    };
+    const dialogMounted = () => document.querySelector('[role="dialog"]') !== null;
+    if (!dialogMounted()) {
+      recoverFocus();
+      return undefined;
+    }
+    // A closing dialog hands focus back to its opener once it has gone, so recovery waits for that.
+    const observer = new MutationObserver(() => {
+      if (!dialogMounted()) {
+        observer.disconnect();
+        recoverFocus();
+      }
+    });
+    observer.observe(document.body, { childList: true });
+    return () => observer.disconnect();
+  }, [settledAction]);
+
   if (loadState.phase === 'loading') {
     return (
       <Stack alignItems="center" justifyContent="center" sx={{ paddingBlock: 8 }}>
@@ -278,23 +323,30 @@ function ReportDetailContent({
   const viewedLine = lineView.line;
 
   const runReportAction = async (action: PendingAction, send: () => Promise<unknown>, success: string) => {
+    if (actionInFlight.current) {
+      return;
+    }
+    actionInFlight.current = true;
+    const focused = document.activeElement;
+    const trigger = focused instanceof HTMLElement && focused !== document.body ? focused : null;
     setPending(action);
+    let succeeded = true;
+    let reload = true;
     try {
       await send();
+      feedback.success(success);
     } catch (err) {
       feedback.error(err);
-      if (alive.current) {
-        setPending(null);
-      }
-      return;
+      succeeded = false;
+      reload = isConflict(err);
     }
-    feedback.success(success);
-    if (!alive.current) {
-      return;
+    if (reload && alive.current) {
+      await load();
     }
-    await load();
+    actionInFlight.current = false;
     if (alive.current) {
       setPending(null);
+      setSettledAction({ trigger, succeeded });
     }
   };
 
@@ -308,6 +360,14 @@ function ReportDetailContent({
       `${labels.noun} report was ${accept ? 'approved' : 'declined'}`,
     );
 
+  // A closing dialog returns focus to its opener, which the reload may remove.
+  const reloadThenRecoverFocus = async () => {
+    await load();
+    if (alive.current) {
+      setSettledAction({ trigger: null, succeeded: true });
+    }
+  };
+
   const confirmReportDelete = async () => {
     try {
       await deleteReport(kind, report.id);
@@ -315,6 +375,9 @@ function ReportDetailContent({
       feedback.error(err);
       if (alive.current) {
         setReportDeleteOpen(false);
+        if (isConflict(err)) {
+          void reloadThenRecoverFocus();
+        }
       }
       return;
     }
@@ -336,6 +399,9 @@ function ReportDetailContent({
       feedback.error(err);
       if (alive.current) {
         setLineToDelete(null);
+        if (isConflict(err)) {
+          void reloadThenRecoverFocus();
+        }
       }
       return;
     }
@@ -344,15 +410,21 @@ function ReportDetailContent({
       return;
     }
     setLineToDelete(null);
-    void load();
+    void reloadThenRecoverFocus();
   };
 
-  const handleLineSaved = () => {
+  const closeLineFormAndReload = () => {
     if (!alive.current) {
       return;
     }
     setLineForm(hidden);
-    void load();
+    void reloadThenRecoverFocus();
+  };
+
+  const handleLineStored = () => {
+    if (alive.current) {
+      void load();
+    }
   };
 
   const editFromView = (line: LineView) => {
@@ -414,26 +486,28 @@ function ReportDetailContent({
 
   return (
     <>
-      <PageHeader
-        breadcrumbs={[...breadcrumbs, { label: `Report Detail - ${report.title}` }]}
-        title={`${report.code}: ${report.title}`}
-        subtitle={
-          <Stack
-            component="span"
-            direction="row"
-            spacing={1}
-            useFlexGap
-            alignItems="center"
-            flexWrap="wrap"
-          >
-            <StatusTag status={report.status} />
-            <Box component="span">
-              {`Created by ${report.createdByName ?? ''} at ${formatCreatedAt(report.createdOn)}`}
-            </Box>
-          </Stack>
-        }
-        actions={actions}
-      />
+      <Box ref={header}>
+        <PageHeader
+          breadcrumbs={[...breadcrumbs, { label: `Report Detail - ${report.title}` }]}
+          title={`${report.code}: ${report.title}`}
+          subtitle={
+            <Stack
+              component="span"
+              direction="row"
+              spacing={1}
+              useFlexGap
+              alignItems="center"
+              flexWrap="wrap"
+            >
+              <StatusTag status={report.status} />
+              <Box component="span">
+                {`Created by ${report.createdByName ?? ''} at ${formatCreatedAt(report.createdOn)}`}
+              </Box>
+            </Stack>
+          }
+          actions={actions}
+        />
+      </Box>
       <Stack spacing={3} useFlexGap>
         <Grid container spacing={3}>
           <Grid size={{ xs: 12, md: 4 }}>
@@ -483,7 +557,9 @@ function ReportDetailContent({
           line={lineForm.line}
           reference={referenceData}
           onClose={() => setLineForm(hidden)}
-          onSaved={handleLineSaved}
+          onSaved={closeLineFormAndReload}
+          onStored={handleLineStored}
+          onConflict={closeLineFormAndReload}
         />
       )}
       {viewedLine && referenceData && (

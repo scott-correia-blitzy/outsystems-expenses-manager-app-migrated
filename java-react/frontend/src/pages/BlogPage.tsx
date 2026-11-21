@@ -5,6 +5,7 @@ import {
   CardActions,
   CardContent,
   CircularProgress,
+  InputAdornment,
   Stack,
   TextField,
   Typography,
@@ -14,6 +15,7 @@ import { listBlogPosts } from '../api/api';
 import type { BlogPostView } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
 import { LiveStatus, useFeedback } from '../components/Feedback';
+import { ViewIcon } from '../components/LineTable';
 import { formatBlogDate } from '../format/format';
 import { PageHeader } from '../layout/PageHeader';
 import { blogPostPath } from '../routes';
@@ -174,13 +176,23 @@ export function BlogPage() {
       />
       <Stack spacing={3}>
         <TextField
-          label="Search"
           type="search"
           size="small"
+          placeholder="Search"
           value={search}
           onChange={(event) => setSearch(event.target.value)}
           fullWidth
-          sx={{ maxWidth: 'sm' }}
+          sx={{ maxWidth: 'sm', '& input::-webkit-search-cancel-button': { display: 'none' } }}
+          slotProps={{
+            htmlInput: { 'aria-label': 'Search' },
+            input: {
+              startAdornment: (
+                <InputAdornment position="start">
+                  <ViewIcon fontSize="small" color="action" />
+                </InputAdornment>
+              ),
+            },
+          }}
         />
         {content}
       </Stack>

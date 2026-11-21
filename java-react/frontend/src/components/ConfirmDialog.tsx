@@ -79,14 +79,21 @@ export function ConfirmDialog({
   const messageId = useId();
   const dialogFocus = useDialogFocus(open);
   const [busy, setBusy] = useState(false);
+  // Busy disables the button only after a re-render, too late for a second click in the same task.
+  const inFlight = useRef(false);
 
   const handleConfirm = async () => {
+    if (inFlight.current) {
+      return;
+    }
+    inFlight.current = true;
     setBusy(true);
     try {
       await onConfirm();
     } catch {
       // The caller reports failures; this only keeps the rejection from going unhandled.
     } finally {
+      inFlight.current = false;
       setBusy(false);
     }
   };

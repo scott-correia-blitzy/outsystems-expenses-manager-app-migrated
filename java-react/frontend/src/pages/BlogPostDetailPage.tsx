@@ -1,4 +1,4 @@
-import { useEffect, useState, type ChangeEvent, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
 import { Box, Button, Card, CardContent, CircularProgress, Stack, TextField } from '@mui/material';
 import { Link as RouterLink, Navigate, useNavigate, useParams } from 'react-router';
 import { createBlogPost, getBlogPost, updateBlogPost } from '../api/api';
@@ -80,6 +80,21 @@ export function BlogPostDetailPage() {
   const [errors, setErrors] = useState<FieldErrors>(NO_ERRORS);
   const [loading, setLoading] = useState(postId !== null);
   const [saving, setSaving] = useState(false);
+  const titleInput = useRef<HTMLInputElement>(null);
+  const descriptionInput = useRef<HTMLTextAreaElement>(null);
+  const saveButton = useRef<HTMLButtonElement>(null);
+  const restoreFocus = useRef(false);
+
+  useEffect(() => {
+    if (saving || !restoreFocus.current) {
+      return;
+    }
+    restoreFocus.current = false;
+    // A loading button is disabled and loses focus to body; restore it unless the user has moved on.
+    if (document.activeElement === null || document.activeElement === document.body) {
+      saveButton.current?.focus();
+    }
+  }, [saving]);
 
   useEffect(() => {
     setErrors(NO_ERRORS);
@@ -126,6 +141,17 @@ export function BlogPostDetailPage() {
     setErrors((prev) => ({ ...prev, description: '' }));
   };
 
+  const focusFirstInvalid = (fieldErrors: FieldErrors): boolean => {
+    if (fieldErrors.title !== '') {
+      titleInput.current?.focus();
+    } else if (fieldErrors.description !== '') {
+      descriptionInput.current?.focus();
+    } else {
+      return false;
+    }
+    return true;
+  };
+
   const handleSave = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (saving) {
@@ -133,7 +159,7 @@ export function BlogPostDetailPage() {
     }
     const nextErrors = validate(title, description);
     setErrors(nextErrors);
-    if (hasErrors(nextErrors)) {
+    if (focusFirstInvalid(nextErrors)) {
       return;
     }
     const body: BlogPostBody = { title, description };
@@ -143,11 +169,13 @@ export function BlogPostDetailPage() {
       feedback.success(MESSAGES.BLOG_POST_PUBLISHED);
       navigate(PATHS.blog);
     } catch (err) {
+      restoreFocus.current = true;
       const serverErrors = serverFieldErrors(err);
       if (serverErrors === null) {
         feedback.error(err);
       } else {
         setErrors(serverErrors.fields);
+        focusFirstInvalid(serverErrors.fields);
         if (serverErrors.unplaced) {
           feedback.error(serverErrors.unplaced);
         }
@@ -178,6 +206,7 @@ export function BlogPostDetailPage() {
                   fullWidth
                   value={title}
                   onChange={handleTitleChange}
+                  inputRef={titleInput}
                   error={errors.title !== ''}
                   helperText={errors.title || undefined}
                   slotProps={{
@@ -192,6 +221,7 @@ export function BlogPostDetailPage() {
                   fullWidth
                   value={description}
                   onChange={handleDescriptionChange}
+                  inputRef={descriptionInput}
                   error={errors.description !== ''}
                   helperText={errors.description || undefined}
                   slotProps={{
@@ -203,7 +233,7 @@ export function BlogPostDetailPage() {
                   <Button component={RouterLink} to={PATHS.blog} variant="outlined">
                     Back
                   </Button>
-                  <Button type="submit" variant="contained" loading={saving}>
+                  <Button ref={saveButton} type="submit" variant="contained" loading={saving}>
                     Save
                   </Button>
                 </Stack>
