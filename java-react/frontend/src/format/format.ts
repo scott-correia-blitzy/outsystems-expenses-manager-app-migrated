@@ -38,23 +38,32 @@ function isFiniteAmount(value: Amount): value is number {
   return typeof value === 'number' && Number.isFinite(value);
 }
 
-function roundedCents(value: number): number {
-  return Math.round(Number((Math.abs(value) * 100).toPrecision(15)));
+function roundedCents(value: number): bigint {
+  const [mantissa, exponent = '0'] = String(Math.abs(value)).split('e');
+  const [whole, fraction = ''] = mantissa.split('.');
+  const digits = whole + fraction;
+  const scale = Number(exponent) + 2 - fraction.length;
+  if (scale >= 0) {
+    return BigInt(digits) * 10n ** BigInt(scale);
+  }
+  const padded = digits.padStart(1 - scale, '0');
+  const halfUp = padded.charAt(padded.length + scale) >= '5' ? 1n : 0n;
+  return BigInt(padded.slice(0, scale)) + halfUp;
 }
 
-function minusSign(value: number, cents: number): string {
-  return value < 0 && cents > 0 ? '-' : '';
+function minusSign(value: number, cents: bigint): string {
+  return value < 0 && cents > 0n ? '-' : '';
 }
 
-function units(cents: number): string {
-  return String(Math.floor(cents / 100));
+function units(cents: bigint): string {
+  return String(cents / 100n);
 }
 
-function decimals(cents: number): string {
-  return pad(cents % 100);
+function decimals(cents: bigint): string {
+  return pad(Number(cents % 100n));
 }
 
-function groupedEuros(cents: number): string {
+function groupedEuros(cents: bigint): string {
   return `${units(cents).replace(THOUSANDS, '.')},${decimals(cents)}`;
 }
 
@@ -69,7 +78,7 @@ export function formatEuro(value: Amount): string {
 export function formatSignedEuro(value: Amount): string {
   if (isFiniteAmount(value) && value > 0) {
     const cents = roundedCents(value);
-    if (cents > 0) {
+    if (cents > 0n) {
       return `€ +${groupedEuros(cents)}`;
     }
   }
@@ -102,7 +111,7 @@ function parseIso(value: string): DateParts | null {
 }
 
 function formatIso(value: IsoValue, render: (parts: DateParts) => string): string {
-  if (!value) {
+  if (typeof value !== 'string' || value === '') {
     return '';
   }
   const parts = parseIso(value);
