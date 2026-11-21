@@ -7,6 +7,7 @@ import com.massmutual.expensesmanager.web.dto.BlogPostRequest;
 import jakarta.validation.Valid;
 import java.util.List;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -39,14 +40,14 @@ public class BlogController {
         return blogService.get(principal.toCaller(), id);
     }
 
-    @PostMapping
+    @PostMapping(produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<BlogPostView> create(@AuthenticationPrincipal AppUserPrincipal principal,
             @Valid @RequestBody BlogPostRequest body) {
         BlogPostView created = blogService.create(principal.toCaller(), toInput(body));
         return ResponseEntity.status(HttpStatus.CREATED).body(created);
     }
 
-    @PutMapping("/{id}")
+    @PutMapping(path = "/{id}", produces = MediaType.APPLICATION_JSON_VALUE)
     public BlogPostView update(@AuthenticationPrincipal AppUserPrincipal principal, @PathVariable Long id,
             @Valid @RequestBody BlogPostRequest body) {
         return blogService.update(principal.toCaller(), id, toInput(body));

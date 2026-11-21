@@ -10,6 +10,7 @@ import org.springframework.security.core.Authentication;
 import org.springframework.security.core.AuthenticationException;
 import org.springframework.stereotype.Service;
 
+import com.massmutual.expensesmanager.domain.AppUser;
 import com.massmutual.expensesmanager.domain.Role;
 import com.massmutual.expensesmanager.service.model.SessionUser;
 
@@ -38,13 +39,8 @@ public class AuthService {
     public SessionUser sessionUser(AppUserPrincipal principal) {
         Set<Role> roles = principal.getRoles();
         List<String> roleNames = roles.stream().sorted().map(Role::name).toList();
-        return new SessionUser(principal.getUsername(), displayName(principal), roleNames, landingRoute(roles));
-    }
-
-    // Name is optional for provisioned users, but the signed-in shell always shows one.
-    private static String displayName(AppUserPrincipal principal) {
-        String name = principal.getDisplayName();
-        return name == null || name.isBlank() ? principal.getUsername() : name;
+        String displayName = AppUser.displayName(principal.getUsername(), principal.getDisplayName());
+        return new SessionUser(principal.getUsername(), displayName, roleNames, landingRoute(roles));
     }
 
     public static String landingRoute(Set<Role> roles) {

@@ -73,24 +73,39 @@ public class AmountCalculator {
                 : Optional.empty();
     }
 
+    // Euro values derive from the amount and distance as their columns store them.
     public LineAmounts lineAmounts(ReportKind kind, Integer typeId, Integer currencyId,
             BigDecimal amount, BigDecimal kilometers) {
-        Optional<FieldViolation> violation = lineAmountsViolation(kind, typeId, currencyId, amount, kilometers);
+        BigDecimal storedAmount = roundedAmount(amount);
+        BigDecimal storedKilometers = roundedDistance(kilometers);
+        Optional<FieldViolation> violation =
+                lineAmountsViolation(kind, typeId, currencyId, storedAmount, storedKilometers);
         if (violation.isPresent()) {
             throw ApiException.validation(List.of(violation.get()));
         }
         if (isKilometersExpense(kind, typeId)) {
-            BigDecimal euros = mileage(kilometers);
+            BigDecimal euros = mileage(storedKilometers);
             // The stored amount is the computed euro value, so the line's currency is always Euro.
-            return new LineAmounts(ReferenceIds.CURRENCY_EURO, euros, kilometers, euros);
+            return new LineAmounts(ReferenceIds.CURRENCY_EURO, euros, storedKilometers, euros);
         }
-        Objects.requireNonNull(amount, "amount");
+        Objects.requireNonNull(storedAmount, "amount");
         if (Objects.equals(currencyId, ReferenceIds.CURRENCY_DOLLAR)) {
-            BigDecimal euros = stored(amount.multiply(properties.dollarsToEuros()));
-            return new LineAmounts(ReferenceIds.CURRENCY_DOLLAR, stored(amount), null, euros);
+            BigDecimal euros = stored(storedAmount.multiply(properties.dollarsToEuros()));
+            return new LineAmounts(ReferenceIds.CURRENCY_DOLLAR, stored(storedAmount), null, euros);
         }
-        BigDecimal euros = stored(amount);
+        BigDecimal euros = stored(storedAmount);
         return new LineAmounts(currencyId, euros, null, euros);
+    }
+
+    // Both return a value too extreme to round as given, so the column range check still rejects it.
+    public BigDecimal roundedAmount(BigDecimal amount) {
+        return amount != null && withinRange(amount, STORED_INTEGER_DIGITS) ? stored(amount) : amount;
+    }
+
+    public BigDecimal roundedDistance(BigDecimal kilometers) {
+        return kilometers != null && withinRange(kilometers, DISTANCE_INTEGER_DIGITS)
+                ? kilometers.setScale(DISTANCE_SCALE, RoundingMode.HALF_UP)
+                : kilometers;
     }
 
     public BigDecimal vat(BigDecimal euros) {

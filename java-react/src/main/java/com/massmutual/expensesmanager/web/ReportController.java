@@ -13,6 +13,7 @@ import com.massmutual.expensesmanager.web.dto.RenameReportRequest;
 import jakarta.validation.Valid;
 import java.util.List;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -47,7 +48,7 @@ public class ReportController {
         return reportService.list(principal.toCaller(), kind, status, q, sort, from, to);
     }
 
-    @PostMapping
+    @PostMapping(produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<ReportSummary> create(@AuthenticationPrincipal AppUserPrincipal principal,
             @Valid @RequestBody CreateReportRequest body) {
         ReportKind kind = ReportKind.fromPath(body.kind().trim())
@@ -62,7 +63,7 @@ public class ReportController {
         return reportService.detail(principal.toCaller(), kind, id);
     }
 
-    @PutMapping("/{kind}/{id}")
+    @PutMapping(path = "/{kind}/{id}", produces = MediaType.APPLICATION_JSON_VALUE)
     public ReportSummary rename(@AuthenticationPrincipal AppUserPrincipal principal,
             @PathVariable ReportKind kind, @PathVariable Long id, @Valid @RequestBody RenameReportRequest body) {
         return reportService.rename(principal.toCaller(), kind, id, body.title());
@@ -75,13 +76,13 @@ public class ReportController {
         return ResponseEntity.noContent().build();
     }
 
-    @PostMapping("/{kind}/{id}/submit")
+    @PostMapping(path = "/{kind}/{id}/submit", produces = MediaType.APPLICATION_JSON_VALUE)
     public ReportSummary submit(@AuthenticationPrincipal AppUserPrincipal principal,
             @PathVariable ReportKind kind, @PathVariable Long id) {
         return reportService.submit(principal.toCaller(), kind, id);
     }
 
-    @PostMapping("/{kind}/{id}/decision")
+    @PostMapping(path = "/{kind}/{id}/decision", produces = MediaType.APPLICATION_JSON_VALUE)
     public ReportSummary decide(@AuthenticationPrincipal AppUserPrincipal principal,
             @PathVariable ReportKind kind, @PathVariable Long id, @Valid @RequestBody DecisionRequest body) {
         return reportService.decide(principal.toCaller(), kind, id, body.accept());

@@ -285,7 +285,7 @@ public class ReportService {
     }
 
     private String name(Long userId) {
-        return userId == null ? null : appUserRepository.findNameById(userId).orElse(null);
+        return appUserRepository.findDisplayNameById(userId).orElse(null);
     }
 
     private ReportRepository<ReportEntity> reports(ReportKind kind) {

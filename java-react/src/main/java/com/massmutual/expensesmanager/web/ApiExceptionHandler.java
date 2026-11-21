@@ -19,6 +19,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.util.StringUtils;
+import org.springframework.validation.BindingResult;
 import org.springframework.validation.FieldError;
 import org.springframework.web.HttpMediaTypeNotAcceptableException;
 import org.springframework.web.HttpMediaTypeNotSupportedException;
@@ -59,9 +60,13 @@ public class ApiExceptionHandler {
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ResponseEntity<ErrorResponse> handleInvalidBody(MethodArgumentNotValidException ex) {
-        return validationFailed(ex.getBindingResult().getAllErrors().stream()
+        return validationFailed(violations(ex.getBindingResult()));
+    }
+
+    static List<FieldViolation> violations(BindingResult result) {
+        return result.getAllErrors().stream()
                 .map(error -> violation(error, error.getObjectName()))
-                .toList());
+                .toList();
     }
 
     @ExceptionHandler(HandlerMethodValidationException.class)

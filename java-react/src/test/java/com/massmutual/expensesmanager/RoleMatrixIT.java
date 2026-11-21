@@ -53,6 +53,7 @@ import org.springframework.boot.web.servlet.context.ServletWebServerApplicationC
 import org.springframework.core.env.Environment;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -151,6 +152,10 @@ class RoleMatrixIT {
     private static ExpenseRepository expenses;
     private static EarningRepository earnings;
     private static long blogPostId;
+    private static long unacceptedDraftReportId;
+    private static long unacceptedLineId;
+    private static long unacceptedSubmitReportId;
+    private static long unacceptedDecisionReportId;
 
     enum Account {
         ANONYMOUS(null, null, Set.of()),
@@ -232,6 +237,12 @@ class RoleMatrixIT {
         for (String kind : KINDS) {
             targets.put(kind, provisionTargets(kind, owner));
         }
+        unacceptedDraftReportId = expenseReport(owner, ReferenceIds.STATUS_DRAFT, "Unaccepted write target");
+        unacceptedLineId = expenseLine(unacceptedDraftReportId, owner);
+        unacceptedSubmitReportId = expenseReport(owner, ReferenceIds.STATUS_DRAFT, "Unaccepted submit target");
+        expenseLine(unacceptedSubmitReportId, owner);
+        unacceptedDecisionReportId = expenseReport(owner, ReferenceIds.STATUS_SUBMITTED, "Unaccepted decision target");
+        expenseLine(unacceptedDecisionReportId, owner);
         invoiceExpenses.save(fixtureInvoice(new InvoiceExpense(targets.get(EXPENSE).downloadLine())));
         invoiceEarnings.save(fixtureInvoice(new InvoiceEarning(targets.get(EARNING).downloadLine())));
 
@@ -544,6 +555,43 @@ class RoleMatrixIT {
         }
     }
 
+    static Stream<Arguments> unrecognisedStoredRoles() {
+        return Stream.of(
+                Arguments.of("user", Set.of(), List.of("Registered"), "/blog"),
+                Arguments.of("administrator", Set.of(Role.User), List.of("User", "Registered"), "/dashboard"));
+    }
+
+    @ParameterizedTest(name = "\"{0}\" stored beside {1}")
+    @MethodSource("unrecognisedStoredRoles")
+    @ExtendWith(OutputCaptureExtension.class)
+    @DisplayName("A stored role matching no role name grants nothing and is logged without its text")
+    void unrecognisedStoredRoleGrantsNothing(String storedRole, Set<Role> roles, List<String> sessionRoles,
+            String landingRoute, @Autowired AppUserRepository appUsers, @Autowired PasswordEncoder passwordEncoder,
+            @Autowired JdbcTemplate jdbc, CapturedOutput output) {
+        String username = "storedrole_" + UUID.randomUUID().toString().replace("-", "");
+        long userId = appUsers.save(
+                new AppUser(username, "Stored role", passwordEncoder.encode(FIXTURE_PASSWORD), roles)).getId();
+        // The entity cannot hold an unknown role, so the row is written as provisioning outside the app would.
+        jdbc.update("INSERT INTO AppUserRole (UserId, Role) VALUES (?, ?)", userId, storedRole);
+        int logStart = output.getAll().length();
+
+        try (ApiClient signedIn = new ApiClient(port); ApiClient rejected = new ApiClient(port)) {
+            Response login = signedIn.login(username, FIXTURE_PASSWORD);
+            assertThat(login.status()).as(login.toString()).isEqualTo(200);
+            List<String> granted = new ArrayList<>();
+            login.json().path("roles").forEach(role -> granted.add(role.asText()));
+            assertThat(granted).containsExactlyElementsOf(sessionRoles);
+            assertThat(login.json().path("landingRoute").asText()).isEqualTo(landingRoute);
+
+            Response wrongPassword = rejected.login(username, "not-the-password");
+            assertThat(wrongPassword.status()).as(wrongPassword.toString()).isEqualTo(401);
+            assertThat(wrongPassword.json().path("code").asText()).isEqualTo(ApiException.BAD_CREDENTIALS);
+        }
+        assertThat(handlerLogLines(output, logStart, AppUser.class)).hasSize(2)
+                .allSatisfy(line -> assertThat(line).contains("WARN", "Ignoring a role in AppUserRole")
+                        .doesNotContain(storedRole));
+    }
+
     @ParameterizedTest(name = "username \"{0}\", password \"{1}\"")
     @CsvSource({"'', 123456", "em_user1, ''", "'   ', 123456", "em_user1, '   '"})
     @DisplayName("Login with a blank field is rejected as invalid")
@@ -685,6 +733,58 @@ class RoleMatrixIT {
         assertThat(handlerLines).noneMatch(line -> line.contains("ERROR"));
         assertThat(handlerLines).anyMatch(line ->
                 line.contains("WARN") && line.contains(HttpMediaTypeNotAcceptableException.class.getName()));
+    }
+
+    static Stream<Arguments> unacceptableWrites() {
+        return Stream.of(MediaType.APPLICATION_XML_VALUE, MediaType.TEXT_HTML_VALUE)
+                .flatMap(RoleMatrixIT::writesAccepting);
+    }
+
+    // Titles name the Accept value, so a write committed by one invocation cannot mask another's.
+    private static Stream<Arguments> writesAccepting(String accept) {
+        String title = "Unaccepted " + accept;
+        String draft = reportPath(EXPENSE, unacceptedDraftReportId);
+        String submitTarget = reportPath(EXPENSE, unacceptedSubmitReportId);
+        String decisionTarget = reportPath(EXPENSE, unacceptedDecisionReportId);
+        String post = "/api/blog/" + blogPostId;
+        ObjectNode login = ApiClient.object()
+                .put("username", Account.EM_USER1.username)
+                .put("password", Account.EM_USER1.password)
+                .put("rememberMe", false);
+        return Stream.of(
+                Arguments.of(accepting(accept, "POST", "/api/auth/login", login), Account.ANONYMOUS, "/api/auth/me"),
+                Arguments.of(accepting(accept, "POST", "/api/reports", titleBody(title).put("kind", EXPENSE)),
+                        Account.EM_USER1, "/api/reports?kind=" + EXPENSE),
+                Arguments.of(accepting(accept, "PUT", draft, titleBody(title)), Account.EM_USER1, draft),
+                Arguments.of(accepting(accept, "POST", submitTarget + "/submit", null), Account.EM_USER1, submitTarget),
+                Arguments.of(accepting(accept, "POST", decisionTarget + "/decision",
+                        ApiClient.object().put("accept", false)), Account.EM_ADMIN, decisionTarget),
+                Arguments.of(accepting(accept, "POST", draft + "/lines", lineBody(EXPENSE).put("title", title)),
+                        Account.EM_USER1, draft),
+                Arguments.of(accepting(accept, "PUT", linePath(EXPENSE, unacceptedLineId),
+                        lineBody(EXPENSE).put("title", title)), Account.EM_USER1, draft),
+                Arguments.of(accepting(accept, "POST", "/api/blog", titleBody(title).put("description", title)),
+                        Account.EM_ADMIN, "/api/blog"),
+                Arguments.of(accepting(accept, "PUT", post, titleBody(title).put("description", title)),
+                        Account.EM_ADMIN, post));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("unacceptableWrites")
+    @DisplayName("A JSON write whose Accept header excludes JSON gets the generic 500 and changes nothing")
+    void unacceptableWriteChangesNothing(Call call, Account caller, String statePath) {
+        try (ApiClient fresh = freshClient(caller)) {
+            Response before = fresh.get(statePath);
+
+            Response response = call.request().apply(fresh);
+
+            assertThat(response.status()).as(response.toString()).isEqualTo(500);
+            assertThat(response.header("Content-Type")).startsWith(MediaType.APPLICATION_JSON_VALUE);
+            assertThat(response.as(ErrorResponse.class)).isEqualTo(INTERNAL_ERROR_BODY);
+            Response after = fresh.get(statePath);
+            assertThat(after.status()).as("GET " + statePath).isEqualTo(before.status());
+            assertThat(after.json()).as("GET " + statePath).isEqualTo(before.json());
+        }
     }
 
     @ParameterizedTest(name = "{0} {1}")
@@ -982,6 +1082,11 @@ class RoleMatrixIT {
     private static Call uploadInvoice(String kind, long lineId) {
         String path = invoicePath(kind, lineId);
         return new Call("PUT " + path, c -> c.putFile(path, INVOICE_NAME, INVOICE_TYPE, PNG));
+    }
+
+    private static Call accepting(String accept, String method, String path, ObjectNode body) {
+        return new Call(method + " " + path + " with Accept: " + accept, c -> c.sendWithoutCsrf(method, path, body,
+                Map.of("Accept", accept, ApiClient.CSRF_HEADER, c.cookie(ApiClient.CSRF_COOKIE).orElseThrow())));
     }
 
     private static List<Long> ids(JsonNode rows) {

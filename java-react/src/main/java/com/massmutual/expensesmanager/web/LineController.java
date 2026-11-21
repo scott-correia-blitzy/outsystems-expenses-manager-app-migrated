@@ -11,6 +11,7 @@ import jakarta.validation.Valid;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.text.Normalizer;
 import org.springframework.core.io.InputStreamResource;
 import org.springframework.core.io.Resource;
 import org.springframework.http.ContentDisposition;
@@ -21,6 +22,7 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.util.StringUtils;
+import org.springframework.validation.BindingResult;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -31,6 +33,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestPart;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
+import org.springframework.web.util.UriUtils;
 
 @RestController
 @RequestMapping("/api")
@@ -44,17 +47,19 @@ public class LineController {
         this.invoiceService = invoiceService;
     }
 
-    @PostMapping("/reports/{kind}/{id}/lines")
+    @PostMapping(path = "/reports/{kind}/{id}/lines", produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<LineView> createLine(@AuthenticationPrincipal AppUserPrincipal principal,
-            @PathVariable ReportKind kind, @PathVariable Long id, @Valid @RequestBody LineRequest body) {
-        LineView line = lineService.create(principal.toCaller(), kind, id, toInput(kind, body));
+            @PathVariable ReportKind kind, @PathVariable Long id, @Valid @RequestBody LineRequest body,
+            BindingResult bodyErrors) {
+        LineView line = lineService.create(principal.toCaller(), kind, id, toInput(kind, body, bodyErrors));
         return ResponseEntity.status(HttpStatus.CREATED).body(line);
     }
 
-    @PutMapping("/lines/{kind}/{id}")
+    @PutMapping(path = "/lines/{kind}/{id}", produces = MediaType.APPLICATION_JSON_VALUE)
     public LineView updateLine(@AuthenticationPrincipal AppUserPrincipal principal,
-            @PathVariable ReportKind kind, @PathVariable Long id, @Valid @RequestBody LineRequest body) {
-        return lineService.update(principal.toCaller(), kind, id, toInput(kind, body));
+            @PathVariable ReportKind kind, @PathVariable Long id, @Valid @RequestBody LineRequest body,
+            BindingResult bodyErrors) {
+        return lineService.update(principal.toCaller(), kind, id, toInput(kind, body, bodyErrors));
     }
 
     @DeleteMapping("/lines/{kind}/{id}")
@@ -84,12 +89,13 @@ public class LineController {
         return ResponseEntity.ok()
                 .contentType(mediaTypeOf(invoice.contentType()))
                 .contentLength(content.length)
-                .header(HttpHeaders.CONTENT_DISPOSITION, attachment(invoice.filename()).toString())
+                .header(HttpHeaders.CONTENT_DISPOSITION, attachment(invoice.filename()))
                 // An InputStreamResource is logged by its description, not its bytes, and gets no Range handling.
                 .body(new InputStreamResource(new ByteArrayInputStream(content)));
     }
 
-    private static LineService.LineInput toInput(ReportKind kind, LineRequest request) {
+    // Body errors travel with the input, so access checks run first and one 422 lists every violated rule.
+    private static LineService.LineInput toInput(ReportKind kind, LineRequest request, BindingResult bodyErrors) {
         return new LineService.LineInput(
                 kind == ReportKind.EXPENSE ? request.expenseTypeId() : request.earningTypeId(),
                 request.currencyId(),
@@ -97,23 +103,30 @@ public class LineController {
                 request.kilometers(),
                 request.title(),
                 request.description(),
-                request.date());
+                request.date(),
+                ApiExceptionHandler.violations(bodyErrors));
     }
 
-    private static ContentDisposition attachment(String filename) {
+    private static String attachment(String filename) {
         ContentDisposition.Builder disposition = ContentDisposition.attachment();
         if (!StringUtils.hasText(filename)) {
-            return disposition.build();
+            return disposition.build().toString();
         }
-        // A charset RFC 2047-encodes the plain filename, so only printable ASCII, safe in a header, goes without one.
         if (isPrintableAscii(filename)) {
-            return disposition.filename(filename).build();
+            return disposition.filename(filename).build().toString();
         }
-        return disposition.filename(filename, StandardCharsets.UTF_8).build();
+        // Spring's charset option would RFC 2047-encode filename=, so clients ignoring filename* get an ASCII fallback.
+        return disposition.filename(asciiFallback(filename)).build()
+                + "; filename*=UTF-8''" + UriUtils.encode(filename, StandardCharsets.UTF_8);
     }
 
     private static boolean isPrintableAscii(String value) {
         return value.chars().allMatch(c -> c >= ' ' && c <= '~');
+    }
+
+    private static String asciiFallback(String filename) {
+        String unaccented = Normalizer.normalize(filename, Normalizer.Form.NFD).replaceAll("\\p{M}", "");
+        return unaccented.replaceAll("[^ -~]", "_");
     }
 
     private static MediaType mediaTypeOf(String contentType) {

@@ -11,6 +11,7 @@ import jakarta.servlet.http.HttpSession;
 import jakarta.validation.Valid;
 import java.time.Duration;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseCookie;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -52,7 +53,7 @@ public class AuthController {
         this.csrfStrategy = strategy;
     }
 
-    @PostMapping("/login")
+    @PostMapping(path = "/login", produces = MediaType.APPLICATION_JSON_VALUE)
     public SessionUser login(@Valid @RequestBody LoginRequest body, HttpServletRequest request,
             HttpServletResponse response) {
         Authentication authentication = authService.authenticate(body.username(), body.password());

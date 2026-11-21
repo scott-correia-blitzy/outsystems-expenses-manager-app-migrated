@@ -13,9 +13,11 @@ import java.time.Clock;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import org.springframework.stereotype.Service;
@@ -46,6 +48,7 @@ public class LineService {
         this.clock = clock;
     }
 
+    // requestViolations are the request's bean-validation errors, reported in one 422 with this service's own.
     public record LineInput(
             Integer typeId,
             Integer currencyId,
@@ -53,7 +56,12 @@ public class LineService {
             BigDecimal kilometers,
             String title,
             String description,
-            LocalDate date) {
+            LocalDate date,
+            List<FieldViolation> requestViolations) {
+
+        public LineInput {
+            requestViolations = requestViolations == null ? List.of() : List.copyOf(requestViolations);
+        }
     }
 
     @Transactional
@@ -61,12 +69,13 @@ public class LineService {
         ReportEntity report = policy.loadReportForWrite(kind, reportId);
         policy.requireOwnerWrite(caller, report);
         policy.requireDraft(report, LegacyMessages.NOT_DRAFT);
-        validate(kind, in);
+        LineInput rounded = roundedToColumns(in);
+        validate(kind, rounded);
 
         LocalDateTime now = LocalDateTime.now(clock);
         LineEntity line = kindRepositories.newLine(kind);
         line.setReportId(report.getId());
-        apply(kind, line, in);
+        apply(kind, line, rounded);
         line.setCreatedBy(caller.id());
         line.setCreatedOn(now);
         line.setUpdatedBy(caller.id());
@@ -83,9 +92,10 @@ public class LineService {
         ReportEntity report = locked.report();
         policy.requireOwnerWrite(caller, report);
         policy.requireDraft(report, LegacyMessages.NOT_DRAFT);
-        validate(kind, in);
+        LineInput rounded = roundedToColumns(in);
+        validate(kind, rounded);
 
-        apply(kind, line, in);
+        apply(kind, line, rounded);
         line.setUpdatedBy(caller.id());
         line.setUpdatedOn(LocalDateTime.now(clock));
         LineEntity saved = kindRepositories.lines(kind).save(line);
@@ -149,9 +159,16 @@ public class LineService {
         return violations;
     }
 
-    private void validate(ReportKind kind, LineInput in) {
+    // Validation sees the stored values, so a positive input that rounds to zero is rejected.
+    private LineInput roundedToColumns(LineInput in) {
         Objects.requireNonNull(in, "line input");
-        List<FieldViolation> violations = new ArrayList<>(textViolations(in.title(), in.description()));
+        return new LineInput(in.typeId(), in.currencyId(), calculator.roundedAmount(in.amount()),
+                calculator.roundedDistance(in.kilometers()), in.title(), in.description(), in.date(),
+                in.requestViolations());
+    }
+
+    private void validate(ReportKind kind, LineInput in) {
+        Set<FieldViolation> violations = new LinkedHashSet<>(textViolations(in.title(), in.description()));
         if (in.date() == null || in.date().isAfter(LocalDate.now(clock))) {
             violations.add(new FieldViolation("date", LegacyMessages.DATE_PAST_OR_CURRENT));
         }
@@ -176,8 +193,9 @@ public class LineService {
         }
         calculator.lineAmountsViolation(kind, in.typeId(), in.currencyId(), in.amount(), in.kilometers())
                 .ifPresent(violations::add);
+        violations.addAll(in.requestViolations());
         if (!violations.isEmpty()) {
-            throw ApiException.validation(violations);
+            throw ApiException.validation(List.copyOf(violations));
         }
     }
 

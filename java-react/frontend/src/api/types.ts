@@ -156,7 +156,7 @@ export interface BlogPostView {
   title: string;
   description: string;
   createdOn: string;
-  createdByName: string;
+  createdByName: string | null;
   updatedOn: string | null;
   updatedByName: string | null;
 }

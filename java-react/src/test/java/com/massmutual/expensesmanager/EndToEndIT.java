@@ -1,6 +1,7 @@
 package com.massmutual.expensesmanager;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.params.provider.Arguments.arguments;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -15,6 +16,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
@@ -26,6 +29,7 @@ import com.massmutual.expensesmanager.repository.EarningReportRepository;
 import com.massmutual.expensesmanager.repository.ExpenseReportRepository;
 import com.massmutual.expensesmanager.service.ApiException;
 import com.massmutual.expensesmanager.service.LegacyMessages;
+import com.massmutual.expensesmanager.service.model.FieldViolation;
 import com.massmutual.expensesmanager.support.ApiClient;
 import com.massmutual.expensesmanager.support.MutableClock;
 import com.massmutual.expensesmanager.support.TestDatabase;
@@ -36,7 +40,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.ValueSource;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.availability.AvailabilityChangeEvent;
 import org.springframework.boot.availability.ReadinessState;
@@ -190,10 +195,21 @@ class EndToEndIT {
         }
     }
 
+    static Stream<Arguments> invoiceDownloadKeepsUploadedFilename() {
+        return Stream.of(
+                arguments("receipt.png", "receipt.png"),
+                arguments("a\"b.png", "a\\\"b.png"),
+                arguments("a\\b.png", "a\\\\b.png"),
+                arguments("reçu-€.png", "recu-_.png"),
+                arguments("reçu été.png", "recu ete.png"),
+                arguments("receipt\r\n.png", "receipt__.png"),
+                arguments("receipt\t.png", "receipt_.png"));
+    }
+
     @ParameterizedTest
-    @ValueSource(strings = {"receipt.png", "reçu-€.png", "a\"b.png", "a\\b.png", "receipt\r\n.png", "receipt\t.png"})
-    @DisplayName("an invoice downloads under the exact filename it was uploaded with")
-    void invoiceDownloadKeepsUploadedFilename(String filename) {
+    @MethodSource
+    @DisplayName("an invoice downloads under the exact filename it was uploaded with, beside a plain ASCII fallback")
+    void invoiceDownloadKeepsUploadedFilename(String filename, String quotedAsciiFilename) {
         try (ApiClient user = ApiClient.loggedIn(port, USER, PASSWORD)) {
             long reportId = expectStatus(user.postJson("/api/reports", newReport("Invoice names")), 201)
                     .json().path("id").asLong();
@@ -214,6 +230,10 @@ class EndToEndIT {
             ApiClient.Response download = expectStatus(user.get(invoicePath), 200);
             String header = download.header("Content-Disposition");
             assertThat(header).isNotNull().doesNotContain("\r", "\n");
+            Matcher plainFilename = Pattern.compile("attachment; filename=\"((?:[^\"\\\\]|\\\\.)*)\"").matcher(header);
+            assertThat(plainFilename.lookingAt()).as(header).isTrue();
+            assertThat(plainFilename.group(1)).as(header)
+                    .isEqualTo(quotedAsciiFilename).matches("[ -~]*").doesNotContain("=?");
             ContentDisposition disposition = ContentDisposition.parse(header);
             assertThat(disposition.isAttachment()).as(header).isTrue();
             assertThat(disposition.getFilename()).as(header).isEqualTo(filename);
@@ -323,6 +343,55 @@ class EndToEndIT {
                     .doesNotContain(marker, "4417.41", "4418.81", "4419.19", "-119, 80, 78, 71");
         } finally {
             configuredLevels.forEach(loggingSystem::setLogLevel);
+        }
+    }
+
+    static Stream<Arguments> invalidLineWriteListsEveryViolatedRule() {
+        return Stream.of(
+                arguments("", null, new FieldViolation("title", LegacyMessages.FIELD_REQUIRED)),
+                arguments("Title", "d".repeat(1501),
+                        new FieldViolation("description", LegacyMessages.MAX_LENGTH_1500)));
+    }
+
+    @ParameterizedTest
+    @MethodSource
+    @DisplayName("a line create or update answers one 422 listing the text error and every other violated rule")
+    void invalidLineWriteListsEveryViolatedRule(String title, String description, FieldViolation textError) {
+        try (ApiClient user = ApiClient.loggedIn(port, USER, PASSWORD)) {
+            String reportPath = "/api/reports/expense/" + expectStatus(
+                    user.postJson("/api/reports", newReport("Line errors")), 201).json().path("id").asLong();
+            ObjectNode valid = ApiClient.object();
+            valid.put("expenseTypeId", 2);
+            valid.put("currencyId", 1);
+            valid.put("amount", new BigDecimal("10.00"));
+            valid.put("title", "Valid line");
+            valid.put("description", "");
+            valid.put("date", "2024-05-22");
+            long lineId = expectStatus(user.postJson(reportPath + "/lines", valid), 201).json().path("id").asLong();
+
+            ObjectNode invalid = ApiClient.object();
+            invalid.put("expenseTypeId", 99);
+            invalid.put("currencyId", 99);
+            invalid.put("amount", 0);
+            invalid.put("title", title);
+            invalid.put("description", description);
+            invalid.put("date", "2099-01-01");
+            for (ApiClient.Response response : List.of(user.postJson(reportPath + "/lines", invalid),
+                    user.putJson("/api/lines/expense/" + lineId, invalid))) {
+                JsonNode body = expectStatus(response, 422).json();
+                assertThat(body.path("code").asText()).isEqualTo(ApiException.VALIDATION_FAILED);
+                assertThat(StreamSupport.stream(body.path("fieldErrors").spliterator(), false)
+                        .map(error -> new FieldViolation(error.path("field").asText(), error.path("message").asText())))
+                        .containsExactlyInAnyOrder(textError,
+                                new FieldViolation("date", LegacyMessages.DATE_PAST_OR_CURRENT),
+                                new FieldViolation("expenseTypeId", LegacyMessages.FIELD_REQUIRED),
+                                new FieldViolation("currencyId", LegacyMessages.FIELD_REQUIRED),
+                                new FieldViolation("amount", LegacyMessages.MUST_SET_AMOUNT));
+            }
+
+            JsonNode lines = expectStatus(user.get(reportPath), 200).json().path("lines");
+            assertThat(lines.size()).isEqualTo(1);
+            assertThat(lines.path(0).path("title").asText()).isEqualTo("Valid line");
         }
     }
 

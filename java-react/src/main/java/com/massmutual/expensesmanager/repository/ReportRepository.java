@@ -21,6 +21,7 @@ public interface ReportRepository<R extends ReportEntity> extends JpaRepository<
 
     // Scoped on SubmitedBy like the legacy list filter; ownership checks elsewhere use CreatedBy.
     // Without approver or admin scope, a separate owner-only query lets H2 use the SubmitedBy index.
+    // q goes into LIKE unescaped, so % and _ stay wildcards, as in the legacy Like filters.
     default List<ReportListRow> findListRows(
             Long callerId,
             boolean approver,
@@ -42,7 +43,7 @@ public interface ReportRepository<R extends ReportEntity> extends JpaRepository<
     }
 
     @Query("select new com.massmutual.expensesmanager.repository.ReportListRow("
-            + "r.id, r.code, r.title, r.statusId, r.createdOn, r.submitedOn, u.name)"
+            + "r.id, r.code, r.title, r.statusId, r.createdOn, r.submitedOn, u.username, u.name)"
             + " from #{#entityName} r left join AppUser u on u.id = r.submitedBy"
             + " where r.submitedBy = :callerId"
             + " and (:statusId is null or r.statusId = :statusId)"
@@ -58,7 +59,7 @@ public interface ReportRepository<R extends ReportEntity> extends JpaRepository<
             @Param("to") LocalDateTime to);
 
     @Query("select new com.massmutual.expensesmanager.repository.ReportListRow("
-            + "r.id, r.code, r.title, r.statusId, r.createdOn, r.submitedOn, u.name)"
+            + "r.id, r.code, r.title, r.statusId, r.createdOn, r.submitedOn, u.username, u.name)"
             + " from #{#entityName} r left join AppUser u on u.id = r.submitedBy"
             + " where (r.submitedBy = :callerId"
             + " or (:approver = true and r.statusId = " + ReferenceIds.STATUS_SUBMITTED + ")"

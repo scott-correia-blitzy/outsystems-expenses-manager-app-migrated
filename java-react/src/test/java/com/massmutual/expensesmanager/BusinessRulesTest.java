@@ -36,9 +36,11 @@ import com.massmutual.expensesmanager.repository.ReportRepository;
 import com.massmutual.expensesmanager.repository.StatusRepository;
 import com.massmutual.expensesmanager.service.AmountCalculator;
 import com.massmutual.expensesmanager.service.ApiException;
+import com.massmutual.expensesmanager.service.AppUserPrincipal;
 import com.massmutual.expensesmanager.service.AuthService;
 import com.massmutual.expensesmanager.service.BlogService;
 import com.massmutual.expensesmanager.service.Caller;
+import com.massmutual.expensesmanager.service.ClockConfig;
 import com.massmutual.expensesmanager.service.DashboardService;
 import com.massmutual.expensesmanager.service.ExpensesProperties;
 import com.massmutual.expensesmanager.service.InvoiceService;
@@ -72,6 +74,7 @@ import java.nio.file.Path;
 import java.time.Clock;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -1040,6 +1043,19 @@ class BusinessRulesTest {
     }
 
     @Test
+    void blogPostsStampedInTheSameSecondAreListedNewestIdFirst() {
+        Caller admin = newCaller(appUserRepository, Role.Administrator);
+        String keyword = UUID.randomUUID().toString();
+        Long first = blogService.create(admin, new BlogService.PostInput("First " + keyword, "")).id();
+        Long second = blogService.create(admin, new BlogService.PostInput("Second " + keyword, "")).id();
+
+        assertThat(blogService.search(admin, keyword))
+                .allSatisfy(post -> assertThat(post.createdOn()).isEqualTo(MutableClock.DEFAULT_TIME))
+                .extracting(BlogPostView::id)
+                .containsExactly(second, first);
+    }
+
+    @Test
     void listDateBoundsExcludeFromAndIncludeTo() {
         Caller owner = newCaller(appUserRepository, Role.User);
         LocalDateTime from = LocalDateTime.of(2024, 5, 20, 8, 15, 30);
@@ -1259,6 +1275,69 @@ class BusinessRulesTest {
                 .satisfies(stored -> assertThat(stored.getAmountInEuros()).isEqualByComparingTo("42.00"));
     }
 
+    static Stream<Arguments> valuesThatRoundToZeroInTheirColumnAreRejected() {
+        return Stream.of(
+                arguments(ReferenceIds.EXPENSE_TYPE_OTHER, ReferenceIds.CURRENCY_EURO, "0.00001", null, "amount",
+                        LegacyMessages.MUST_SET_AMOUNT),
+                arguments(ReferenceIds.EXPENSE_TYPE_TRAVEL, ReferenceIds.CURRENCY_DOLLAR, "0.00004", null, "amount",
+                        LegacyMessages.USD_AMOUNT_ABOVE_ZERO),
+                arguments(ReferenceIds.EXPENSE_TYPE_KILOMETERS, null, null, "0.000000001", "kilometers",
+                        LegacyMessages.DISTANCE_POSITIVE));
+    }
+
+    @ParameterizedTest(name = "type {0}, currency {1}, amount {2}, km {3} rejects {4} with \"{5}\"")
+    @MethodSource
+    void valuesThatRoundToZeroInTheirColumnAreRejected(
+            int typeId, Integer currencyId, String amount, String kilometers, String field, String message) {
+        Caller owner = newCaller(appUserRepository, Role.User);
+        LineView existing = draftWithLine(owner);
+        LineService.LineInput input = line(typeId, currencyId, decimal(amount), decimal(kilometers), "Tiny", "",
+                LINE_DATE);
+
+        assertFieldError(() -> lineService.create(owner, ReportKind.EXPENSE, existing.reportId(), input),
+                field, message);
+        assertFieldError(() -> lineService.update(owner, ReportKind.EXPENSE, existing.id(), input),
+                field, message);
+        assertThat(expenseRepository.findAll()).singleElement()
+                .satisfies(stored -> assertThat(stored.getAmountInEuros()).isEqualByComparingTo("42.00"));
+    }
+
+    static Stream<Arguments> linesStoreAndReturnValuesRoundedToTheirColumns() {
+        return Stream.of(
+                arguments(ReferenceIds.EXPENSE_TYPE_TRAVEL, ReferenceIds.CURRENCY_DOLLAR, "0.00005", null,
+                        "0.0001", null, "0.0001"),
+                arguments(ReferenceIds.EXPENSE_TYPE_KILOMETERS, null, null, "5E-9",
+                        "0.0000", "0.00000001", "0.0000"),
+                arguments(ReferenceIds.EXPENSE_TYPE_KILOMETERS, null, null, "2.123456785",
+                        "0.7857", "2.12345679", "0.7857"));
+    }
+
+    @ParameterizedTest(name = "type {0}, currency {1}, amount {2}, km {3} stores {4}, {5} km and {6} euros")
+    @MethodSource
+    void linesStoreAndReturnValuesRoundedToTheirColumns(int typeId, Integer currencyId, String amount,
+            String kilometers, String storedAmount, String storedKilometers, String storedEuros) {
+        Caller owner = newCaller(appUserRepository, Role.User);
+        LineView existing = draftWithLine(owner);
+        LineService.LineInput input = line(typeId, currencyId, decimal(amount), decimal(kilometers), "Rounded", "",
+                LINE_DATE);
+
+        LineView created = lineService.create(owner, ReportKind.EXPENSE, existing.reportId(), input);
+        LineView updated = lineService.update(owner, ReportKind.EXPENSE, existing.id(), input);
+
+        for (LineView view : List.of(created, updated)) {
+            Expense stored = expenseRepository.findById(view.id()).orElseThrow();
+            assertThat(stored.getAmount()).isEqualTo(decimal(storedAmount));
+            assertThat(stored.getKilometers()).isEqualTo(decimal(storedKilometers));
+            assertThat(stored.getAmountInEuros()).isEqualTo(decimal(storedEuros));
+            assertThat(view).isEqualTo(lineService.views(ReportKind.EXPENSE, List.of(stored)).getFirst());
+        }
+        AmountCalculator.LineAmounts amounts = amountCalculator.lineAmounts(
+                ReportKind.EXPENSE, typeId, currencyId, decimal(amount), decimal(kilometers));
+        assertThat(amounts.amount()).isEqualTo(decimal(storedAmount));
+        assertThat(amounts.kilometers()).isEqualTo(decimal(storedKilometers));
+        assertThat(amounts.amountInEuros()).isEqualTo(decimal(storedEuros));
+    }
+
     static Stream<Arguments> lineInputBreakingOneRuleIsRejectedAndChangesNothing() {
         LocalDate tomorrow = LocalDate.of(2024, 5, 24);
         Stream<Arguments> eitherKind = Arrays.stream(ReportKind.values()).flatMap(kind -> {
@@ -1396,6 +1475,15 @@ class BusinessRulesTest {
     }
 
     @Test
+    void productionClockStampsWholeSecondsInTheSystemZone() {
+        Clock production = new ClockConfig().clock();
+
+        assertThat(production.getZone()).isEqualTo(ZoneId.systemDefault()).isEqualTo(clock.getZone());
+        assertThat(production.instant().getNano()).isZero();
+        assertThat(LocalDateTime.now(production).getNano()).isZero();
+    }
+
+    @Test
     void ownerSavesRestampTheReportAndDecisionsStampOnlyProcessedOn() {
         Caller owner = newCaller(appUserRepository, Role.User);
         Caller admin = newCaller(appUserRepository, Role.Administrator);
@@ -1429,7 +1517,7 @@ class BusinessRulesTest {
         assertThat(afterDecision.getTitle()).isEqualTo("Stamps renamed");
     }
 
-    enum Submitter { CREATOR, ANOTHER_USER, NONE }
+    enum Submitter { CREATOR, ANOTHER_USER, UNKNOWN_USER, NONE }
 
     @ParameterizedTest(name = "submitter {0}")
     @EnumSource(Submitter.class)
@@ -1438,6 +1526,7 @@ class BusinessRulesTest {
         Caller submittedBy = switch (submitter) {
             case CREATOR -> owner;
             case ANOTHER_USER -> newCaller(appUserRepository, Role.User);
+            case UNKNOWN_USER -> new Caller(Long.MAX_VALUE, "unknown", null, null);
             case NONE -> null;
         };
         ExpenseReport report = stamped(new ExpenseReport(), "1/2024 EX", ReferenceIds.STATUS_SUBMITTED, owner);
@@ -1448,6 +1537,49 @@ class BusinessRulesTest {
 
         assertThat(detail.createdByName()).isEqualTo(owner.displayName());
         assertThat(detail.submittedBy()).isEqualTo(submittedBy == null ? null : submittedBy.displayName());
+    }
+
+    static Stream<Arguments> everyNameTheServerResolvesFallsBackToTheUsernameLikeTheSession() {
+        return Stream.of(
+                arguments(null, false),
+                arguments("", false),
+                arguments(" \t\n", false),
+                arguments(" Ann Lee ", true));
+    }
+
+    @ParameterizedTest(name = "{index}: name shown {1}")
+    @MethodSource
+    void everyNameTheServerResolvesFallsBackToTheUsernameLikeTheSession(String name, boolean shown) {
+        Caller admin = newCaller(appUserRepository, Role.Administrator, name);
+        Caller owner = newCaller(appUserRepository, Role.User, name);
+        String adminName = shown ? name : admin.username();
+        String ownerName = shown ? name : owner.username();
+        assertThat(sessionDisplayName(admin)).isEqualTo(adminName);
+        assertThat(sessionDisplayName(owner)).isEqualTo(ownerName);
+
+        BlogPostView created = blogService.create(admin, new BlogService.PostInput("Byline", ""));
+        BlogPostView updated = blogService.update(admin, created.id(), new BlogService.PostInput("Byline edited", ""));
+        assertThat(List.of(created, updated, blogService.get(owner, created.id()))).allSatisfy(post -> {
+            assertThat(post.createdByName()).isEqualTo(adminName);
+            assertThat(post.updatedByName()).isEqualTo(adminName);
+        });
+
+        Long reportId = draftWithLine(owner).reportId();
+        ReportSummary submitted = reportService.submit(owner, ReportKind.EXPENSE, reportId);
+        ReportDetail detail = reportService.detail(owner, ReportKind.EXPENSE, reportId);
+        assertThat(submitted.submittedBy()).isEqualTo(ownerName);
+        assertThat(detail.createdByName()).isEqualTo(ownerName);
+        assertThat(detail.submittedBy()).isEqualTo(ownerName);
+        for (Caller lister : List.of(owner, admin)) {
+            assertThat(reportService.list(lister, ReportKind.EXPENSE, null, null, null, null, null))
+                    .extracting(ReportSummary::submittedBy)
+                    .containsExactly(ownerName);
+        }
+    }
+
+    private String sessionDisplayName(Caller caller) {
+        AppUser stored = appUserRepository.findById(caller.id()).orElseThrow();
+        return authService.sessionUser(AppUserPrincipal.from(stored)).displayName();
     }
 
     private ExpenseReport assertOwnerStamps(Long id, Caller owner, LocalDateTime stampedAt) {
@@ -1691,9 +1823,15 @@ class BusinessRulesTest {
         return new Caller(saved.getId(), username, name, EnumSet.of(role, Role.Registered));
     }
 
+    private static Caller newCaller(AppUserRepository users, Role role, String name) {
+        String username = role.name().toLowerCase(Locale.ROOT) + "-" + UUID.randomUUID();
+        AppUser saved = users.save(new AppUser(username, name, "unused-hash", EnumSet.of(role)));
+        return new Caller(saved.getId(), username, name, EnumSet.of(role, Role.Registered));
+    }
+
     private static LineService.LineInput line(Integer typeId, Integer currencyId, BigDecimal amount,
             BigDecimal kilometers, String title, String description, LocalDate date) {
-        return new LineService.LineInput(typeId, currencyId, amount, kilometers, title, description, date);
+        return new LineService.LineInput(typeId, currencyId, amount, kilometers, title, description, date, List.of());
     }
 
     private static BigDecimal decimal(String value) {
