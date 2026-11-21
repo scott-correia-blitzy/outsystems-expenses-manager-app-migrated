@@ -1,6 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [ "$#" -gt 0 ]; then
+  usage="Usage: ./start.sh (builds the app and runs it at http://localhost:8080; takes no arguments)"
+  for arg in "$@"; do
+    case "$arg" in
+      -h | --help) ;;
+      *)
+        echo "Unknown argument: $arg" >&2
+        echo "$usage" >&2
+        exit 2
+        ;;
+    esac
+  done
+  echo "$usage"
+  exit 0
+fi
+
 cd "$(dirname "$0")"
 
 if [ -n "${JAVA_HOME:-}" ]; then
@@ -47,7 +63,10 @@ if [ -n "$(lsof -ti tcp:8080 -sTCP:LISTEN || true)" ]; then
 fi
 
 echo "Building..."
-./mvnw -q package
+if ! ./mvnw -q package; then
+  echo "Build failed. Run ./mvnw package to see the full output." >&2
+  exit 1
+fi
 
 echo "Expenses Manager V2 at http://localhost:8080"
 echo "Demo logins: em_user1 / 123456 (User), em_admin / 123456 (Administrator)"

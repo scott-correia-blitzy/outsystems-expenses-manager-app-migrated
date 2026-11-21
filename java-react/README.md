@@ -24,7 +24,7 @@ cd java-react
 
 1. Finds a JDK 25 or newer (`$JAVA_HOME/bin/java` when `JAVA_HOME` is set, otherwise `java` on `PATH`; a JRE alone is not enough) and exits with "Java 25 or newer is required. Install a JDK 25+ (any arm64 build on Apple Silicon)." when there is none.
 2. Needs `lsof` for the port check and exits with "lsof is required to check whether port 8080 is free." when it is missing. Exits with "Run ./stop.sh first." when something already listens on port 8080.
-3. Builds with `./mvnw -q package`, which runs the backend unit tests and the Vitest suite (not the integration tests).
+3. Builds with `./mvnw -q package`, which runs the backend unit tests and the Vitest suite (not the integration tests). Because `-q` hides the npm, TypeScript and Vitest output, a failed build exits 1 with "Build failed. Run ./mvnw package to see the full output." and nothing is started.
 4. Prints the URL and the demo logins, then runs `target/expenses-manager.jar` in the foreground.
 
 Open <http://localhost:8080>. The first build downloads Maven 3.9.16, Node v24.22.3 and the Maven and npm dependencies; later builds reuse them. The running app makes no outbound network calls.
@@ -38,7 +38,7 @@ cd java-react
 ./stop.sh
 ```
 
-It stops the process listening on port 8080 and prints "Stopped.", or prints "Nothing listening on port 8080." when nothing is running. It needs `lsof` to find the app and exits 1 with "lsof is required to find the app on port 8080." when `lsof` is missing.
+It stops the process listening on port 8080 and prints "Stopped.", or prints "Nothing listening on port 8080." when nothing is running. When the port is still in use about 5 seconds after the stop signal, it names the process and exits 1, for example with "Port 8080 is still in use by PID 4242." It needs `lsof` to find the app and exits 1 with "lsof is required to find the app on port 8080." when `lsof` is missing. Neither script takes arguments: `-h` or `--help` prints a usage line, and any other argument prints "Unknown argument:" with that argument and the usage line, then exits 2.
 
 ## Port
 
