@@ -219,8 +219,8 @@ export function LineTable({
               visibleRows.map((line) => (
                 <TableRow key={line.id} hover>
                   <TableCell sx={{ whiteSpace: 'nowrap' }}>{formatRowDate(line.date)}</TableCell>
-                  <TableCell sx={{ overflowWrap: 'anywhere' }}>{line.title ?? ''}</TableCell>
-                  <TableCell sx={{ overflowWrap: 'anywhere' }}>{line.description ?? ''}</TableCell>
+                  <TableCell sx={{ overflowWrap: 'break-word' }}>{line.title ?? ''}</TableCell>
+                  <TableCell sx={{ overflowWrap: 'break-word' }}>{line.description ?? ''}</TableCell>
                   <TableCell align="right" sx={{ whiteSpace: 'nowrap' }}>
                     {formatEuro(line.amountInEuros)}
                   </TableCell>

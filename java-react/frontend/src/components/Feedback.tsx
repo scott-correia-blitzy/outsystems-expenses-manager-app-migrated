@@ -13,6 +13,7 @@ import {
   List,
   ListItem,
   ListItemText,
+  Portal,
   Snackbar,
   type SnackbarCloseReason,
 } from '@mui/material';
@@ -76,31 +77,34 @@ export function FeedbackProvider({ children }: { children: ReactNode }) {
     <FeedbackContext.Provider value={api}>
       {children}
       {message && (
-        <Snackbar
-          key={message.key}
-          open={open}
-          autoHideDuration={6000}
-          anchorOrigin={{ vertical: 'top', horizontal: 'center' }}
-          onClose={handleSnackbarClose}
-        >
-          <Alert
-            severity={message.severity}
-            variant="filled"
-            onClose={handleAlertClose}
-            sx={{ width: '100%' }}
+        // An open Dialog marks the app root aria-hidden, so the toast lives in body to stay announced.
+        <Portal>
+          <Snackbar
+            key={message.key}
+            open={open}
+            autoHideDuration={6000}
+            anchorOrigin={{ vertical: 'top', horizontal: 'center' }}
+            onClose={handleSnackbarClose}
           >
-            {message.text}
-            {message.details.length > 0 && (
-              <List dense disablePadding>
-                {message.details.map((line, index) => (
-                  <ListItem key={index} disablePadding>
-                    <ListItemText primary={line} />
-                  </ListItem>
-                ))}
-              </List>
-            )}
-          </Alert>
-        </Snackbar>
+            <Alert
+              severity={message.severity}
+              variant="filled"
+              onClose={handleAlertClose}
+              sx={{ width: '100%' }}
+            >
+              {message.text}
+              {message.details.length > 0 && (
+                <List dense disablePadding>
+                  {message.details.map((line, index) => (
+                    <ListItem key={index} disablePadding>
+                      <ListItemText primary={line} />
+                    </ListItem>
+                  ))}
+                </List>
+              )}
+            </Alert>
+          </Snackbar>
+        </Portal>
       )}
     </FeedbackContext.Provider>
   );
