@@ -4,6 +4,7 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 import com.massmutual.expensesmanager.service.ApiException;
 import com.massmutual.expensesmanager.service.LegacyMessages;
 import com.massmutual.expensesmanager.service.model.FieldViolation;
+import org.springframework.http.HttpStatus;
 
 import java.util.List;
 
@@ -17,16 +18,24 @@ public record ErrorResponse(int status, String code, String message, List<FieldV
         return new ErrorResponse(status, code, message, null);
     }
 
-    // A bare status has no detail, so only statuses with a contract code keep it; the rest are server errors.
+    // A bare status has no detail: a client error keeps its status, and a refused method answers as an unmapped path.
     public static ErrorResponse forStatus(int status) {
         return switch (status) {
             case 401 -> of(status, ApiException.UNAUTHENTICATED, LegacyMessages.UNAUTHENTICATED);
             case 403 -> of(status, ApiException.FORBIDDEN, LegacyMessages.NO_PERMISSIONS);
-            case 404 -> of(status, ApiException.NOT_FOUND, LegacyMessages.NOT_FOUND);
+            case 404, 405 -> of(HttpStatus.NOT_FOUND.value(), ApiException.NOT_FOUND, LegacyMessages.NOT_FOUND);
             case 413 -> of(status, ApiException.PAYLOAD_TOO_LARGE, LegacyMessages.FILE_TOO_LARGE);
             case 415 -> of(status, ApiException.UNSUPPORTED_MEDIA_TYPE, LegacyMessages.INVALID_VALUE);
-            default -> of(INTERNAL_SERVER_ERROR, ApiExceptionHandler.INTERNAL_ERROR, LegacyMessages.INTERNAL_ERROR);
+            case UNPROCESSABLE_ENTITY -> validation(LegacyMessages.INVALID_VALUE, List.of());
+            default -> HttpStatus.Series.resolve(status) == HttpStatus.Series.CLIENT_ERROR
+                    ? of(status, clientErrorCode(status), LegacyMessages.INVALID_VALUE)
+                    : of(INTERNAL_SERVER_ERROR, ApiExceptionHandler.INTERNAL_ERROR, LegacyMessages.INTERNAL_ERROR);
         };
+    }
+
+    private static String clientErrorCode(int status) {
+        HttpStatus known = HttpStatus.resolve(status);
+        return known == null ? HttpStatus.Series.CLIENT_ERROR.name() : known.name();
     }
 
     public static ErrorResponse validation(String message, List<FieldViolation> fieldErrors) {

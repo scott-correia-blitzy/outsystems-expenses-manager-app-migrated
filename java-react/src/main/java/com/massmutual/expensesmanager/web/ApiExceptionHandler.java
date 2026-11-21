@@ -25,6 +25,7 @@ import org.springframework.web.HttpMediaTypeNotAcceptableException;
 import org.springframework.web.HttpMediaTypeNotSupportedException;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.MissingPathVariableException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -107,6 +108,15 @@ public class ApiExceptionHandler {
                 .map(apiException -> respond(ErrorResponse.from(apiException)))
                 .orElseGet(() -> validationFailed(
                         List.of(new FieldViolation(ex.getName(), LegacyMessages.INVALID_VALUE))));
+    }
+
+    @ExceptionHandler(MissingPathVariableException.class)
+    public ResponseEntity<ErrorResponse> handleMissingPathVariable(MissingPathVariableException ex,
+            HttpServletRequest request) {
+        // A blank segment converts to null; a variable the mapping never declares is a server fault.
+        return ex.isMissingAfterConversion()
+                ? validationFailed(List.of(new FieldViolation(ex.getVariableName(), LegacyMessages.INVALID_VALUE)))
+                : handleUnexpected(ex, request);
     }
 
     @ExceptionHandler(MissingServletRequestParameterException.class)

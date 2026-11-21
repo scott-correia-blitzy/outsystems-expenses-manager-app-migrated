@@ -90,6 +90,7 @@ import com.massmutual.expensesmanager.repository.LineRepository;
 import com.massmutual.expensesmanager.repository.ReportRepository;
 import com.massmutual.expensesmanager.service.ApiException;
 import com.massmutual.expensesmanager.service.LegacyMessages;
+import com.massmutual.expensesmanager.service.model.FieldViolation;
 import com.massmutual.expensesmanager.support.ApiClient;
 import com.massmutual.expensesmanager.support.ApiClient.Response;
 import com.massmutual.expensesmanager.support.TestDatabase;
@@ -628,6 +629,44 @@ class RoleMatrixIT {
         });
     }
 
+    static Stream<Arguments> blankIdCases() {
+        return Stream.of("%20", "%09").flatMap(blank -> {
+            String report = "/api/reports/expense/" + blank;
+            String line = "/api/lines/expense/" + blank;
+            String post = "/api/blog/" + blank;
+            return Stream.of(
+                    Arguments.of(Account.EM_USER1, get(report)),
+                    Arguments.of(Account.EM_USER1, send("PUT", report, titleBody("Renamed"))),
+                    Arguments.of(Account.EM_USER1, send("DELETE", report, null)),
+                    Arguments.of(Account.EM_USER1, send("POST", report + "/submit", null)),
+                    Arguments.of(Account.EM_ADMIN, send("POST", report + "/decision",
+                            ApiClient.object().put("accept", true))),
+                    Arguments.of(Account.EM_USER1, send("POST", report + "/lines", lineBody(EXPENSE))),
+                    Arguments.of(Account.EM_USER1, send("PUT", line, lineBody(EXPENSE))),
+                    Arguments.of(Account.EM_USER1, send("DELETE", line, null)),
+                    Arguments.of(Account.EM_USER1, new Call("PUT " + line + "/invoice",
+                            c -> c.putFile(line + "/invoice", INVOICE_NAME, INVOICE_TYPE, PNG))),
+                    Arguments.of(Account.EM_USER1, get(line + "/invoice")),
+                    Arguments.of(Account.EM_USER1, get(post)),
+                    Arguments.of(Account.EM_ADMIN, send("PUT", post, blogBody())));
+        });
+    }
+
+    @ParameterizedTest(name = "{0} calls {1}")
+    @MethodSource("blankIdCases")
+    @ExtendWith(OutputCaptureExtension.class)
+    @DisplayName("A blank id answers 422 on the id field and logs no error")
+    void blankIdIsRejected(Account account, Call call, CapturedOutput output) {
+        int logStart = output.getAll().length();
+
+        Response response = expect(account, call, 422);
+
+        assertThat(response.as(ErrorResponse.class)).as(call.endpoint()).isEqualTo(ErrorResponse.validation(
+                LegacyMessages.INVALID_VALUE, List.of(new FieldViolation("id", LegacyMessages.INVALID_VALUE))));
+        assertThat(handlerLogLines(output, logStart, ApiExceptionHandler.class))
+                .noneMatch(line -> line.contains("ERROR"));
+    }
+
     @ParameterizedTest(name = "{0}")
     @EnumSource(Account.class)
     @DisplayName("Logout with a CSRF token returns 204 and ends any session")
@@ -654,7 +693,7 @@ class RoleMatrixIT {
                 c -> c.sendWithoutCsrf(REJECTED_METHOD, "/api/blog", null));
         return Arrays.stream(Account.values())
                 .flatMap(account -> Stream.concat(UNMAPPED_API_PATHS.stream().map(RoleMatrixIT::get),
-                        Stream.of(rejectedMethod)).map(call -> Arguments.of(account, call)));
+                        Stream.of(rejectedMethod, trace("/api/blog"))).map(call -> Arguments.of(account, call)));
     }
 
     @ParameterizedTest(name = "{0} calls {1}")
@@ -665,27 +704,66 @@ class RoleMatrixIT {
         assertThat(response.header("Content-Type")).as(call.endpoint()).startsWith(MediaType.APPLICATION_JSON_VALUE);
         assertThat(response.header("X-Content-Type-Options")).as(call.endpoint()).isEqualTo("nosniff");
         assertThat(response.header("Cache-Control")).as(call.endpoint()).contains("no-store");
+        assertThat(response.header("Allow")).as(call.endpoint()).isNull();
     }
 
-    @ParameterizedTest(name = "{0}")
-    @EnumSource(Account.class)
-    @DisplayName("A firewall-rejected SPA path answers the JSON 404")
-    void rejectedSpaPath(Account account) {
-        Response response = expect(account, get(REJECTED_SPA_PATH), 404);
-        assertThat(response.header("Content-Type")).startsWith(MediaType.APPLICATION_JSON_VALUE);
-        assertThat(response.header("X-Content-Type-Options")).isEqualTo("nosniff");
-        assertThat(response.header("Cache-Control")).contains("no-store");
+    static Stream<Arguments> rejectedSpaPathCases() {
+        return Arrays.stream(Account.values()).flatMap(account ->
+                Stream.of(get(REJECTED_SPA_PATH), trace("/reports")).map(call -> Arguments.of(account, call)));
     }
 
-    @ParameterizedTest(name = "{0}")
-    @ValueSource(strings = {FIREWALL_REJECTED_API_PATH, CONNECTOR_REJECTED_API_PATH})
-    @DisplayName("A rejected API path issues the CSRF token cookie that any other 401 issues")
-    void rejectedApiPathIssuesCsrfToken(String path) {
+    @ParameterizedTest(name = "{0} calls {1}")
+    @MethodSource("rejectedSpaPathCases")
+    @DisplayName("An SPA path the firewall or the connector rejects answers the JSON 404")
+    void rejectedSpaPath(Account account, Call call) {
+        Response response = expect(account, call, 404);
+        assertThat(response.header("Content-Type")).as(call.endpoint()).startsWith(MediaType.APPLICATION_JSON_VALUE);
+        assertThat(response.header("X-Content-Type-Options")).as(call.endpoint()).isEqualTo("nosniff");
+        assertThat(response.header("Cache-Control")).as(call.endpoint()).contains("no-store");
+        assertThat(response.header("Allow")).as(call.endpoint()).isNull();
+    }
+
+    @ParameterizedTest(name = "{0} {1}")
+    @CsvSource({"GET, " + FIREWALL_REJECTED_API_PATH, "GET, " + CONNECTOR_REJECTED_API_PATH, "TRACE, /api/blog"})
+    @DisplayName("A rejected API request issues the CSRF token cookie that any other 401 issues")
+    void rejectedApiPathIssuesCsrfToken(String method, String path) {
         try (ApiClient rejected = new ApiClient(port); ApiClient reference = new ApiClient(port)) {
-            Response response = assertStatus(Account.ANONYMOUS, "GET " + path, rejected.get(path), 401);
+            Response response = assertStatus(Account.ANONYMOUS, method + " " + path,
+                    rejected.sendWithoutCsrf(method, path, null), 401);
             assertThat(rejected.cookie(ApiClient.CSRF_COOKIE)).as(path).isPresent();
             assertThat(csrfCookieAttributes(response)).isEqualTo(csrfCookieAttributes(reference.me()));
         }
+    }
+
+    // The session cookie follows the unread request line, so a signed-in caller is answered as anonymous.
+    static Stream<Arguments> oversizedRequestLineCases() {
+        return Stream.of(Account.ANONYMOUS, Account.EM_USER1).flatMap(account -> Stream.of(
+                Arguments.of(account, "GET", "/api/blog?q=", 401),
+                Arguments.of(account, "GET", "/api/", 401),
+                Arguments.of(account, "POST", "/api/auth/login?x=", 401),
+                Arguments.of(account, "GET", "/reports?q=", 400),
+                Arguments.of(account, "GET", "/assets/", 400)));
+    }
+
+    @ParameterizedTest(name = "{0} sends {1} {2}<9000 characters>")
+    @MethodSource("oversizedRequestLineCases")
+    @ExtendWith(OutputCaptureExtension.class)
+    @DisplayName("An over-long request line gets the anonymous JSON 401 under /api and Tomcat's 400 elsewhere")
+    void oversizedRequestLine(Account account, String method, String prefix, int status, CapturedOutput output) {
+        int logStart = output.getAll().length();
+        String endpoint = method + " " + prefix + "<9000 characters>";
+
+        Response response = assertStatus(account, endpoint,
+                client(account).sendWithoutCsrf(method, prefix + "a".repeat(9000), null), status);
+
+        if (status == 401) {
+            assertThat(response.header("Content-Type")).as(endpoint).startsWith(MediaType.APPLICATION_JSON_VALUE);
+            assertThat(response.header("X-Content-Type-Options")).as(endpoint).isEqualTo("nosniff");
+            assertThat(response.header("Cache-Control")).as(endpoint).contains("no-store");
+        }
+        assertThat(response.header("Connection")).as(endpoint).isEqualTo("close");
+        assertThat(output.getAll().substring(logStart))
+                .doesNotContain(NullPointerException.class.getName(), "Error processing request", "ERROR");
     }
 
     @Test
@@ -788,11 +866,12 @@ class RoleMatrixIT {
     }
 
     @ParameterizedTest(name = "{0} {1}")
-    @CsvSource({"TRACE, /api/blog, X-Request-Marker, %s, 405", "GET, /reports, Range, bytes=%s, 416"})
+    @CsvSource({"TRACE, /api/blog, X-Request-Marker, %s, 404, NOT_FOUND, X-Content-Type-Options",
+            "GET, /reports, Range, bytes=%s, 416, REQUESTED_RANGE_NOT_SATISFIABLE, Content-Range"})
     @ExtendWith(OutputCaptureExtension.class)
-    @DisplayName("A container error without a contract code answers 500 and logs one WARN without request data")
-    void containerErrorIsLogged(String method, String path, String header, String valueTemplate, int containerStatus,
-            CapturedOutput output) {
+    @DisplayName("A container client error keeps a 4xx status and logs no warning or request data")
+    void containerClientErrorIsNotLogged(String method, String path, String header, String valueTemplate, int status,
+            String code, String expectedHeader, CapturedOutput output) {
         String marker = "REQUEST_MARKER_" + UUID.randomUUID().toString().replace("-", "");
         ApiClient user = client(Account.EM_USER1);
         List<String> cookieValues = Stream.of(ApiClient.SESSION_COOKIE, ApiClient.CSRF_COOKIE)
@@ -802,12 +881,12 @@ class RoleMatrixIT {
 
         Response response = user.sendWithoutCsrf(method, path, null, Map.of(header, valueTemplate.formatted(marker)));
 
-        assertThat(response.status()).as(response.toString()).isEqualTo(500);
+        assertThat(response.status()).as(response.toString()).isEqualTo(status);
         assertThat(response.header("Content-Type")).startsWith(MediaType.APPLICATION_JSON_VALUE);
-        assertThat(response.as(ErrorResponse.class)).isEqualTo(INTERNAL_ERROR_BODY);
-        assertThat(handlerLogLines(output, logStart, JsonSecurityHandlers.class)).singleElement()
-                .satisfies(line -> assertThat(line).contains("WARN",
-                        "Container error " + containerStatus + " on " + method + " " + path + " answered as 500"));
+        assertThat(response.json().path("code").asText()).isEqualTo(code);
+        assertThat(response.header(expectedHeader)).as(expectedHeader).isNotNull();
+        assertThat(handlerLogLines(output, logStart, JsonSecurityHandlers.class))
+                .noneMatch(line -> line.contains("WARN") || line.contains("ERROR"));
         String logged = output.getAll().substring(logStart);
         assertThat(logged).doesNotContain(marker);
         assertThat(cookieValues).allSatisfy(value -> assertThat(logged).doesNotContain(value));
@@ -1028,6 +1107,14 @@ class RoleMatrixIT {
 
     private static Call get(String path) {
         return new Call("GET " + path, c -> c.get(path));
+    }
+
+    private static Call trace(String path) {
+        return new Call("TRACE " + path, c -> c.sendWithoutCsrf("TRACE", path, null));
+    }
+
+    private static Call send(String method, String path, Object body) {
+        return new Call(method + " " + path, c -> c.send(method, path, body));
     }
 
     private static Call createReport(String kind) {

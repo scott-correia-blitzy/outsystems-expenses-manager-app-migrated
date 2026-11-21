@@ -9,6 +9,7 @@ import java.math.BigDecimal;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.Base64;
 import java.util.LinkedHashMap;
@@ -102,14 +103,31 @@ class EndToEndIT {
     }
 
     @Test
-    @DisplayName("the built SPA is served at the root and at a deep link")
+    @DisplayName("the built SPA is served uncached at the root and at a deep link, its hashed bundle cached for good")
     void servesSpaAtRootAndDeepLink() throws IOException {
         byte[] indexHtml = classpathIndexHtml();
         try (ApiClient anonymous = new ApiClient(port)) {
-            for (String path : List.of("/", "/reports")) {
+            for (String path : List.of("/", "/reports", "/assets/missing.js")) {
                 ApiClient.Response response = expectStatus(anonymous.get(path), 200);
                 assertThat(response.body()).as("body of GET %s", path).isEqualTo(indexHtml);
+                assertThat(response.header("Cache-Control")).as("Cache-Control of GET %s", path).contains("no-store");
             }
+
+            Matcher bundle = Pattern.compile("src=\"(/assets/[^\"]+\\.js)\"")
+                    .matcher(new String(indexHtml, StandardCharsets.UTF_8));
+            assertThat(bundle.find()).as("hashed bundle referenced by index.html").isTrue();
+            ApiClient.Response asset = expectStatus(anonymous.get(bundle.group(1)), 200);
+            assertThat(asset.body()).isEqualTo(classpathStatic(bundle.group(1)));
+            assertThat(asset.header("Cache-Control")).isEqualTo("max-age=31536000, private, immutable");
+            assertThat(asset.headerValues("Pragma")).isEmpty();
+            assertThat(asset.headerValues("Expires")).isEmpty();
+
+            int length = asset.body().length;
+            ApiClient.Response unsatisfiable = expectStatus(anonymous.sendWithoutCsrf(
+                    "GET", bundle.group(1), null, Map.of("Range", "bytes=" + length + "-")), 416);
+            assertThat(unsatisfiable.header("Content-Range")).isEqualTo("bytes */" + length);
+            assertThat(unsatisfiable.json().path("code").asText()).isEqualTo("REQUESTED_RANGE_NOT_SATISFIABLE");
+            assertThat(unsatisfiable.header("Cache-Control")).contains("no-store").doesNotContain("immutable");
         }
     }
 
@@ -346,6 +364,40 @@ class EndToEndIT {
         }
     }
 
+    @Test
+    @DisplayName("remember me and logout use the configured session cookie name and path")
+    void rememberMeAndLogoutFollowConfiguredSessionCookie(@TempDir Path cookieDir) {
+        String sessionCookie = "EMSID";
+        ConfigurableApplicationContext configured = new SpringApplicationBuilder(ExpensesManagerApplication.class)
+                .run("--server.port=0", TestDatabase.argument(cookieDir),
+                        "--server.servlet.session.cookie.name=" + sessionCookie,
+                        "--server.servlet.session.cookie.path=/api");
+        try {
+            int configuredPort = configured.getEnvironment().getRequiredProperty("local.server.port", Integer.class);
+            try (ApiClient browser = new ApiClient(configuredPort);
+                    ApiClient restartedBrowser = new ApiClient(configuredPort)) {
+                ApiClient.Response login = expectStatus(browser.login(USER, PASSWORD, true), 200);
+                assertThat(login.headerValues("Set-Cookie"))
+                        .noneMatch(header -> header.startsWith(ApiClient.SESSION_COOKIE + "="));
+                List<String> remembered = lastSetCookie(login, sessionCookie);
+                assertThat(remembered).contains("Max-Age=" + Duration.ofDays(30).toSeconds(), "Path=/api", "HttpOnly",
+                        "SameSite=Lax");
+
+                // A browser restart keeps only the cookie that carries a Max-Age.
+                JsonNode me = expectStatus(restartedBrowser.sendWithoutCsrf("GET", "/api/auth/me", null,
+                        Map.of("Cookie", remembered.getFirst())), 200).json();
+                assertThat(me.path("username").asText()).isEqualTo(USER);
+
+                ApiClient.Response logout = expectStatus(browser.logout(), 204);
+                assertThat(lastSetCookie(logout, sessionCookie))
+                        .startsWith(sessionCookie + "=", "Max-Age=0")
+                        .contains("Path=/api");
+            }
+        } finally {
+            configured.close();
+        }
+    }
+
     static Stream<Arguments> invalidLineWriteListsEveryViolatedRule() {
         return Stream.of(
                 arguments("", null, new FieldViolation("title", LegacyMessages.FIELD_REQUIRED)),
@@ -483,6 +535,15 @@ class EndToEndIT {
         return response;
     }
 
+    // A browser stores the last Set-Cookie of a name, so that one decides what it keeps.
+    private static List<String> lastSetCookie(ApiClient.Response response, String name) {
+        List<String> headers = response.headerValues("Set-Cookie").stream()
+                .filter(header -> header.startsWith(name + "="))
+                .toList();
+        assertThat(headers).as("Set-Cookie %s", name).isNotEmpty();
+        return List.of(headers.getLast().split("; "));
+    }
+
     private static void assertAdminDashboard(ApiClient admin, long totalReports, long waiting, String approvedRate) {
         JsonNode dashboard = expectStatus(admin.get("/api/dashboard/admin"), 200).json();
         assertThat(dashboard.path("totalReports").asLong()).isEqualTo(totalReports);
@@ -505,8 +566,12 @@ class EndToEndIT {
     }
 
     private static byte[] classpathIndexHtml() throws IOException {
-        try (InputStream in = EndToEndIT.class.getResourceAsStream("/static/index.html")) {
-            assertThat(in).as("built SPA at classpath:/static/index.html").isNotNull();
+        return classpathStatic("/index.html");
+    }
+
+    private static byte[] classpathStatic(String path) throws IOException {
+        try (InputStream in = EndToEndIT.class.getResourceAsStream("/static" + path)) {
+            assertThat(in).as("built SPA file at classpath:/static%s", path).isNotNull();
             return in.readAllBytes();
         }
     }

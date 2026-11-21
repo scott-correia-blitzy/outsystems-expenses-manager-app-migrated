@@ -14,6 +14,8 @@ import jakarta.servlet.http.HttpServletResponseWrapper;
 import jakarta.servlet.http.HttpSession;
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.util.Collections;
 import java.util.Enumeration;
 import java.util.HashMap;
@@ -21,6 +23,8 @@ import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import org.apache.catalina.Context;
 import org.apache.catalina.Manager;
 import org.apache.catalina.Session;
@@ -28,7 +32,9 @@ import org.apache.catalina.connector.Request;
 import org.apache.catalina.connector.Response;
 import org.apache.catalina.util.SessionConfig;
 import org.apache.catalina.valves.ValveBase;
+import org.apache.coyote.InputBuffer;
 import org.apache.tomcat.util.buf.EncodedSolidusHandling;
+import org.apache.tomcat.util.net.ApplicationBufferHandler;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.availability.ApplicationAvailability;
 import org.springframework.boot.availability.ReadinessState;
@@ -114,7 +120,7 @@ public class SecurityConfig {
         });
     }
 
-    // Tomcat refuses other malformed URIs before any application code runs; under /api they still get the JSON body.
+    // Tomcat refuses TRACE and malformed or oversized requests before app code runs; TRACE and /api ones get JSON.
     @Bean
     public WebServerFactoryCustomizer<TomcatServletWebServerFactory> connectorRejectionBody(
             ObjectProvider<JsonSecurityHandlers> jsonSecurityHandlers) {
@@ -145,7 +151,8 @@ public class SecurityConfig {
                         .logoutSuccessHandler(new HttpStatusReturningLogoutSuccessHandler(HttpStatus.NO_CONTENT))
                         .invalidateHttpSession(true)
                         .clearAuthentication(true)
-                        .deleteCookies("JSESSIONID"))
+                        .addLogoutHandler((request, response, authentication) ->
+                                response.addCookie(AuthController.sessionCookie(request, null, 0))))
                 .authorizeHttpRequests(requests -> requests
                         .requestMatchers(HttpMethod.POST, "/api/auth/login").permitAll()
                         // Open to anonymous callers so the SPA can still clear its state once the session has expired.
@@ -212,7 +219,7 @@ public class SecurityConfig {
         }
     }
 
-    // Writes before passing the request on, so Boot's HTML error report finds it committed whichever valve runs first.
+    // Writes its answer before Boot's HTML error report runs, whichever valve comes first, so nothing replaces it.
     private static final class ConnectorRejectionValve extends ValveBase {
 
         private final Context context;
@@ -226,12 +233,23 @@ public class SecurityConfig {
 
         @Override
         public void invoke(Request request, Response response) throws IOException, ServletException {
-            // An error before any Context was mapped means the connector refused the URI.
+            // The connector refuses TRACE after mapping a Context; once reported, passing it on would run the app.
+            if (request.getContext() != null && response.isError() && !response.isCommitted()
+                    && HttpMethod.TRACE.name().equalsIgnoreCase(request.getMethod())) {
+                response.setSuspended(false);
+                response.getCoyoteResponse().getMimeHeaders().removeHeader(HttpHeaders.ALLOW);
+                jsonSecurityHandlers.getObject().reject(request.getRequest(), response.getResponse());
+                response.setErrorReported();
+                return;
+            }
+            // An error before any Context was mapped means the connector refused the request line or its headers.
             if (request.getContext() == null && response.isError() && !response.isCommitted()) {
                 RootContextRequest rootRequest = new RootContextRequest(request, context);
                 if (JsonSecurityHandlers.isApiPath(rootRequest)) {
                     // Undoes sendError's suspension; an unreported error makes the error valve drop the connection.
                     response.setSuspended(false);
+                    // Tomcat's 400 would close the connection too; a partly read request leaves it unusable.
+                    response.setHeader(HttpHeaders.CONNECTION, "close");
                     jsonSecurityHandlers.getObject()
                             .reject(rootRequest, new RootContextResponse(response, context, rootRequest));
                     response.setErrorReported();
@@ -244,13 +262,18 @@ public class SecurityConfig {
     // A refused URI maps no Context, so the root application's session store is read here and never adds a session.
     private static final class RootContextRequest extends HttpServletRequestWrapper {
 
+        private static final Pattern ABSOLUTE_FORM =
+                Pattern.compile("https?://[^/]*+(/.*)", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
+
         private final Context context;
+        private final InputBuffer connectorInput;
         // Tomcat reports attribute removal to the mapped Context, so changes stay here; null marks a removal.
         private final Map<String, Object> attributes = new HashMap<>();
 
         private RootContextRequest(Request request, Context context) {
             super(request);
             this.context = context;
+            this.connectorInput = request.getCoyoteRequest().getInputBuffer();
         }
 
         @Override
@@ -261,6 +284,37 @@ public class SecurityConfig {
         @Override
         public String getServletPath() {
             return "";
+        }
+
+        // Tomcat leaves the URI unset when it refuses a request line mid-parse; the line read so far is still buffered.
+        @Override
+        public String getRequestURI() {
+            String uri = super.getRequestURI();
+            return uri != null ? uri : bufferedRequestPath();
+        }
+
+        // Parsed as Tomcat does: blank lines, method, spaces, then the target up to its query or the buffer's end.
+        private String bufferedRequestPath() {
+            ByteBuffer buffer = connectorInput instanceof ApplicationBufferHandler handler
+                    ? handler.getByteBuffer() : null;
+            if (buffer == null) {
+                return null;
+            }
+            int method = skip(buffer, 0, "\r\n", true);
+            int target = skip(buffer, skip(buffer, method, " \t\r\n", false), " \t", true);
+            byte[] bytes = new byte[skip(buffer, target, " \t\r\n?", false) - target];
+            buffer.get(target, bytes);
+            String path = new String(bytes, StandardCharsets.ISO_8859_1);
+            Matcher absoluteForm = ABSOLUTE_FORM.matcher(path);
+            return path.startsWith("/") ? path : absoluteForm.matches() ? absoluteForm.group(1) : null;
+        }
+
+        private static int skip(ByteBuffer buffer, int from, String bytes, boolean members) {
+            int index = from;
+            while (index < buffer.limit() && (bytes.indexOf(buffer.get(index)) >= 0) == members) {
+                index++;
+            }
+            return index;
         }
 
         @Override

@@ -132,6 +132,10 @@ public class JsonSecurityHandlers implements AuthenticationEntryPoint, AccessDen
     // The raw and the normalized path both count, so neither "/api/../x" nor "//api/x" escapes the anonymous 401.
     static boolean isApiPath(HttpServletRequest request) {
         String rawPath = request.getRequestURI();
+        // Tomcat refused the request line before any target could be read, so nothing marks it as an API call.
+        if (rawPath == null) {
+            return false;
+        }
         String contextPath = request.getContextPath();
         if (rawPath.startsWith(contextPath)) {
             rawPath = rawPath.substring(contextPath.length());

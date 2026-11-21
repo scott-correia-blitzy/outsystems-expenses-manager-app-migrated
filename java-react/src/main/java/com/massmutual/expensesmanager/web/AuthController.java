@@ -5,14 +5,16 @@ import com.massmutual.expensesmanager.service.AuthService;
 import com.massmutual.expensesmanager.service.ExpensesProperties;
 import com.massmutual.expensesmanager.service.model.SessionUser;
 import com.massmutual.expensesmanager.web.dto.LoginRequest;
+import jakarta.servlet.ServletContext;
+import jakarta.servlet.SessionCookieConfig;
+import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.servlet.http.HttpSession;
 import jakarta.validation.Valid;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
-import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
-import org.springframework.http.ResponseCookie;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.core.context.SecurityContext;
@@ -28,12 +30,14 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.util.UriUtils;
 
 @RestController
 @RequestMapping("/api/auth")
 public class AuthController {
 
-    private static final String SESSION_COOKIE = "JSESSIONID";
+    private static final String DEFAULT_SESSION_COOKIE = "JSESSIONID";
+    private static final String HTTP_ONLY = "HttpOnly";
 
     private final AuthService authService;
     private final SecurityContextRepository securityContextRepository;
@@ -91,15 +95,25 @@ public class AuthController {
     private void rememberSession(HttpSession session, HttpServletRequest request, HttpServletResponse response) {
         int seconds = Math.toIntExact(Duration.ofDays(expensesProperties.rememberMeDays()).toSeconds());
         session.setMaxInactiveInterval(seconds);
-        String contextPath = request.getContextPath();
         // A remembered login outlives the browser session, so the session cookie is re-sent with a Max-Age.
-        ResponseCookie cookie = ResponseCookie.from(SESSION_COOKIE, session.getId())
-                .path(StringUtils.hasText(contextPath) ? contextPath : "/")
-                .httpOnly(true)
-                .secure(request.isSecure())
-                .sameSite("Lax")
-                .maxAge(seconds)
-                .build();
-        response.addHeader(HttpHeaders.SET_COOKIE, cookie.toString());
+        response.addCookie(sessionCookie(request, session.getId(), seconds));
+    }
+
+    // Built as Tomcat builds its own session cookie, so re-sending or clearing it replaces the one Tomcat issued.
+    static Cookie sessionCookie(HttpServletRequest request, String value, int maxAge) {
+        ServletContext servletContext = request.getServletContext();
+        SessionCookieConfig config = servletContext.getSessionCookieConfig();
+        String name = StringUtils.hasLength(config.getName()) ? config.getName() : DEFAULT_SESSION_COOKIE;
+        String path = StringUtils.hasLength(config.getPath()) ? config.getPath()
+                : UriUtils.encodePath(servletContext.getContextPath(), StandardCharsets.UTF_8);
+        Cookie cookie = new Cookie(name, value);
+        config.getAttributes().forEach(cookie::setAttribute);
+        cookie.setDomain(config.getDomain());
+        cookie.setPath(path.isEmpty() ? "/" : path);
+        cookie.setSecure(config.isSecure() || request.isSecure());
+        // Tomcat's session cookie is HttpOnly unless server.servlet.session.cookie.http-only turns it off.
+        cookie.setHttpOnly(config.getAttribute(HTTP_ONLY) == null || config.isHttpOnly());
+        cookie.setMaxAge(maxAge);
+        return cookie;
     }
 }
