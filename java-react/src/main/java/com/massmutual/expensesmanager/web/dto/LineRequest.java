@@ -4,6 +4,7 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.massmutual.expensesmanager.service.LegacyMessages;
 import com.massmutual.expensesmanager.service.LineService;
 import com.massmutual.expensesmanager.service.model.FieldViolation;
+import com.massmutual.expensesmanager.service.model.Redacted;
 import jakarta.validation.Constraint;
 import jakarta.validation.ConstraintValidator;
 import jakarta.validation.ConstraintValidatorContext;
@@ -29,6 +30,18 @@ public record LineRequest(
         String title,
         String description,
         LocalDate date) {
+
+    @Override
+    public String toString() {
+        return "LineRequest[expenseTypeId=" + expenseTypeId
+                + ", earningTypeId=" + earningTypeId
+                + ", currencyId=" + currencyId
+                + ", amount=" + Redacted.mask(amount)
+                + ", kilometers=" + Redacted.mask(kilometers)
+                + ", title=" + Redacted.length(title)
+                + ", description=" + Redacted.length(description)
+                + ", date=" + Redacted.mask(date) + "]";
+    }
 
     @Documented
     @Retention(RetentionPolicy.RUNTIME)

@@ -5,10 +5,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 import java.io.IOException;
 import java.io.InputStream;
 import java.math.BigDecimal;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.util.Base64;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.UUID;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
@@ -29,6 +34,7 @@ import org.junit.jupiter.api.MethodOrderer;
 import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestMethodOrder;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -36,7 +42,12 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.availability.AvailabilityChangeEvent;
 import org.springframework.boot.availability.ReadinessState;
 import org.springframework.boot.builder.SpringApplicationBuilder;
+import org.springframework.boot.logging.LogLevel;
+import org.springframework.boot.logging.LoggerConfiguration;
+import org.springframework.boot.logging.LoggingSystem;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.ConfigurableApplicationContext;
@@ -45,6 +56,9 @@ import org.springframework.http.ContentDisposition;
 import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.web.method.HandlerMethod;
+import org.springframework.web.servlet.mvc.method.annotation.HttpEntityMethodProcessor;
+import org.springframework.web.servlet.mvc.method.annotation.RequestResponseBodyMethodProcessor;
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @Import(MutableClock.Beans.class)
@@ -259,6 +273,90 @@ class EndToEndIT {
                 AvailabilityChangeEvent.publish(context, ReadinessState.ACCEPTING_TRAFFIC);
             }
             expectStatus(client.login(USER, PASSWORD), 200);
+        }
+    }
+
+    @Test
+    @Order(8)
+    @ExtendWith(OutputCaptureExtension.class)
+    @DisplayName("request bodies, the records that echo them and invoice bytes stay out of the TRACE log")
+    void requestBodiesAndInvoiceBytesStayOutOfTraceLog(@Autowired LoggingSystem loggingSystem,
+            CapturedOutput output) {
+        String marker = "BODY_MARKER_" + UUID.randomUUID().toString().replace("-", "");
+        Map<String, LogLevel> configuredLevels = new LinkedHashMap<>();
+        try {
+            for (String logger : List.of("org.springframework.web", RequestResponseBodyMethodProcessor.class.getName(),
+                    HttpEntityMethodProcessor.class.getName(), HandlerMethod.class.getName())) {
+                LoggerConfiguration configuration = loggingSystem.getLoggerConfiguration(logger);
+                configuredLevels.put(logger, configuration == null ? null : configuration.getConfiguredLevel());
+                loggingSystem.setLogLevel(logger, LogLevel.TRACE);
+            }
+            int logStart = output.getAll().length();
+
+            String reportPath;
+            try (ApiClient user = ApiClient.loggedIn(port, USER, PASSWORD)) {
+                reportPath = "/api/reports/expense/" + expectStatus(
+                        user.postJson("/api/reports", newReport(marker + "-T")), 201).json().path("id").asLong();
+                ObjectNode rename = ApiClient.object();
+                rename.put("title", marker + "-R");
+                expectStatus(user.putJson(reportPath, rename), 200);
+                ObjectNode unknownKind = ApiClient.object();
+                unknownKind.put("kind", marker + "-K");
+                unknownKind.put("title", "x");
+                expectStatus(user.postJson("/api/reports", unknownKind), 422);
+
+                ObjectNode line = ApiClient.object();
+                line.put("expenseTypeId", 2);
+                line.put("currencyId", 1);
+                line.put("amount", new BigDecimal("4417.41"));
+                line.put("title", marker + "-L");
+                line.put("description", marker + "-D\r\n2026-01-01T00:00:00.000Z ERROR 1 --- [main] "
+                        + marker + ".Forged : forged");
+                line.put("date", "2024-05-22");
+                long lineId = expectStatus(user.postJson(reportPath + "/lines", line), 201).json().path("id").asLong();
+                line.put("amount", new BigDecimal("4418.81"));
+                expectStatus(user.putJson("/api/lines/expense/" + lineId, line), 200);
+
+                ObjectNode mileage = ApiClient.object();
+                mileage.put("expenseTypeId", 3);
+                mileage.put("kilometers", new BigDecimal("4419.19"));
+                mileage.put("title", marker + "-M");
+                mileage.put("description", "");
+                mileage.put("date", "2024-05-22");
+                expectStatus(user.postJson(reportPath + "/lines", mileage), 201);
+
+                byte[] receipt = Base64.getDecoder().decode(RECEIPT_PNG_BASE64);
+                byte[] invoice = ByteBuffer.allocate(receipt.length + marker.length())
+                        .put(receipt).put(marker.getBytes(StandardCharsets.US_ASCII)).array();
+                String invoicePath = "/api/lines/expense/" + lineId + "/invoice";
+                expectStatus(user.putFile(invoicePath, "receipt.png", "image/png", invoice), 204);
+                assertThat(expectStatus(user.get(invoicePath), 200).body()).isEqualTo(invoice);
+
+                expectStatus(user.get(reportPath), 200);
+                expectStatus(user.get("/api/dashboard/user"), 200);
+                expectStatus(user.post(reportPath + "/submit"), 200);
+            }
+
+            try (ApiClient admin = ApiClient.loggedIn(port, ADMIN, PASSWORD)) {
+                ObjectNode decision = ApiClient.object();
+                decision.put("accept", true);
+                expectStatus(admin.postJson(reportPath + "/decision", decision), 200);
+
+                ObjectNode post = ApiClient.object();
+                post.put("title", marker + "-B");
+                post.put("description", marker + "-P");
+                long postId = expectStatus(admin.postJson("/api/blog", post), 201).json().path("id").asLong();
+                post.put("title", marker + "-B2");
+                post.put("description", marker + "-P2");
+                expectStatus(admin.putJson("/api/blog/" + postId, post), 200);
+                expectStatus(admin.get("/api/blog"), 200);
+            }
+
+            assertThat(output.getAll().substring(logStart))
+                    .contains("CreateReportRequest[", "LineView[", "DatedAmount[")
+                    .doesNotContain(marker, "4417.41", "4418.81", "4419.19", "-119, 80, 78, 71");
+        } finally {
+            configuredLevels.forEach(loggingSystem::setLogLevel);
         }
     }
 

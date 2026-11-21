@@ -8,8 +8,11 @@ import com.massmutual.expensesmanager.service.model.InvoiceFile;
 import com.massmutual.expensesmanager.service.model.LineView;
 import com.massmutual.expensesmanager.web.dto.LineRequest;
 import jakarta.validation.Valid;
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import org.springframework.core.io.InputStreamResource;
+import org.springframework.core.io.Resource;
 import org.springframework.http.ContentDisposition;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -74,7 +77,7 @@ public class LineController {
     }
 
     @GetMapping("/lines/{kind}/{id}/invoice")
-    public ResponseEntity<byte[]> downloadInvoice(@AuthenticationPrincipal AppUserPrincipal principal,
+    public ResponseEntity<Resource> downloadInvoice(@AuthenticationPrincipal AppUserPrincipal principal,
             @PathVariable ReportKind kind, @PathVariable Long id) {
         InvoiceFile invoice = invoiceService.download(principal.toCaller(), kind, id);
         byte[] content = invoice.content() == null ? new byte[0] : invoice.content();
@@ -82,7 +85,8 @@ public class LineController {
                 .contentType(mediaTypeOf(invoice.contentType()))
                 .contentLength(content.length)
                 .header(HttpHeaders.CONTENT_DISPOSITION, attachment(invoice.filename()).toString())
-                .body(content);
+                // An InputStreamResource is logged by its description, not its bytes, and gets no Range handling.
+                .body(new InputStreamResource(new ByteArrayInputStream(content)));
     }
 
     private static LineService.LineInput toInput(ReportKind kind, LineRequest request) {

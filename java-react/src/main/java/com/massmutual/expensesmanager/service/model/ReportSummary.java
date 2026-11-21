@@ -13,4 +13,16 @@ public record ReportSummary(
         LocalDateTime submitedOn,
         BigDecimal totalEur,
         String submittedBy) {
+
+    @Override
+    public String toString() {
+        return "ReportSummary[id=" + id
+                + ", code=" + code
+                + ", title=" + Redacted.length(title)
+                + ", status=" + status
+                + ", createdOn=" + createdOn
+                + ", submitedOn=" + submitedOn
+                + ", totalEur=" + Redacted.mask(totalEur)
+                + ", submittedBy=" + Redacted.length(submittedBy) + "]";
+    }
 }

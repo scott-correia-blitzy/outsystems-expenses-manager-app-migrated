@@ -1,7 +1,9 @@
 package com.massmutual.expensesmanager.web.dto;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.massmutual.expensesmanager.domain.ReportKind;
 import com.massmutual.expensesmanager.service.LegacyMessages;
+import com.massmutual.expensesmanager.service.model.Redacted;
 import jakarta.validation.Constraint;
 import jakarta.validation.ConstraintValidator;
 import jakarta.validation.ConstraintValidatorContext;
@@ -20,6 +22,14 @@ public record CreateReportRequest(
         @NotBlank(message = LegacyMessages.SELECT_REPORT_TYPE) String kind,
         @NotBlank(message = LegacyMessages.INSERT_TITLE)
         @CreateReportRequest.SizeUnlessBlank(max = 50, message = LegacyMessages.MAX_LENGTH_50) String title) {
+
+    @Override
+    public String toString() {
+        String shownKind = ReportKind.fromPath(kind == null ? null : kind.trim())
+                .map(ReportKind::pathValue)
+                .orElseGet(() -> Redacted.length(kind));
+        return "CreateReportRequest[kind=" + shownKind + ", title=" + Redacted.length(title) + "]";
+    }
 
     // Like @Size(max), but blank text is left to @NotBlank so a blank over-long field reports one error.
     @Documented

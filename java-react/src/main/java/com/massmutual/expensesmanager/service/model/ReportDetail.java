@@ -23,4 +23,21 @@ public record ReportDetail(
     public ReportDetail {
         lines = lines == null ? List.of() : List.copyOf(lines);
     }
+
+    @Override
+    public String toString() {
+        return "ReportDetail[id=" + id
+                + ", kind=" + kind
+                + ", code=" + code
+                + ", title=" + Redacted.length(title)
+                + ", status=" + status
+                + ", createdOn=" + createdOn
+                + ", createdByName=" + Redacted.length(createdByName)
+                + ", submitedOn=" + submitedOn
+                + ", processedOn=" + processedOn
+                + ", submittedBy=" + Redacted.length(submittedBy)
+                + ", totalEur=" + Redacted.mask(totalEur)
+                + ", vatTotal=" + Redacted.mask(vatTotal)
+                + ", lines=" + lines + "]";
+    }
 }
