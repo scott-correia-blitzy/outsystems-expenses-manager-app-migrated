@@ -12,6 +12,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import com.massmutual.expensesmanager.domain.ReportKind;
 import com.massmutual.expensesmanager.domain.StaticEntity;
+import com.massmutual.expensesmanager.domain.Status;
 import com.massmutual.expensesmanager.repository.CurrencyRepository;
 import com.massmutual.expensesmanager.repository.EarningTypeRepository;
 import com.massmutual.expensesmanager.repository.ExpenseTypeRepository;
@@ -103,10 +104,11 @@ public class ReferenceDataService {
 
     private synchronized StaticRows loadRows() {
         if (staticRows == null) {
+            List<Status> statuses = statusRepository.findAllByOrderByOrderAsc();
             staticRows = new StaticRows(
-                    statusRepository.findAll().stream()
+                    statuses.stream()
                             .collect(Collectors.toUnmodifiableMap(StaticEntity::getId, StaticEntity::getLabel)),
-                    statusRepository.findAllByOrderByOrderAsc().stream()
+                    statuses.stream()
                             .collect(Collectors.toUnmodifiableMap(
                                     status -> normalize(status.getLabel()),
                                     StaticEntity::getId,
