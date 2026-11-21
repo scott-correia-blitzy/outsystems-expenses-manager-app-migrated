@@ -3,6 +3,7 @@ package com.massmutual.expensesmanager;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -574,6 +575,63 @@ class RoleMatrixIT {
         assertThat(logged).doesNotContain(password, token, header);
     }
 
+    @Test
+    @ExtendWith(OutputCaptureExtension.class)
+    @DisplayName("At root DEBUG, rejected request values and logged-out session ids stay out of the log")
+    void rootDebugLogOmitsRequestValuesAndSessionIds(@Autowired LoggingSystem loggingSystem, CapturedOutput output) {
+        String password = "PASSWORD_" + UUID.randomUUID().toString().replace("-", "");
+        String typeId = "TYPE_" + UUID.randomUUID().toString().replace("-", "");
+        String descriptionEnd = "DESCRIPTION_" + UUID.randomUUID().toString().replace("-", "");
+        String longDescription = "d".repeat(1500) + descriptionEnd;
+        String malformedLogin = "{\"username\":\"%s\",\"password\":%s,\"rememberMe\":false}"
+                .formatted(Account.EM_USER1.username, password);
+        String linesPath = reportPath(lineCreateReportId) + "/lines";
+
+        try (ApiClient anonymous = new ApiClient(port); ApiClient user = freshClient(Account.EM_USER1)) {
+            String sessionId = user.cookie(ApiClient.SESSION_COOKIE).orElseThrow();
+            String logged = logAtRootDebug(loggingSystem, output, () -> {
+                assertStatus(Account.ANONYMOUS, "POST /api/auth/login",
+                        anonymous.postJson("/api/auth/login", malformedLogin), 422);
+                assertStatus(Account.EM_USER1, "POST " + linesPath,
+                        user.postJson(linesPath, lineBody().put("expenseTypeId", typeId)), 422);
+                assertStatus(Account.EM_USER1, "POST " + linesPath,
+                        user.postJson(linesPath, lineBody().put("description", longDescription)), 422);
+                assertStatus(Account.EM_USER1, "POST /api/auth/logout", user.logout(), 204);
+            });
+
+            assertThat(logged).contains("DEBUG");
+            assertThat(linesContaining(logged, password, typeId, descriptionEnd, sessionId)).isEmpty();
+        }
+    }
+
+    @Test
+    @ExtendWith(OutputCaptureExtension.class)
+    @DisplayName("At root DEBUG, saved password hashes, report fields and invoice bytes stay out of the log")
+    void rootDebugLogOmitsPersistedValues(@Autowired LoggingSystem loggingSystem,
+            @Autowired PasswordEncoder passwordEncoder, @Autowired AppUserRepository appUsers,
+            @Autowired InvoiceExpenseRepository invoiceExpenses, CapturedOutput output) {
+        String suffix = UUID.randomUUID().toString().replace("-", "");
+        String passwordHash = passwordEncoder.encode("PASSWORD_" + suffix);
+        String title = "TITLE_" + suffix;
+        byte[] content = ("INVOICE_" + suffix).getBytes(StandardCharsets.UTF_8);
+        String decimalContent = Arrays.toString(content).replace("[", "").replace("]", "");
+
+        String logged = logAtRootDebug(loggingSystem, output, () -> {
+            AppUser owner = appUsers.save(
+                    new AppUser("debuglog_" + suffix, "Debug log owner", passwordHash, Set.of(Role.User)));
+            InvoiceExpense invoice = new InvoiceExpense(
+                    expenseLine(expenseReport(owner.getId(), ReferenceIds.STATUS_DRAFT, title), owner.getId()));
+            invoice.setContent(content);
+            invoice.setFilename(INVOICE_NAME);
+            invoice.setFiletype(INVOICE_TYPE);
+            invoice.setDatetime(FIXTURE_TIME);
+            invoiceExpenses.save(invoice);
+        });
+
+        assertThat(logged).contains("DEBUG");
+        assertThat(linesContaining(logged, passwordHash, title, decimalContent)).isEmpty();
+    }
+
     static Stream<Arguments> listScopeCases() {
         return Arrays.stream(Account.values())
                 .filter(Account::signedIn)
@@ -643,6 +701,23 @@ class RoleMatrixIT {
         return output.getAll().substring(logStart).lines()
                 .filter(line -> line.contains(handler.getSimpleName()))
                 .toList();
+    }
+
+    private static String logAtRootDebug(LoggingSystem loggingSystem, CapturedOutput output, Runnable action) {
+        LoggerConfiguration configuration = loggingSystem.getLoggerConfiguration(LoggingSystem.ROOT_LOGGER_NAME);
+        LogLevel configuredLevel = configuration == null ? null : configuration.getConfiguredLevel();
+        loggingSystem.setLogLevel(LoggingSystem.ROOT_LOGGER_NAME, LogLevel.DEBUG);
+        try {
+            int logStart = output.getAll().length();
+            action.run();
+            return output.getAll().substring(logStart);
+        } finally {
+            loggingSystem.setLogLevel(LoggingSystem.ROOT_LOGGER_NAME, configuredLevel);
+        }
+    }
+
+    private static List<String> linesContaining(String log, String... values) {
+        return log.lines().filter(line -> Arrays.stream(values).anyMatch(line::contains)).toList();
     }
 
     private static List<String> csrfCookieAttributes(Response response) {
