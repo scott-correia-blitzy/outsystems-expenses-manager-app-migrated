@@ -16,6 +16,7 @@ public abstract class InvoiceEntity {
     @Column(name = "Id")
     private Long id;
 
+    // Lazy via build-time enhancement; assigning it on a fetched invoice still loads the old bytes first.
     @Lob
     @Basic(fetch = FetchType.LAZY)
     @Column(name = "Content")

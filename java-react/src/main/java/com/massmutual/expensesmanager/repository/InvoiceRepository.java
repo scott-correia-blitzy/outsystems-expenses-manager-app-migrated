@@ -23,7 +23,7 @@ public interface InvoiceRepository<I extends InvoiceEntity> extends JpaRepositor
         LocalDateTime getDatetime();
     }
 
-    // Never selects content: lazy @Lob loading needs bytecode enhancement, which this build does not use.
+    // Metadata only: line views never need the invoice bytes.
     @Query("select i.id as id, i.filename as filename, i.filetype as filetype, i.datetime as datetime"
             + " from #{#entityName} i where i.id in :ids")
     List<InvoiceMeta> findInfoByIds(@Param("ids") Collection<Long> ids);
