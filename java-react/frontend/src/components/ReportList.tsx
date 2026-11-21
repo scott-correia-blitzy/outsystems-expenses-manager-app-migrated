@@ -10,26 +10,17 @@ import {
   Chip,
   CircularProgress,
   Grid,
-  IconButton,
   InputAdornment,
-  InputLabel,
   MenuItem,
   Paper,
   Stack,
   SvgIcon,
-  Table,
-  TableBody,
-  TableCell,
-  TableContainer,
-  TableHead,
   TablePagination,
-  TableRow,
   TableSortLabel,
   TextField,
   ToggleButton,
   ToggleButtonGroup,
   Typography,
-  type InputLabelProps,
   type SvgIconProps,
   type Theme,
 } from '@mui/material';
@@ -45,10 +36,10 @@ import type {
   SortDir,
   StatusLabel,
 } from '../api/types';
-import { formatEuro, formatListDate, formatRowDate } from '../format/format';
+import { formatEuro, formatListDate } from '../format/format';
 import { adminReportPath, reportPath } from '../routes';
 import { useFeedback } from './Feedback';
-import { ResultStatus, ViewIcon } from './LineTable';
+import { LineRows, ResultStatus, SelectLabel, ViewIcon } from './LineTable';
 import { LineViewDialog } from './LineViewDialog';
 import { StatusTag } from './StatusTag';
 
@@ -156,11 +147,6 @@ function ExpandIcon(props: SvgIconProps) {
   );
 }
 
-// A <label for> cannot target the select's div; the select names itself through aria-labelledby.
-function SelectLabel({ htmlFor: _htmlFor, ...props }: InputLabelProps) {
-  return <InputLabel {...props} component="span" sx={{ cursor: 'default' }} />;
-}
-
 type LineSubTableProps = {
   kind: Kind;
   code: string;
@@ -169,50 +155,15 @@ type LineSubTableProps = {
 };
 
 function LineSubTable({ kind, code, lines, onView }: LineSubTableProps) {
-  const isExpense = kind === 'expense';
   return (
-    <TableContainer component={Paper} variant="outlined">
-      <Table size="small" aria-label={`${isExpense ? 'Expenses' : 'Earnings'} of ${code}`}>
-        <TableHead>
-          <TableRow sx={{ bgcolor: 'grey.50' }}>
-            <TableCell>Date</TableCell>
-            <TableCell>Title</TableCell>
-            <TableCell>Description</TableCell>
-            <TableCell align="right">{isExpense ? 'Amount Spent' : 'Amount Earned'}</TableCell>
-            <TableCell>Type</TableCell>
-            <TableCell align="center">Actions</TableCell>
-          </TableRow>
-        </TableHead>
-        <TableBody>
-          {lines.length === 0 ? (
-            <TableRow>
-              <TableCell colSpan={6} align="center">
-                <Typography variant="body2" color="text.secondary">
-                  No records available
-                </Typography>
-              </TableCell>
-            </TableRow>
-          ) : (
-            lines.map((line) => (
-              <TableRow key={line.id}>
-                <TableCell sx={{ whiteSpace: 'nowrap' }}>{formatRowDate(line.date)}</TableCell>
-                <TableCell sx={{ overflowWrap: 'break-word' }}>{line.title ?? ''}</TableCell>
-                <TableCell sx={{ overflowWrap: 'break-word' }}>{line.description ?? ''}</TableCell>
-                <TableCell align="right" sx={{ whiteSpace: 'nowrap' }}>
-                  {formatEuro(line.amountInEuros)}
-                </TableCell>
-                <TableCell>{line.typeLabel ?? ''}</TableCell>
-                <TableCell align="center">
-                  <IconButton aria-label="View" color="primary" onClick={() => onView(line)}>
-                    <ViewIcon />
-                  </IconButton>
-                </TableCell>
-              </TableRow>
-            ))
-          )}
-        </TableBody>
-      </Table>
-    </TableContainer>
+    <LineRows
+      kind={kind}
+      label={`${kind === 'expense' ? 'Expenses' : 'Earnings'} of ${code}`}
+      typeLabel="Type"
+      lines={lines}
+      onView={onView}
+      nested
+    />
   );
 }
 

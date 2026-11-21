@@ -1,7 +1,10 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type ChangeEvent, type ReactNode } from 'react';
 import {
+  Grid,
   IconButton,
   InputAdornment,
+  InputLabel,
+  MenuItem,
   Paper,
   Stack,
   SvgIcon,
@@ -15,7 +18,10 @@ import {
   TableSortLabel,
   TextField,
   Typography,
+  useMediaQuery,
+  type InputLabelProps,
   type SvgIconProps,
+  type Theme,
 } from '@mui/material';
 import type { Kind, LineView, SortDir } from '../api/types';
 import { formatEuro, formatRowDate } from '../format/format';
@@ -71,6 +77,11 @@ export function ResultStatus({ total, page, rowsPerPage, nouns, message }: Resul
   return <LiveStatus message={message ?? resultSummary(total, page, rowsPerPage, nouns)} />;
 }
 
+// A <label for> cannot target the select's div; the select names itself through aria-labelledby.
+export function SelectLabel({ htmlFor: _htmlFor, ...props }: InputLabelProps) {
+  return <InputLabel {...props} component="span" sx={{ cursor: 'default' }} />;
+}
+
 export type LineTableProps = {
   kind: Kind;
   lines: LineView[];
@@ -88,10 +99,21 @@ type SortKey = 'date' | 'title' | 'description' | 'amountInEuros' | 'typeLabel';
 
 type SortState = { key: SortKey; dir: SortDir } | null;
 
-type Column = { key: SortKey; label: string; align?: 'right' };
+type Column = {
+  key: SortKey;
+  label: string;
+  value: (line: LineView) => string;
+  spacingWidth?: number;
+  align?: 'right';
+  nowrap?: boolean;
+  wide?: boolean;
+};
 
 const ROWS_PER_PAGE = 10;
 const COLUMN_COUNT = 6;
+const CARD_FIELDS: readonly SortKey[] = ['date', 'amountInEuros', 'title', 'description', 'typeLabel'];
+// The icon buttons' own padding makes up the rest of the usual cell inset.
+const ACTIONS_INSET = { paddingInline: 1 } as const;
 
 function compareText(a: string | null | undefined, b: string | null | undefined): number {
   return (a ?? '').localeCompare(b ?? '', 'en', { sensitivity: 'base' });
@@ -123,15 +145,197 @@ const COMPARATORS: Record<SortKey, (a: LineView, b: LineView) => number> = {
   typeLabel: (a, b) => compareText(a.typeLabel, b.typeLabel),
 };
 
-function columnsFor(kind: Kind): Column[] {
-  const isExpense = kind === 'expense';
+function columnsFor(kind: Kind, typeLabel = kind === 'expense' ? 'Expense Type' : 'Earning Type'): Column[] {
   return [
-    { key: 'date', label: 'Date' },
-    { key: 'title', label: 'Title' },
-    { key: 'description', label: 'Description' },
-    { key: 'amountInEuros', label: isExpense ? 'Amount Spent' : 'Amount Earned', align: 'right' },
-    { key: 'typeLabel', label: isExpense ? 'Expense Type' : 'Earning Type' },
+    { key: 'date', label: 'Date', value: (line) => formatRowDate(line.date), spacingWidth: 16, nowrap: true },
+    { key: 'title', label: 'Title', value: (line) => line.title ?? '', wide: true },
+    { key: 'description', label: 'Description', value: (line) => line.description ?? '', wide: true },
+    {
+      key: 'amountInEuros',
+      label: kind === 'expense' ? 'Amount Spent' : 'Amount Earned',
+      value: (line) => formatEuro(line.amountInEuros),
+      spacingWidth: 20,
+      align: 'right',
+      nowrap: true,
+    },
+    { key: 'typeLabel', label: typeLabel, value: (line) => line.typeLabel ?? '', spacingWidth: 19 },
   ];
+}
+
+function cardFields(columns: Column[]): Column[] {
+  return CARD_FIELDS.flatMap((key) => columns.filter((column) => column.key === key));
+}
+
+function useStackedLines(): boolean {
+  return useMediaQuery((theme: Theme) => theme.breakpoints.down('md'), { noSsr: true });
+}
+
+type LineRowsProps = {
+  kind: Kind;
+  label: string;
+  lines: LineView[];
+  typeLabel?: string;
+  sort?: SortState;
+  onSort?: (key: SortKey) => void;
+  nested?: boolean;
+  viewDisabled?: boolean;
+  editDisabled?: boolean;
+  deleteDisabled?: boolean;
+  onView: (line: LineView) => void;
+  onEdit?: (line: LineView) => void;
+  onDelete?: (line: LineView) => void;
+};
+
+export function LineRows({
+  kind,
+  label,
+  lines,
+  typeLabel,
+  sort = null,
+  onSort,
+  nested = false,
+  viewDisabled = false,
+  editDisabled = false,
+  deleteDisabled = false,
+  onView,
+  onEdit,
+  onDelete,
+}: LineRowsProps) {
+  const stacked = useStackedLines();
+  const columns = columnsFor(kind, typeLabel);
+  const actionsSpacingWidth = onEdit || onDelete ? 18 : 12;
+
+  const lineActions = (line: LineView, justifyContent: 'center' | 'flex-end') => (
+    <Stack direction="row" spacing={0.5} useFlexGap justifyContent={justifyContent}>
+      <IconButton aria-label="View" color="primary" disabled={viewDisabled} onClick={() => onView(line)}>
+        <ViewIcon />
+      </IconButton>
+      {onEdit && (
+        <IconButton aria-label="Edit" color="primary" disabled={editDisabled} onClick={() => onEdit(line)}>
+          <EditIcon />
+        </IconButton>
+      )}
+      {onDelete && (
+        <IconButton aria-label="Delete" color="primary" disabled={deleteDisabled} onClick={() => onDelete(line)}>
+          <DeleteIcon />
+        </IconButton>
+      )}
+    </Stack>
+  );
+
+  if (stacked) {
+    if (lines.length === 0) {
+      return (
+        <Paper variant="outlined">
+          <Stack alignItems="center" sx={{ padding: 2 }}>
+            <Typography variant="body2" color="text.secondary">
+              No records available
+            </Typography>
+          </Stack>
+        </Paper>
+      );
+    }
+    return (
+      <Stack role="list" aria-label={label} spacing={1} useFlexGap>
+        {lines.map((line) => (
+          <Paper key={line.id} role="listitem" variant="outlined">
+            <Grid container columnSpacing={2} rowSpacing={1.5} sx={{ padding: 2 }}>
+              {cardFields(columns).map((column) => (
+                <Grid key={column.key} size={column.wide ? 12 : 6}>
+                  <Typography variant="caption" color="text.secondary" component="div">
+                    {column.label}
+                  </Typography>
+                  <Typography variant="body2" sx={{ overflowWrap: 'anywhere' }}>
+                    {column.value(line)}
+                  </Typography>
+                </Grid>
+              ))}
+              <Grid size={6}>{lineActions(line, 'flex-end')}</Grid>
+            </Grid>
+          </Paper>
+        ))}
+      </Stack>
+    );
+  }
+
+  return (
+    <TableContainer component={Paper} variant="outlined">
+      <Table size="small" aria-label={label} sx={{ tableLayout: 'fixed' }}>
+        <TableHead>
+          <TableRow sx={nested ? { bgcolor: 'grey.50' } : undefined}>
+            {columns.map((column) => {
+              const active = sort?.key === column.key;
+              return (
+                <TableCell
+                  key={column.key}
+                  align={column.align}
+                  sortDirection={active ? sort.dir : false}
+                  sx={{
+                    width: (theme) =>
+                      column.spacingWidth === undefined ? 'auto' : theme.spacing(column.spacingWidth),
+                  }}
+                >
+                  {onSort ? (
+                    <TableSortLabel
+                      active={active}
+                      direction={active ? sort.dir : 'asc'}
+                      onClick={() => onSort(column.key)}
+                      sx={{
+                        '&.Mui-focusVisible': {
+                          outline: 2,
+                          outlineColor: 'primary.main',
+                          outlineOffset: (theme) => theme.spacing(0.25),
+                          borderRadius: 0.5,
+                        },
+                      }}
+                    >
+                      {column.label}
+                    </TableSortLabel>
+                  ) : (
+                    column.label
+                  )}
+                </TableCell>
+              );
+            })}
+            <TableCell
+              align="center"
+              sx={{ ...ACTIONS_INSET, width: (theme) => theme.spacing(actionsSpacingWidth) }}
+            >
+              Actions
+            </TableCell>
+          </TableRow>
+        </TableHead>
+        <TableBody>
+          {lines.length === 0 ? (
+            <TableRow>
+              <TableCell colSpan={COLUMN_COUNT} align="center">
+                <Typography variant="body2" color="text.secondary">
+                  No records available
+                </Typography>
+              </TableCell>
+            </TableRow>
+          ) : (
+            lines.map((line) => (
+              <TableRow key={line.id} hover={!nested}>
+                {columns.map((column) => (
+                  <TableCell
+                    key={column.key}
+                    align={column.align}
+                    sx={column.nowrap ? { whiteSpace: 'nowrap' } : { overflowWrap: 'anywhere' }}
+                  >
+                    {column.value(line)}
+                  </TableCell>
+                ))}
+                <TableCell align="center" sx={ACTIONS_INSET}>
+                  {lineActions(line, 'center')}
+                </TableCell>
+              </TableRow>
+            ))
+          )}
+        </TableBody>
+      </Table>
+    </TableContainer>
+  );
 }
 
 export function LineTable({
@@ -146,6 +350,7 @@ export function LineTable({
   onDelete,
   actions,
 }: LineTableProps) {
+  const stacked = useStackedLines();
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState<SortState>(null);
   const [page, setPage] = useState(0);
@@ -178,6 +383,12 @@ export function LineTable({
     );
   };
 
+  const selectSort = (event: ChangeEvent<HTMLInputElement>) => {
+    const [key, dir] = event.target.value.split(',');
+    const column = columns.find((candidate) => candidate.key === key);
+    setSort(column && (dir === 'asc' || dir === 'desc') ? { key: column.key, dir } : null);
+  };
+
   return (
     <Stack spacing={2} useFlexGap>
       <Stack
@@ -206,96 +417,41 @@ export function LineTable({
         />
         {actions}
       </Stack>
-      <TableContainer component={Paper} variant="outlined">
-        <Table size="small" aria-label={kind === 'expense' ? 'Expenses' : 'Earnings'}>
-          <TableHead>
-            <TableRow>
-              {columns.map((column) => {
-                const active = sort?.key === column.key;
-                return (
-                  <TableCell
-                    key={column.key}
-                    align={column.align}
-                    sortDirection={active ? sort.dir : false}
-                  >
-                    <TableSortLabel
-                      active={active}
-                      direction={active ? sort.dir : 'asc'}
-                      onClick={() => toggleSort(column.key)}
-                      sx={{
-                        '&.Mui-focusVisible': {
-                          outline: 2,
-                          outlineColor: 'primary.main',
-                          outlineOffset: (theme) => theme.spacing(0.25),
-                          borderRadius: 0.5,
-                        },
-                      }}
-                    >
-                      {column.label}
-                    </TableSortLabel>
-                  </TableCell>
-                );
-              })}
-              <TableCell align="center">Actions</TableCell>
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            {visibleRows.length === 0 ? (
-              <TableRow>
-                <TableCell colSpan={COLUMN_COUNT} align="center">
-                  <Typography variant="body2" color="text.secondary">
-                    No records available
-                  </Typography>
-                </TableCell>
-              </TableRow>
-            ) : (
-              visibleRows.map((line) => (
-                <TableRow key={line.id} hover>
-                  <TableCell sx={{ whiteSpace: 'nowrap' }}>{formatRowDate(line.date)}</TableCell>
-                  <TableCell sx={{ overflowWrap: 'break-word' }}>{line.title ?? ''}</TableCell>
-                  <TableCell sx={{ overflowWrap: 'break-word' }}>{line.description ?? ''}</TableCell>
-                  <TableCell align="right" sx={{ whiteSpace: 'nowrap' }}>
-                    {formatEuro(line.amountInEuros)}
-                  </TableCell>
-                  <TableCell>{line.typeLabel ?? ''}</TableCell>
-                  <TableCell align="center">
-                    <Stack direction="row" spacing={0.5} useFlexGap justifyContent="center">
-                      <IconButton
-                        aria-label="View"
-                        color="primary"
-                        disabled={viewDisabled}
-                        onClick={() => onView(line)}
-                      >
-                        <ViewIcon />
-                      </IconButton>
-                      {canEdit && (
-                        <IconButton
-                          aria-label="Edit"
-                          color="primary"
-                          disabled={editDisabled}
-                          onClick={() => onEdit(line)}
-                        >
-                          <EditIcon />
-                        </IconButton>
-                      )}
-                      {canEdit && (
-                        <IconButton
-                          aria-label="Delete"
-                          color="primary"
-                          disabled={deleteDisabled}
-                          onClick={() => onDelete(line)}
-                        >
-                          <DeleteIcon />
-                        </IconButton>
-                      )}
-                    </Stack>
-                  </TableCell>
-                </TableRow>
-              ))
-            )}
-          </TableBody>
-        </Table>
-      </TableContainer>
+      {stacked && (
+        <TextField
+          select
+          fullWidth
+          size="small"
+          name="sort"
+          label="Sort by"
+          value={sort ? `${sort.key},${sort.dir}` : ''}
+          onChange={selectSort}
+          slots={{ inputLabel: SelectLabel }}
+          slotProps={{ select: { displayEmpty: true }, inputLabel: { shrink: true } }}
+        >
+          <MenuItem value="">Default</MenuItem>
+          {columns.flatMap((column) =>
+            (['asc', 'desc'] as const).map((dir) => (
+              <MenuItem key={`${column.key},${dir}`} value={`${column.key},${dir}`}>
+                {`${column.label}, ${dir === 'asc' ? 'ascending' : 'descending'}`}
+              </MenuItem>
+            )),
+          )}
+        </TextField>
+      )}
+      <LineRows
+        kind={kind}
+        label={kind === 'expense' ? 'Expenses' : 'Earnings'}
+        lines={visibleRows}
+        sort={sort}
+        onSort={toggleSort}
+        viewDisabled={viewDisabled}
+        editDisabled={editDisabled}
+        deleteDisabled={deleteDisabled}
+        onView={onView}
+        onEdit={canEdit ? onEdit : undefined}
+        onDelete={canEdit ? onDelete : undefined}
+      />
       <TablePagination
         component="div"
         count={rows.length}

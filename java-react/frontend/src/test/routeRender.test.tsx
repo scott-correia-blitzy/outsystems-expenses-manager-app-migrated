@@ -2,6 +2,7 @@ import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/re
 import { describe, expect, it, vi } from 'vitest';
 import * as api from '../api/api';
 import { ApiError, type FieldError } from '../api/types';
+import { theme } from '../theme/theme';
 import { REFERENCE, type SessionCategory } from './fixtures';
 import { expectLocation, renderRoute } from './renderRoute';
 
@@ -364,6 +365,38 @@ describe('line form preview', () => {
 
       expect(await screen.findByText(/€ 5,00/, {}, { timeout: FIND_TIMEOUT })).toBeInTheDocument();
       expect(screen.queryByText(/€ 3,70/)).toBeNull();
+    },
+    TEST_TIMEOUT,
+  );
+});
+
+describe('narrow line list', () => {
+  it(
+    '/reports/expense/12 lists its lines as captioned cards below md',
+    async () => {
+      const narrowQuery = theme.breakpoints.down('md').replace(/^@media ?/, '');
+      vi.stubGlobal('matchMedia', (query: string) => ({
+        matches: query === narrowQuery,
+        media: query,
+        onchange: null,
+        addEventListener: () => {},
+        removeEventListener: () => {},
+        addListener: () => {},
+        removeListener: () => {},
+        dispatchEvent: () => false,
+      }));
+      try {
+        renderRoute('/reports/expense/12', 'user');
+        const list = await screen.findByRole('list', { name: 'Expenses' }, { timeout: FIND_TIMEOUT });
+        expect(screen.queryByRole('table')).toBeNull();
+        const card = within(list).getByRole('listitem');
+        expect(within(card).getByText('Amount Spent')).toBeInTheDocument();
+        expect(within(card).getByText('€ 42,00')).toBeInTheDocument();
+        expect(within(card).getByRole('button', { name: 'View' })).toBeInTheDocument();
+        expect(screen.getByRole('combobox', { name: /^Sort by/ })).toBeInTheDocument();
+      } finally {
+        vi.unstubAllGlobals();
+      }
     },
     TEST_TIMEOUT,
   );
