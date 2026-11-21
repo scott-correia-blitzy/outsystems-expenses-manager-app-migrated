@@ -20,11 +20,14 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.EnumMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Function;
 import java.util.stream.Stream;
 import org.hibernate.exception.ConstraintViolationException;
@@ -52,6 +55,7 @@ public class ReportService {
     private final AppUserRepository appUserRepository;
     private final Clock clock;
     private final TransactionTemplate newTransaction;
+    private final Map<ReportKind, Lock> codeLocks = new EnumMap<>(ReportKind.class);
 
     public ReportService(
             KindRepositories kindRepositories,
@@ -73,6 +77,9 @@ public class ReportService {
         this.clock = clock;
         this.newTransaction = new TransactionTemplate(transactionManager);
         this.newTransaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        for (ReportKind kind : ReportKind.values()) {
+            codeLocks.put(kind, new ReentrantLock());
+        }
     }
 
     @Transactional(readOnly = true)
@@ -144,7 +151,8 @@ public class ReportService {
                 views);
     }
 
-    // Each attempt commits in its own transaction, so a report-code collision is retried after a rollback.
+    // The kind's lock stops concurrent creates from taking the same next code; each attempt commits in its own
+    // transaction, so a collision with a code stored by other means is retried after a rollback.
     public ReportSummary create(Caller caller, ReportKind kind, String title) {
         policy.requireAnyRole(caller, Role.User);
         String storedTitle = normalizeTitle(title);
@@ -156,6 +164,8 @@ public class ReportService {
         if (!violations.isEmpty()) {
             throw ApiException.validation(violations);
         }
+        Lock codeLock = codeLocks.get(kind);
+        codeLock.lock();
         try {
             return insertDraft(caller, kind, storedTitle);
         } catch (DataIntegrityViolationException firstCollision) {
@@ -172,6 +182,8 @@ public class ReportService {
                 conflict.initCause(secondCollision);
                 throw conflict;
             }
+        } finally {
+            codeLock.unlock();
         }
     }
 

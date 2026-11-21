@@ -73,9 +73,13 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
 import org.assertj.core.api.ThrowableAssert.ThrowingCallable;
 import org.hibernate.exception.ConstraintViolationException;
@@ -409,6 +413,38 @@ class BusinessRulesTest {
                 .isInstanceOf(DataException.class);
         assertThat(reportCodeGenerator.calls(ReportKind.EXPENSE)).isEqualTo(attempts);
         assertThat(expenseReportRepository.count()).isEqualTo(1);
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @EnumSource(ReportKind.class)
+    void concurrentCreatesOfOneKindTakeConsecutiveCodesWithoutARetry(ReportKind kind) throws Exception {
+        Caller owner = newCaller(appUserRepository, Role.User);
+        int creators = 10;
+        CountDownLatch startGate = new CountDownLatch(1);
+        ExecutorService executor = Executors.newFixedThreadPool(creators);
+        List<String> codes = new ArrayList<>();
+        try {
+            List<Future<ReportSummary>> futures = new ArrayList<>();
+            for (int i = 1; i <= creators; i++) {
+                String title = "Concurrent " + i;
+                futures.add(executor.submit(() -> {
+                    startGate.await();
+                    return reportService.create(owner, kind, title);
+                }));
+            }
+            startGate.countDown();
+            for (Future<ReportSummary> future : futures) {
+                codes.add(future.get(30, TimeUnit.SECONDS).code());
+            }
+        } finally {
+            executor.shutdown();
+            executor.awaitTermination(30, TimeUnit.SECONDS);
+        }
+
+        assertThat(codes).containsExactlyInAnyOrderElementsOf(IntStream.rangeClosed(1, creators)
+                .mapToObj(n -> n + "/2024 " + kind.suffix())
+                .toList());
+        assertThat(reportCodeGenerator.calls(kind)).isEqualTo(creators);
     }
 
     @Test
