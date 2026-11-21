@@ -28,12 +28,15 @@ import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestMethodOrder;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.builder.SpringApplicationBuilder;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.context.annotation.Import;
+import org.springframework.http.ContentDisposition;
 import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -193,6 +196,38 @@ class EndToEndIT {
             assertThat(restartedExpenses.count() + restartedEarnings.count()).isEqualTo(reportsBefore);
         } finally {
             restarted.close();
+        }
+    }
+
+    @ParameterizedTest
+    @Order(6)
+    @ValueSource(strings = {"receipt.png", "reçu-€.png", "a\"b.png", "a\\b.png", "receipt\r\n.png", "receipt\t.png"})
+    @DisplayName("an invoice downloads under the exact filename it was uploaded with")
+    void invoiceDownloadKeepsUploadedFilename(String filename) {
+        try (ApiClient user = ApiClient.loggedIn(port, USER, PASSWORD)) {
+            long reportId = expectStatus(user.postJson("/api/reports", newReport("Invoice names")), 201)
+                    .json().path("id").asLong();
+            ObjectNode line = ApiClient.object();
+            line.put("expenseTypeId", 2);
+            line.put("currencyId", 1);
+            line.put("amount", new BigDecimal("10.00"));
+            line.put("title", "Receipt");
+            line.put("description", "");
+            line.put("date", "2024-05-22");
+            long lineId = expectStatus(user.postJson("/api/reports/expense/" + reportId + "/lines", line), 201)
+                    .json().path("id").asLong();
+
+            byte[] receipt = Base64.getDecoder().decode(RECEIPT_PNG_BASE64);
+            String invoicePath = "/api/lines/expense/" + lineId + "/invoice";
+            expectStatus(user.putFile(invoicePath, filename, "image/png", receipt), 204);
+
+            ApiClient.Response download = expectStatus(user.get(invoicePath), 200);
+            String header = download.header("Content-Disposition");
+            assertThat(header).isNotNull().doesNotContain("\r", "\n");
+            ContentDisposition disposition = ContentDisposition.parse(header);
+            assertThat(disposition.isAttachment()).as(header).isTrue();
+            assertThat(disposition.getFilename()).as(header).isEqualTo(filename);
+            assertThat(download.body()).isEqualTo(receipt);
         }
     }
 

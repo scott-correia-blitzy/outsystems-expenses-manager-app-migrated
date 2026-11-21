@@ -359,6 +359,31 @@ class RoleMatrixIT {
         }
     }
 
+    @ParameterizedTest(name = "amount=100{0} answers {1}")
+    @CsvSource({
+            "'',           200, 0.93, 93.00,",
+            "&rate=0.5,    200, 0.5,  50.00,",
+            "&rate=,       422,     ,      , " + LegacyMessages.RATE_ABOVE_ZERO,
+            "&rate=%20%20, 422,     ,      , " + LegacyMessages.RATE_ABOVE_ZERO,
+            "&rate=abc,    422,     ,      , " + LegacyMessages.INVALID_VALUE,
+            "&rate=0,      422,     ,      , " + LegacyMessages.RATE_ABOVE_ZERO,
+            "&rate=-1,     422,     ,      , " + LegacyMessages.RATE_ABOVE_ZERO})
+    @DisplayName("USD to EUR defaults only an omitted rate and validates a supplied one")
+    void usdToEurRate(String rateQuery, int status, BigDecimal rate, BigDecimal eur, String error) {
+        JsonNode body = expect(Account.EM_USER1, get("/api/tools/usd-to-eur?amount=100" + rateQuery), status).json();
+        if (error == null) {
+            assertThat(body.path("rate").decimalValue()).isEqualByComparingTo(rate);
+            assertThat(body.path("eur").decimalValue()).isEqualByComparingTo(eur);
+            return;
+        }
+        assertThat(body.path("code").asText()).isEqualTo(ApiException.VALIDATION_FAILED);
+        assertThat(body.path("message").asText()).isEqualTo(error);
+        assertThat(body.path("fieldErrors")).singleElement().satisfies(fieldError -> {
+            assertThat(fieldError.path("field").asText()).isEqualTo("rate");
+            assertThat(fieldError.path("message").asText()).isEqualTo(error);
+        });
+    }
+
     @ParameterizedTest(name = "{0}")
     @EnumSource(Account.class)
     @DisplayName("Logout with a CSRF token returns 204 and ends any session")

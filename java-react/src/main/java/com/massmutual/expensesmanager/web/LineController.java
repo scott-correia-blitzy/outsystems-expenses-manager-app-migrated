@@ -101,11 +101,15 @@ public class LineController {
         if (!StringUtils.hasText(filename)) {
             return disposition.build();
         }
-        // A charset RFC 2047-encodes the plain filename parameter, so ASCII names are sent without one.
-        if (StandardCharsets.US_ASCII.newEncoder().canEncode(filename)) {
+        // A charset RFC 2047-encodes the plain filename, so only printable ASCII, safe in a header, goes without one.
+        if (isPrintableAscii(filename)) {
             return disposition.filename(filename).build();
         }
         return disposition.filename(filename, StandardCharsets.UTF_8).build();
+    }
+
+    private static boolean isPrintableAscii(String value) {
+        return value.chars().allMatch(c -> c >= ' ' && c <= '~');
     }
 
     private static MediaType mediaTypeOf(String contentType) {

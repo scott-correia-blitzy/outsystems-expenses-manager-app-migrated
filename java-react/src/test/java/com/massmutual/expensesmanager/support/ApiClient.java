@@ -318,7 +318,16 @@ public final class ApiClient implements AutoCloseable {
                 .append("--").append(boundary).append(CRLF)
                 .append("Content-Disposition: form-data; name=\"file\"");
         if (filename != null) {
-            head.append("; filename=\"").append(filename.replace("\\", "\\\\").replace("\"", "\\\"")).append('"');
+            boolean printable = filename.codePoints().allMatch(ApiClient::isPrintableAscii);
+            String plain = printable ? filename : filename.codePoints()
+                    .map(c -> isPrintableAscii(c) ? c : '_')
+                    .collect(StringBuilder::new, StringBuilder::appendCodePoint, StringBuilder::append)
+                    .toString();
+            head.append("; filename=\"").append(plain.replace("\\", "\\\\").replace("\"", "\\\"")).append('"');
+            // CR/LF would end the part header and raw UTF-8 has no declared charset, so such names use filename*.
+            if (!printable) {
+                head.append("; filename*=UTF-8''").append(encode(filename).replace("*", "%2A"));
+            }
         }
         head.append(CRLF)
                 .append("Content-Type: ").append(contentType == null ? OCTET_STREAM : contentType).append(CRLF)
@@ -330,6 +339,10 @@ public final class ApiClient implements AutoCloseable {
         out.writeBytes(bytes == null ? new byte[0] : bytes);
         out.writeBytes(tail.getBytes(StandardCharsets.UTF_8));
         return out.toByteArray();
+    }
+
+    private static boolean isPrintableAscii(int c) {
+        return c >= ' ' && c <= '~';
     }
 
     private static String abbreviate(String text) {
