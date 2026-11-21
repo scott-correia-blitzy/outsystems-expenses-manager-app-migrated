@@ -9,6 +9,7 @@ import java.math.RoundingMode;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 
 import org.springframework.stereotype.Component;
 
@@ -18,7 +19,10 @@ public class AmountCalculator {
     private static final int STORED_SCALE = 4;
     private static final int MONEY_SCALE = 2;
     private static final BigDecimal HUNDRED = BigDecimal.valueOf(100);
-    private static final int MAX_INTEGER_DIGITS = 15;
+    // Amount and AmountInEuros are DECIMAL(19,4); Distance is DECIMAL(37,8).
+    private static final int STORED_INTEGER_DIGITS = 15;
+    private static final int DISTANCE_SCALE = 8;
+    private static final int DISTANCE_INTEGER_DIGITS = 29;
     private static final int MAX_SCALE = 100;
 
     private final ExpensesProperties properties;
@@ -40,7 +44,7 @@ public class AmountCalculator {
 
     public BigDecimal mileage(BigDecimal kilometers) {
         Objects.requireNonNull(kilometers, "kilometers");
-        if (!withinDecimalRange(kilometers)) {
+        if (!withinRange(kilometers, DISTANCE_INTEGER_DIGITS)) {
             throw new ApiException(422, ApiException.VALIDATION_FAILED, LegacyMessages.INVALID_VALUE, List.of());
         }
         return stored(kilometers.multiply(properties.mileageReimbursement()));
@@ -48,17 +52,35 @@ public class AmountCalculator {
 
     public BigDecimal usdToEur(BigDecimal amount, BigDecimal rate) {
         List<FieldViolation> violations = new ArrayList<>();
-        collectViolation(violations, "amount", amount, LegacyMessages.USD_AMOUNT_ABOVE_ZERO);
-        collectViolation(violations, "rate", rate, LegacyMessages.RATE_ABOVE_ZERO);
+        collectViolation(violations, "amount", amount, STORED_INTEGER_DIGITS, LegacyMessages.USD_AMOUNT_ABOVE_ZERO);
+        collectViolation(violations, "rate", rate, ExpensesProperties.RATE_INTEGER_DIGITS,
+                LegacyMessages.RATE_ABOVE_ZERO);
         if (!violations.isEmpty()) {
             throw ApiException.validation(violations);
         }
         return stored(amount.multiply(rate));
     }
 
+    // Checks only the value the line's kind and type consume; null and non-positive values are left to the caller.
+    public Optional<FieldViolation> lineAmountsViolation(ReportKind kind, Integer typeId, Integer currencyId,
+            BigDecimal amount, BigDecimal kilometers) {
+        if (isKilometersExpense(kind, typeId)) {
+            return isPositive(kilometers) && !kilometersFit(kilometers)
+                    ? Optional.of(new FieldViolation("kilometers", LegacyMessages.INVALID_VALUE))
+                    : Optional.empty();
+        }
+        return isPositive(amount) && !amountFits(currencyId, amount)
+                ? Optional.of(new FieldViolation("amount", LegacyMessages.INVALID_VALUE))
+                : Optional.empty();
+    }
+
     public LineAmounts lineAmounts(ReportKind kind, Integer typeId, Integer currencyId,
             BigDecimal amount, BigDecimal kilometers) {
-        if (kind == ReportKind.EXPENSE && Objects.equals(typeId, ReferenceIds.EXPENSE_TYPE_KILOMETERS)) {
+        Optional<FieldViolation> violation = lineAmountsViolation(kind, typeId, currencyId, amount, kilometers);
+        if (violation.isPresent()) {
+            throw ApiException.validation(List.of(violation.get()));
+        }
+        if (isKilometersExpense(kind, typeId)) {
             BigDecimal euros = mileage(kilometers);
             // The stored amount is the computed euro value, so the line's currency is always Euro.
             return new LineAmounts(ReferenceIds.CURRENCY_EURO, euros, kilometers, euros);
@@ -91,18 +113,43 @@ public class AmountCalculator {
         return stripped.scale() < 0 ? stripped.setScale(0) : stripped;
     }
 
+    private boolean kilometersFit(BigDecimal kilometers) {
+        return withinRange(kilometers, DISTANCE_INTEGER_DIGITS)
+                && fits(kilometers.setScale(DISTANCE_SCALE, RoundingMode.HALF_UP), DISTANCE_INTEGER_DIGITS)
+                && fits(stored(kilometers.multiply(properties.mileageReimbursement())), STORED_INTEGER_DIGITS);
+    }
+
+    private boolean amountFits(Integer currencyId, BigDecimal amount) {
+        return withinRange(amount, STORED_INTEGER_DIGITS)
+                && fits(stored(amount), STORED_INTEGER_DIGITS)
+                && (!Objects.equals(currencyId, ReferenceIds.CURRENCY_DOLLAR)
+                        || fits(stored(amount.multiply(properties.dollarsToEuros())), STORED_INTEGER_DIGITS));
+    }
+
+    private static boolean isKilometersExpense(ReportKind kind, Integer typeId) {
+        return kind == ReportKind.EXPENSE && Objects.equals(typeId, ReferenceIds.EXPENSE_TYPE_KILOMETERS);
+    }
+
+    private static boolean isPositive(BigDecimal value) {
+        return value != null && value.signum() > 0;
+    }
+
     private static void collectViolation(List<FieldViolation> violations, String field, BigDecimal value,
-            String nonPositiveMessage) {
+            int integerDigits, String nonPositiveMessage) {
         if (value == null || value.signum() <= 0) {
             violations.add(new FieldViolation(field, nonPositiveMessage));
-        } else if (!withinDecimalRange(value)) {
+        } else if (!withinRange(value, integerDigits)) {
             violations.add(new FieldViolation(field, LegacyMessages.INVALID_VALUE));
         }
     }
 
     // Rounding an extreme exponent would materialise a number with that many digits, so such inputs are refused.
-    private static boolean withinDecimalRange(BigDecimal value) {
-        return (long) value.precision() - value.scale() <= MAX_INTEGER_DIGITS
+    private static boolean withinRange(BigDecimal value, int integerDigits) {
+        return fits(value, integerDigits)
                 && (value.scale() <= MAX_SCALE || value.stripTrailingZeros().scale() <= MAX_SCALE);
+    }
+
+    private static boolean fits(BigDecimal value, int integerDigits) {
+        return (long) value.precision() - value.scale() <= integerDigits;
     }
 }

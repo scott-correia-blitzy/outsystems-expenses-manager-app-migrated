@@ -23,10 +23,12 @@ import com.massmutual.expensesmanager.repository.ExpenseReportRepository;
 import com.massmutual.expensesmanager.repository.ExpenseRepository;
 import com.massmutual.expensesmanager.repository.InvoiceEarningRepository;
 import com.massmutual.expensesmanager.repository.InvoiceExpenseRepository;
+import com.massmutual.expensesmanager.service.AmountCalculator;
 import com.massmutual.expensesmanager.service.ApiException;
 import com.massmutual.expensesmanager.service.BlogService;
 import com.massmutual.expensesmanager.service.Caller;
 import com.massmutual.expensesmanager.service.DashboardService;
+import com.massmutual.expensesmanager.service.ExpensesProperties;
 import com.massmutual.expensesmanager.service.InvoiceService;
 import com.massmutual.expensesmanager.service.KindRepositories;
 import com.massmutual.expensesmanager.service.LegacyMessages;
@@ -47,6 +49,8 @@ import com.massmutual.expensesmanager.service.model.ReportSummary;
 import com.massmutual.expensesmanager.service.model.UserDashboard;
 import com.massmutual.expensesmanager.support.MutableClock;
 import com.massmutual.expensesmanager.support.TestDatabase;
+import com.massmutual.expensesmanager.web.dto.LineRequest;
+import jakarta.validation.Validator;
 import java.io.UncheckedIOException;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
@@ -86,7 +90,10 @@ import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.NullSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.boot.context.properties.bind.validation.BindValidationException;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
@@ -174,6 +181,8 @@ class BusinessRulesTest {
     private ScriptedCodeGenerator reportCodeGenerator;
     @Autowired
     private SeedDataLoader seedDataLoader;
+    @Autowired
+    private Validator validator;
 
     @Autowired
     private MutableClock clock;
@@ -217,6 +226,37 @@ class BusinessRulesTest {
         assertThat(data.mileageReimbursement()).isEqualByComparingTo("0.37");
         assertThat(data.dollarsToEuros()).isEqualByComparingTo("0.93");
         assertThat(data.vatRate()).isEqualByComparingTo("0.23");
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @CsvSource({"expenses.mileage-reimbursement, mileageReimbursement", "expenses.dollars-to-euros, dollarsToEuros"})
+    void rateWithMoreIntegerDigitsThanTheCalculationsAcceptFailsBinding(String property, String field) {
+        new ApplicationContextRunner()
+                .withUserConfiguration(RatesBinding.class)
+                .withPropertyValues(property + "=1000000000000000")
+                .run(context -> {
+                    assertThat(context).hasFailed();
+                    assertThat(context.getStartupFailure()).rootCause()
+                            .isInstanceOf(BindValidationException.class)
+                            .hasMessageContaining("on field '%s'", field)
+                            .hasMessageContaining("origin \"%s\"", property);
+                });
+    }
+
+    @Test
+    void largestBindableRatesAreAcceptedByTheConverter() {
+        new ApplicationContextRunner()
+                .withUserConfiguration(RatesBinding.class)
+                .withPropertyValues("expenses.mileage-reimbursement=999999999999999.99999999",
+                        "expenses.dollars-to-euros=999999999999999.99999999")
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    ExpensesProperties properties = context.getBean(ExpensesProperties.class);
+                    assertThat(properties.mileageReimbursement()).isEqualByComparingTo("999999999999999.99999999");
+                    assertThat(properties.dollarsToEuros()).isEqualByComparingTo("999999999999999.99999999");
+                    assertThat(new AmountCalculator(properties).usdToEur(BigDecimal.ONE, properties.dollarsToEuros()))
+                            .isEqualByComparingTo("1000000000000000.0000");
+                });
     }
 
     static Stream<Arguments> nextCodeFollowsTheHighestNumberOfTheClockYear() {
@@ -780,6 +820,104 @@ class BusinessRulesTest {
                 422, ApiException.VALIDATION_FAILED, message);
     }
 
+    static Stream<Arguments> lineRequestReportsTheTextErrorsLineServiceReports() {
+        return Stream.of(
+                arguments("blank title", " ".repeat(60), "",
+                        new FieldViolation("title", LegacyMessages.FIELD_REQUIRED)),
+                arguments("51-character title", "L".repeat(51), "",
+                        new FieldViolation("title", LegacyMessages.MAX_LENGTH_50)),
+                arguments("padded 50-character title", "  " + "L".repeat(50) + "  ", "",
+                        new FieldViolation("title", LegacyMessages.MAX_LENGTH_50)),
+                arguments("1501-character description", "Title", "d".repeat(1501),
+                        new FieldViolation("description", LegacyMessages.MAX_LENGTH_1500)));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource
+    void lineRequestReportsTheTextErrorsLineServiceReports(String label, String title, String description,
+            FieldViolation expected) {
+        Caller owner = newCaller(appUserRepository, Role.User);
+        Long reportId = reportService.create(owner, ReportKind.EXPENSE, "Parity").id();
+        LineRequest request = new LineRequest(ReferenceIds.EXPENSE_TYPE_OTHER, null, ReferenceIds.CURRENCY_EURO,
+                BigDecimal.TEN, null, title, description, LINE_DATE);
+        LineService.LineInput input = line(ReferenceIds.EXPENSE_TYPE_OTHER, ReferenceIds.CURRENCY_EURO, BigDecimal.TEN,
+                null, title, description, LINE_DATE);
+
+        assertThat(validator.validate(request))
+                .map(violation -> new FieldViolation(violation.getPropertyPath().toString(), violation.getMessage()))
+                .containsExactly(expected);
+        assertThat(LineService.textViolations(title, description)).containsExactly(expected);
+        assertFieldError(() -> lineService.create(owner, ReportKind.EXPENSE, reportId, input),
+                expected.field(), expected.message());
+    }
+
+    @Test
+    void fieldsTheLineKindAndTypeIgnoreNeverAffectValidation() {
+        Caller owner = newCaller(appUserRepository, Role.User);
+        Long earningReportId = reportService.create(owner, ReportKind.EARNING, "Ignored distance").id();
+        Long expenseReportId = reportService.create(owner, ReportKind.EXPENSE, "Ignored amount").id();
+        BigDecimal huge = new BigDecimal("1E+20");
+        LineRequest earningRequest = new LineRequest(ReferenceIds.EXPENSE_TYPE_KILOMETERS,
+                ReferenceIds.EARNING_TYPE_SALARY, ReferenceIds.CURRENCY_EURO, new BigDecimal("100"), huge, "Salary",
+                "", LINE_DATE);
+        LineRequest kilometersRequest = new LineRequest(ReferenceIds.EXPENSE_TYPE_KILOMETERS,
+                ReferenceIds.EARNING_TYPE_SALARY, ReferenceIds.CURRENCY_DOLLAR, huge, BigDecimal.TEN, "Mileage", "",
+                LINE_DATE);
+
+        assertThat(validator.validate(earningRequest)).isEmpty();
+        assertThat(validator.validate(kilometersRequest)).isEmpty();
+        LineView earning = lineService.create(owner, ReportKind.EARNING, earningReportId, line(
+                ReferenceIds.EARNING_TYPE_SALARY, ReferenceIds.CURRENCY_EURO, new BigDecimal("100"), huge, "Salary",
+                "", LINE_DATE));
+        LineView mileage = lineService.create(owner, ReportKind.EXPENSE, expenseReportId, line(
+                ReferenceIds.EXPENSE_TYPE_KILOMETERS, ReferenceIds.CURRENCY_DOLLAR, huge, BigDecimal.TEN, "Mileage",
+                "", LINE_DATE));
+
+        assertThat(earningRepository.findById(earning.id()).orElseThrow().getKilometers()).isNull();
+        Expense stored = expenseRepository.findById(mileage.id()).orElseThrow();
+        assertThat(stored.getAmountInEuros()).isEqualByComparingTo("3.70");
+        assertThat(stored.getCurrencyId()).isEqualTo(ReferenceIds.CURRENCY_EURO);
+    }
+
+    @Test
+    void distanceIsBoundByItsOwnColumnNotTheMoneyColumns() {
+        Caller owner = newCaller(appUserRepository, Role.User);
+        Long reportId = reportService.create(owner, ReportKind.EXPENSE, "Long distance").id();
+
+        LineView view = lineService.create(owner, ReportKind.EXPENSE, reportId, line(
+                ReferenceIds.EXPENSE_TYPE_KILOMETERS, null, null, new BigDecimal("2000000000000000"), "Far", "",
+                LINE_DATE));
+
+        Expense stored = expenseRepository.findById(view.id()).orElseThrow();
+        assertThat(stored.getKilometers()).isEqualByComparingTo("2000000000000000");
+        assertThat(stored.getAmountInEuros()).isEqualByComparingTo("740000000000000.0000");
+    }
+
+    static Stream<Arguments> consumedValuesThatDoNotFitTheirColumnsAreRejected() {
+        return Stream.of(
+                arguments(ReferenceIds.EXPENSE_TYPE_TRAVEL, ReferenceIds.CURRENCY_EURO, "1E+15", null, "amount"),
+                arguments(ReferenceIds.EXPENSE_TYPE_KILOMETERS, null, null, "1E+29", "kilometers"),
+                arguments(ReferenceIds.EXPENSE_TYPE_TRAVEL, ReferenceIds.CURRENCY_EURO, "1E-999999999", null, "amount"),
+                arguments(ReferenceIds.EXPENSE_TYPE_KILOMETERS, null, null, "1E+999999999", "kilometers"));
+    }
+
+    @ParameterizedTest(name = "type {0}, currency {1}, amount {2}, km {3} rejects {4}")
+    @MethodSource
+    void consumedValuesThatDoNotFitTheirColumnsAreRejected(
+            int typeId, Integer currencyId, String amount, String kilometers, String field) {
+        Caller owner = newCaller(appUserRepository, Role.User);
+        LineView existing = draftWithLine(owner);
+        LineService.LineInput input = line(typeId, currencyId, decimal(amount), decimal(kilometers), "Too large", "",
+                LINE_DATE);
+
+        assertFieldError(() -> lineService.create(owner, ReportKind.EXPENSE, existing.reportId(), input),
+                field, LegacyMessages.INVALID_VALUE);
+        assertFieldError(() -> lineService.update(owner, ReportKind.EXPENSE, existing.id(), input),
+                field, LegacyMessages.INVALID_VALUE);
+        assertThat(expenseRepository.findAll()).singleElement()
+                .satisfies(stored -> assertThat(stored.getAmountInEuros()).isEqualByComparingTo("42.00"));
+    }
+
     @Test
     void lineWithAnUnknownCurrencyIsAValidationError() {
         Caller owner = newCaller(appUserRepository, Role.User);
@@ -1024,11 +1162,24 @@ class BusinessRulesTest {
         });
     }
 
+    private static void assertFieldError(ThrowingCallable call, String field, String message) {
+        assertThatExceptionOfType(ApiException.class).isThrownBy(call).satisfies(error -> {
+            assertThat(error.status()).isEqualTo(422);
+            assertThat(error.code()).isEqualTo(ApiException.VALIDATION_FAILED);
+            assertThat(error.fieldErrors()).containsExactly(new FieldViolation(field, message));
+        });
+    }
+
     private static List<String> messagesOf(ApiException error) {
         List<String> messages = new ArrayList<>();
         messages.add(error.getMessage());
         error.fieldErrors().stream().map(FieldViolation::message).forEach(messages::add);
         return messages;
+    }
+
+    // Not a @Configuration, so @SpringBootTest still uses the application's configuration.
+    @EnableConfigurationProperties(ExpensesProperties.class)
+    static class RatesBinding {
     }
 
     @TestConfiguration(proxyBeanMethods = false)
@@ -1117,6 +1268,43 @@ class BusinessRulesTest {
             assertThat(data.mileageReimbursement()).isEqualByComparingTo("0.50");
             assertThat(data.dollarsToEuros()).isEqualByComparingTo("0.90");
             assertThat(data.vatRate()).isEqualByComparingTo("0.23");
+        }
+    }
+
+    @Nested
+    @TestPropertySource(properties = {"expenses.mileage-reimbursement=2", "expenses.dollars-to-euros=2"})
+    class RatesAboveOne {
+
+        @Autowired
+        private AppUserRepository users;
+        @Autowired
+        private ExpenseRepository expenses;
+        @Autowired
+        private ReportService reports;
+        @Autowired
+        private LineService lines;
+        @Autowired
+        private MutableClock ratesClock;
+
+        @BeforeEach
+        void setClock() {
+            ratesClock.set(MutableClock.DEFAULT_TIME);
+        }
+
+        @ParameterizedTest(name = "type {0}, currency {1}, amount {2}, km {3} rejects {4}")
+        @CsvSource({
+                ReferenceIds.EXPENSE_TYPE_KILOMETERS + ", , , 999999999999999, kilometers",
+                ReferenceIds.EXPENSE_TYPE_TRAVEL + ", " + ReferenceIds.CURRENCY_DOLLAR
+                        + ", 999999999999999.9999, , amount"})
+        void euroValueBeyondTheMoneyColumnIsRejected(
+                int typeId, Integer currencyId, BigDecimal amount, BigDecimal kilometers, String field) {
+            Caller owner = newCaller(users, Role.User);
+            Long reportId = reports.create(owner, ReportKind.EXPENSE, "Rates above one").id();
+            LineService.LineInput input = line(typeId, currencyId, amount, kilometers, "Too large", "", LINE_DATE);
+
+            assertFieldError(() -> lines.create(owner, ReportKind.EXPENSE, reportId, input),
+                    field, LegacyMessages.INVALID_VALUE);
+            assertThat(expenses.existsByReportId(reportId)).isFalse();
         }
     }
 

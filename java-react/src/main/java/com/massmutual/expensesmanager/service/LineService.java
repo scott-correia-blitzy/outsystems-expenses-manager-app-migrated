@@ -135,18 +135,23 @@ public class LineService {
                         : new InvoiceInfo(invoice.getFilename(), invoice.getFiletype(), invoice.getDatetime()));
     }
 
-    private void validate(ReportKind kind, LineInput in) {
-        Objects.requireNonNull(in, "line input");
+    // Public so LineRequest's bean validation reports exactly the text errors this service enforces.
+    public static List<FieldViolation> textViolations(String title, String description) {
         List<FieldViolation> violations = new ArrayList<>();
-        String title = in.title() == null ? "" : in.title().trim();
-        if (title.isEmpty()) {
+        if (title == null || title.trim().isEmpty()) {
             violations.add(new FieldViolation("title", LegacyMessages.FIELD_REQUIRED));
         } else if (title.length() > TITLE_MAX_LENGTH) {
             violations.add(new FieldViolation("title", LegacyMessages.MAX_LENGTH_50));
         }
-        if (in.description() != null && in.description().length() > DESCRIPTION_MAX_LENGTH) {
+        if (description != null && description.length() > DESCRIPTION_MAX_LENGTH) {
             violations.add(new FieldViolation("description", LegacyMessages.MAX_LENGTH_1500));
         }
+        return violations;
+    }
+
+    private void validate(ReportKind kind, LineInput in) {
+        Objects.requireNonNull(in, "line input");
+        List<FieldViolation> violations = new ArrayList<>(textViolations(in.title(), in.description()));
         if (in.date() == null || in.date().isAfter(LocalDate.now(clock))) {
             violations.add(new FieldViolation("date", LegacyMessages.DATE_PAST_OR_CURRENT));
         }
@@ -169,6 +174,8 @@ public class LineService {
                                 : LegacyMessages.MUST_SET_AMOUNT));
             }
         }
+        calculator.lineAmountsViolation(kind, in.typeId(), in.currencyId(), in.amount(), in.kilometers())
+                .ifPresent(violations::add);
         if (!violations.isEmpty()) {
             throw ApiException.validation(violations);
         }
