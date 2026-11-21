@@ -23,7 +23,7 @@ cd java-react
 `start.sh` does four things:
 
 1. Finds a JDK 25 or newer (`$JAVA_HOME/bin/java` when `JAVA_HOME` is set, otherwise `java` on `PATH`; a JRE alone is not enough) and exits with "Java 25 or newer is required. Install a JDK 25+ (any arm64 build on Apple Silicon)." when there is none.
-2. Exits with "Run ./stop.sh first." when something already listens on port 8080.
+2. Needs `lsof` for the port check and exits with "lsof is required to check whether port 8080 is free." when it is missing. Exits with "Run ./stop.sh first." when something already listens on port 8080.
 3. Builds with `./mvnw -q package`, which runs the backend unit tests and the Vitest suite (not the integration tests).
 4. Prints the URL and the demo logins, then runs `target/expenses-manager.jar` in the foreground.
 
@@ -38,7 +38,7 @@ cd java-react
 ./stop.sh
 ```
 
-It stops the process listening on port 8080 and prints "Stopped.", or prints "Nothing listening on port 8080." when nothing is running.
+It stops the process listening on port 8080 and prints "Stopped.", or prints "Nothing listening on port 8080." when nothing is running. It needs `lsof` to find the app and exits 1 with "lsof is required to find the app on port 8080." when `lsof` is missing.
 
 ## Port
 

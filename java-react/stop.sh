@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if ! command -v lsof >/dev/null 2>&1; then
+  echo "lsof is required to find the app on port 8080." >&2
+  exit 1
+fi
+
 # Listeners only, so a browser connected to the app is not killed with it.
 pids=$(lsof -ti tcp:8080 -sTCP:LISTEN || true)
 

@@ -36,6 +36,11 @@ fi
 # The wrapper picks its JDK from JAVA_HOME, so it builds with the one checked above.
 export JAVA_HOME="$java_home"
 
+if ! command -v lsof >/dev/null 2>&1; then
+  echo "lsof is required to check whether port 8080 is free." >&2
+  exit 1
+fi
+
 if [ -n "$(lsof -ti tcp:8080 -sTCP:LISTEN || true)" ]; then
   echo "Run ./stop.sh first." >&2
   exit 1
