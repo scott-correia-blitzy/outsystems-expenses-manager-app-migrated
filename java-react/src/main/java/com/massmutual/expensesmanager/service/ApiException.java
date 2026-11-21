@@ -19,6 +19,7 @@ public class ApiException extends RuntimeException {
     public static final String UNSUPPORTED_MEDIA_TYPE = "UNSUPPORTED_MEDIA_TYPE";
     public static final String VALIDATION_FAILED = "VALIDATION_FAILED";
     public static final String NO_LINES = "NO_LINES";
+    public static final String SERVICE_UNAVAILABLE = "SERVICE_UNAVAILABLE";
 
     private final int status;
     private final String code;

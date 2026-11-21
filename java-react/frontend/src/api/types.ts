@@ -14,7 +14,8 @@ export type ErrorCode =
   | 'PAYLOAD_TOO_LARGE'
   | 'UNSUPPORTED_MEDIA_TYPE'
   | 'VALIDATION_FAILED'
-  | 'NO_LINES';
+  | 'NO_LINES'
+  | 'SERVICE_UNAVAILABLE';
 
 // submitedOn is the server's field name, legacy misspelling included.
 export type ReportSortColumn =
@@ -275,6 +276,7 @@ export const MESSAGES = {
   UNAUTHENTICATED: 'Please log in to continue.',
   NOT_FOUND: 'The requested resource was not found',
   INVALID_VALUE: 'Invalid value',
+  STARTING: 'The application is starting, please try again in a moment.',
   INTERNAL_ERROR: 'An error occurred, please try later',
   INVALID_REPORT: 'Invalid expense report',
 } as const;

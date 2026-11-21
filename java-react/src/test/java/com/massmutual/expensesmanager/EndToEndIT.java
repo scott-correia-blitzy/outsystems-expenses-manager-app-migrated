@@ -18,6 +18,8 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.massmutual.expensesmanager.domain.ReportEntity;
 import com.massmutual.expensesmanager.repository.EarningReportRepository;
 import com.massmutual.expensesmanager.repository.ExpenseReportRepository;
+import com.massmutual.expensesmanager.service.ApiException;
+import com.massmutual.expensesmanager.service.LegacyMessages;
 import com.massmutual.expensesmanager.support.ApiClient;
 import com.massmutual.expensesmanager.support.MutableClock;
 import com.massmutual.expensesmanager.support.TestDatabase;
@@ -31,9 +33,12 @@ import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.availability.AvailabilityChangeEvent;
+import org.springframework.boot.availability.ReadinessState;
 import org.springframework.boot.builder.SpringApplicationBuilder;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.context.ApplicationContext;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.ContentDisposition;
@@ -73,6 +78,9 @@ class EndToEndIT {
 
     @Autowired
     private EarningReportRepository earningReports;
+
+    @Autowired
+    private ApplicationContext context;
 
     @DynamicPropertySource
     static void database(DynamicPropertyRegistry registry) {
@@ -229,6 +237,42 @@ class EndToEndIT {
             assertThat(disposition.getFilename()).as(header).isEqualTo(filename);
             assertThat(download.body()).isEqualTo(receipt);
         }
+    }
+
+    @Test
+    @Order(7)
+    @DisplayName("until the application is ready, API calls get 503 while the SPA is still served")
+    void apiAnswers503UntilReady() throws IOException {
+        byte[] indexHtml = classpathIndexHtml();
+        try (ApiClient client = new ApiClient(port)) {
+            AvailabilityChangeEvent.publish(context, ReadinessState.REFUSING_TRAFFIC);
+            try {
+                assertStarting(client.me());
+                assertThat(client.cookie(ApiClient.CSRF_COOKIE)).as("CSRF cookie issued with the 503").isPresent();
+                assertStarting(client.login(USER, PASSWORD));
+                ObjectNode credentials = ApiClient.object();
+                credentials.put("username", USER);
+                credentials.put("password", PASSWORD);
+                assertStarting(client.sendWithoutCsrf("POST", "/api/auth/login", credentials));
+                assertThat(expectStatus(client.get("/"), 200).body()).isEqualTo(indexHtml);
+            } finally {
+                AvailabilityChangeEvent.publish(context, ReadinessState.ACCEPTING_TRAFFIC);
+            }
+            expectStatus(client.login(USER, PASSWORD), 200);
+        }
+    }
+
+    private static void assertStarting(ApiClient.Response response) {
+        expectStatus(response, 503);
+        assertThat(response.header("Retry-After")).isEqualTo("1");
+        assertThat(response.header("X-Content-Type-Options")).isEqualTo("nosniff");
+        assertThat(response.header("Cache-Control")).contains("no-store");
+        assertThat(response.header("Content-Type")).startsWith("application/json");
+        JsonNode body = response.json();
+        assertThat(body.path("status").asInt()).isEqualTo(503);
+        assertThat(body.path("code").asText()).isEqualTo(ApiException.SERVICE_UNAVAILABLE);
+        assertThat(body.path("message").asText()).isEqualTo(LegacyMessages.STARTING);
+        assertThat(body.has("fieldErrors")).as("fieldErrors outside 422").isFalse();
     }
 
     private static long carRentalId() {

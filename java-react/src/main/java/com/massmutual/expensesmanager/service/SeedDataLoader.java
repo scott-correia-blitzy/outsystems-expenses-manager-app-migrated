@@ -19,13 +19,17 @@ import java.math.BigDecimal;
 import java.security.SecureRandom;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.EnumSet;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
+import java.util.function.BiConsumer;
 import java.util.stream.Stream;
 
 import org.slf4j.Logger;
@@ -33,10 +37,12 @@ import org.slf4j.LoggerFactory;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.core.io.ClassPathResource;
+import org.springframework.core.io.Resource;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
+import org.springframework.util.StringUtils;
 
 @Component
 public class SeedDataLoader implements ApplicationRunner {
@@ -92,7 +98,16 @@ public class SeedDataLoader implements ApplicationRunner {
         if (expenseReportRepository.count() != 0 || earningReportRepository.count() != 0) {
             return;
         }
-        SeedFile seed = readSeedFile();
+        seed(new ClassPathResource(SEED_RESOURCE));
+    }
+
+    public void seed(Resource resource) {
+        SeedFile seed = readSeedFile(resource);
+        List<String> problems = problems(seed);
+        if (!problems.isEmpty()) {
+            throw new IllegalStateException("Seed file " + resource.getDescription() + " is invalid: "
+                    + String.join("; ", problems));
+        }
         SeedCounts counts = transactionTemplate.execute(status -> load(seed));
         if (counts != null) {
             log.info("Seeded demo data: {} users, {} reports, {} lines, {} blog posts",
@@ -100,16 +115,115 @@ public class SeedDataLoader implements ApplicationRunner {
         }
     }
 
-    private SeedFile readSeedFile() {
-        try (InputStream in = new ClassPathResource(SEED_RESOURCE).getInputStream()) {
+    private SeedFile readSeedFile(Resource resource) {
+        try (InputStream in = resource.getInputStream()) {
             SeedFile seed = objectMapper.readValue(in, SeedFile.class);
             if (seed == null) {
-                throw new IllegalStateException("Seed file " + SEED_RESOURCE + " is empty");
+                throw new IllegalStateException("Seed file " + resource.getDescription() + " is empty");
             }
             return seed;
         } catch (IOException e) {
-            throw new IllegalStateException("Cannot read seed file " + SEED_RESOURCE, e);
+            throw new IllegalStateException("Cannot read seed file " + resource.getDescription(), e);
         }
+    }
+
+    // Checked in full before the transaction opens, so an incomplete file fails without writing a row.
+    private List<String> problems(SeedFile seed) {
+        List<String> problems = new ArrayList<>();
+        Set<String> usernames = new HashSet<>();
+        each(problems, "users", null, seed.users(), (path, user) -> {
+            checkUser(problems, path, user);
+            if (StringUtils.hasText(user.username()) && !usernames.add(user.username())) {
+                problems.add(labelled(path, user.username()) + " repeats an earlier username");
+            }
+        });
+        each(problems, "reports", null, seed.reports(),
+                (path, report) -> checkReport(problems, path, report, usernames));
+        each(problems, "blogPosts", null, seed.blogPosts(),
+                (path, post) -> checkPost(problems, path, post, usernames));
+        return problems;
+    }
+
+    private static void checkUser(List<String> problems, String path, SeedUser user) {
+        String at = labelled(path, user.username());
+        require(problems, StringUtils.hasText(user.username()), at, "has no username");
+        require(problems, StringUtils.hasText(user.name()), at, "has no name");
+        each(problems, path + ".roles", user.username(), user.roles(), (rolePath, name) -> {
+            Optional<Role> role = Stream.of(Role.values()).filter(r -> r.name().equals(name)).findFirst();
+            if (role.isEmpty()) {
+                problems.add(labelled(rolePath, user.username()) + " is unknown role " + name);
+            } else if (role.get() == Role.Registered) {
+                problems.add(labelled(rolePath, user.username()) + " is Registered, which is granted at login");
+            }
+        });
+    }
+
+    private void checkReport(List<String> problems, String path, SeedReport report, Set<String> usernames) {
+        String at = labelled(path, report.code());
+        Optional<ReportKind> kind = ReportKind.fromPath(report.kind());
+        requireKnown(problems, at, "kind", report.kind(), kind.isPresent());
+        require(problems, StringUtils.hasText(report.code()), at, "has no code");
+        require(problems, StringUtils.hasText(report.title()), at, "has no title");
+        requireKnown(problems, at, "owner", report.owner(), usernames.contains(report.owner()));
+        requireKnown(problems, at, "status", report.status(),
+                referenceData.statusIdForLabel(report.status()).isPresent());
+        require(problems, report.createdOn() != null, at, "has no createdOn");
+        each(problems, path + ".lines", report.code(), report.lines(),
+                (linePath, line) -> checkLine(problems, labelled(linePath, report.code()), kind.orElse(null), line));
+    }
+
+    private static void checkLine(List<String> problems, String at, ReportKind kind, SeedLine line) {
+        require(problems, line.date() != null, at, "has no date");
+        require(problems, StringUtils.hasText(line.title()), at, "has no title");
+        require(problems, line.typeId() != null, at, "has no typeId");
+        // AmountCalculator derives a mileage line's amount from its kilometers.
+        if (kind == ReportKind.EXPENSE && Objects.equals(line.typeId(), ReferenceIds.EXPENSE_TYPE_KILOMETERS)) {
+            require(problems, line.kilometers() != null, at, "has no kilometers");
+        } else {
+            require(problems, line.amount() != null, at, "has no amount");
+        }
+    }
+
+    private static void checkPost(List<String> problems, String path, SeedPost post, Set<String> usernames) {
+        String at = labelled(path, post.title());
+        require(problems, StringUtils.hasText(post.title()), at, "has no title");
+        require(problems, post.description() != null, at, "has no description");
+        requireKnown(problems, at, "author", post.author(), usernames.contains(post.author()));
+        require(problems, post.createdOn() != null, at, "has no createdOn");
+    }
+
+    private static <T> void each(List<String> problems, String path, String label, List<T> items,
+            BiConsumer<String, T> check) {
+        if (items == null) {
+            problems.add(labelled(path, label) + " is missing");
+            return;
+        }
+        for (int i = 0; i < items.size(); i++) {
+            String itemPath = path + "[" + i + "]";
+            if (items.get(i) == null) {
+                problems.add(labelled(itemPath, label) + " is null");
+            } else {
+                check.accept(itemPath, items.get(i));
+            }
+        }
+    }
+
+    private static void require(List<String> problems, boolean valid, String at, String problem) {
+        if (!valid) {
+            problems.add(at + " " + problem);
+        }
+    }
+
+    private static void requireKnown(List<String> problems, String at, String field, String value, boolean known) {
+        if (!StringUtils.hasText(value)) {
+            problems.add(at + " has no " + field);
+        } else if (!known) {
+            problems.add(at + " has unknown " + field + " " + value);
+        }
+    }
+
+    private static String labelled(String path, String label) {
+        return StringUtils.hasText(label) ? path + " (" + label + ")" : path;
     }
 
     private SeedCounts load(SeedFile seed) {
@@ -129,9 +243,6 @@ public class SeedDataLoader implements ApplicationRunner {
     }
 
     private Long userId(SeedUser user) {
-        if (user.username() == null || user.username().isBlank()) {
-            throw new IllegalStateException("Seed user without a username");
-        }
         return appUserRepository.findByUsername(user.username())
                 .orElseGet(() -> appUserRepository.save(new AppUser(
                         user.username(),
@@ -150,36 +261,14 @@ public class SeedDataLoader implements ApplicationRunner {
 
     private static Set<Role> roles(List<String> names) {
         Set<Role> roles = EnumSet.noneOf(Role.class);
-        for (String name : names) {
-            Role role = role(name);
-            if (role == Role.Registered) {
-                throw new IllegalStateException("Role Registered is granted at login and cannot be seeded");
-            }
-            roles.add(role);
-        }
+        names.forEach(name -> roles.add(Role.valueOf(name)));
         return roles;
     }
 
-    private static Role role(String name) {
-        if (name == null) {
-            throw new IllegalStateException("Seed user with a null role");
-        }
-        try {
-            return Role.valueOf(name);
-        } catch (IllegalArgumentException e) {
-            throw new IllegalStateException("Unknown role in seed file: " + name, e);
-        }
-    }
-
     private int saveReport(SeedReport seed, Map<String, Long> userIds) {
-        ReportKind kind = ReportKind.fromPath(seed.kind())
-                .orElseThrow(() -> new IllegalStateException("Unknown report kind in seed file: " + seed.kind()));
-        Long owner = requireUserId(userIds, seed.owner());
-        Integer statusId = referenceData.statusIdForLabel(seed.status())
-                .orElseThrow(() -> new IllegalStateException("Unknown status in seed file: " + seed.status()));
-        if (seed.createdOn() == null) {
-            throw new IllegalStateException("Seed report " + seed.code() + " has no createdOn");
-        }
+        ReportKind kind = ReportKind.fromPath(seed.kind()).orElseThrow();
+        Long owner = userIds.get(seed.owner());
+        Integer statusId = referenceData.statusIdForLabel(seed.status()).orElseThrow();
 
         ReportEntity report = kindRepositories.newReport(kind);
         report.setCode(seed.code());
@@ -230,7 +319,7 @@ public class SeedDataLoader implements ApplicationRunner {
     }
 
     private void savePost(SeedPost seed, Map<String, Long> userIds) {
-        Long author = requireUserId(userIds, seed.author());
+        Long author = userIds.get(seed.author());
         BlogPost post = new BlogPost();
         post.setTitle(seed.title());
         post.setDescription(seed.description());
@@ -242,14 +331,6 @@ public class SeedDataLoader implements ApplicationRunner {
         blogPostRepository.save(post);
     }
 
-    private static Long requireUserId(Map<String, Long> userIds, String username) {
-        Long id = userIds.get(username);
-        if (id == null) {
-            throw new IllegalStateException("Seed file references unknown user: " + username);
-        }
-        return id;
-    }
-
     private static LocalDateTime latest(LocalDateTime... stamps) {
         return Stream.of(stamps).filter(Objects::nonNull).max(LocalDateTime::compareTo).orElseThrow();
     }
@@ -258,17 +339,9 @@ public class SeedDataLoader implements ApplicationRunner {
     }
 
     private record SeedFile(List<SeedUser> users, List<SeedReport> reports, List<SeedPost> blogPosts) {
-        SeedFile {
-            users = Objects.requireNonNullElse(users, List.of());
-            reports = Objects.requireNonNullElse(reports, List.of());
-            blogPosts = Objects.requireNonNullElse(blogPosts, List.of());
-        }
     }
 
     private record SeedUser(String username, String name, String password, List<String> roles) {
-        SeedUser {
-            roles = Objects.requireNonNullElse(roles, List.of());
-        }
     }
 
     private record SeedReport(
@@ -282,9 +355,6 @@ public class SeedDataLoader implements ApplicationRunner {
             LocalDateTime processedOn,
             LocalDateTime updatedOn,
             List<SeedLine> lines) {
-        SeedReport {
-            lines = Objects.requireNonNullElse(lines, List.of());
-        }
     }
 
     private record SeedLine(

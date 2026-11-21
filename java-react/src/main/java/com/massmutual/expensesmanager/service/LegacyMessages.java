@@ -34,6 +34,7 @@ public final class LegacyMessages {
     public static final String UNAUTHENTICATED = "Please log in to continue.";
     public static final String NOT_FOUND = "The requested resource was not found";
     public static final String INVALID_VALUE = "Invalid value";
+    public static final String STARTING = "The application is starting, please try again in a moment.";
     public static final String INTERNAL_ERROR = GENERIC_ERROR;
 
     private LegacyMessages() {

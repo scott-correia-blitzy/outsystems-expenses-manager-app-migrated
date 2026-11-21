@@ -201,6 +201,7 @@ Kept from legacy:
 Behaviour of this build:
 
 - Sessions are held in memory, so a server restart signs everyone out. The idle timeout is 20 minutes; "Remember me" keeps the session for 30 days.
+- Until start-up, first-start seeding included, has finished, every `/api/**` call answers 503 with "The application is starting, please try again in a moment."; the pages themselves are already served.
 - `expenses.dashboard.reference-date` fixes the date-relative dashboard figures to the seeded data. Clear its value to use the current date.
 - New report codes use the real year, so the first report created in a year other than 2024 is `1/<year> EX` or `1/<year> EA`.
 - Invoices are PDF, PNG or JPEG files up to 5 MB with a file name of at most 50 characters; a new upload replaces the line's invoice.

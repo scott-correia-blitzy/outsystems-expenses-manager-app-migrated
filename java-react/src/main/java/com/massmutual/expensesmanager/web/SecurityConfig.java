@@ -1,9 +1,19 @@
 package com.massmutual.expensesmanager.web;
 
 import com.massmutual.expensesmanager.domain.Role;
+import com.massmutual.expensesmanager.service.ApiException;
 import com.massmutual.expensesmanager.service.AppUserDetailsService;
+import com.massmutual.expensesmanager.service.LegacyMessages;
+import jakarta.servlet.FilterChain;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import java.io.IOException;
+import org.springframework.boot.availability.ApplicationAvailability;
+import org.springframework.boot.availability.ReadinessState;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.authentication.AuthenticationManager;
@@ -21,7 +31,11 @@ import org.springframework.security.web.context.SecurityContextRepository;
 import org.springframework.security.web.csrf.CookieCsrfTokenRepository;
 import org.springframework.security.web.csrf.CsrfTokenRepository;
 import org.springframework.security.web.csrf.CsrfTokenRequestHandler;
+import org.springframework.security.web.header.HeaderWriterFilter;
 import org.springframework.security.web.savedrequest.NullRequestCache;
+import org.springframework.security.web.servlet.util.matcher.PathPatternRequestMatcher;
+import org.springframework.security.web.util.matcher.RequestMatcher;
+import org.springframework.web.filter.OncePerRequestFilter;
 
 @Configuration
 @EnableWebSecurity
@@ -65,8 +79,10 @@ public class SecurityConfig {
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http, JsonSecurityHandlers jsonSecurityHandlers,
             SecurityContextRepository securityContextRepository, CsrfTokenRepository csrfTokenRepository,
-            CsrfTokenRequestHandler csrfTokenRequestHandler) throws Exception {
+            CsrfTokenRequestHandler csrfTokenRequestHandler, ApplicationAvailability availability) throws Exception {
+        ReadinessGate readinessGate = new ReadinessGate(availability, csrfTokenRepository, jsonSecurityHandlers);
         http
+                .addFilterAfter(readinessGate, HeaderWriterFilter.class)
                 .csrf(csrf -> csrf
                         .csrfTokenRepository(csrfTokenRepository)
                         .csrfTokenRequestHandler(csrfTokenRequestHandler))
@@ -110,5 +126,43 @@ public class SecurityConfig {
                         // SPA routes and static assets; the SPA guards its own routes by role.
                         .anyRequest().permitAll());
         return http.build();
+    }
+
+    // Demo data is seeded after the connector opens, so until then a valid login would be refused as invalid.
+    private static final class ReadinessGate extends OncePerRequestFilter {
+
+        private static final RequestMatcher API_PATHS = PathPatternRequestMatcher.withDefaults().matcher("/api/**");
+        private static final String RETRY_AFTER_SECONDS = "1";
+        private static final ErrorResponse STARTING = ErrorResponse.of(
+                HttpStatus.SERVICE_UNAVAILABLE.value(), ApiException.SERVICE_UNAVAILABLE, LegacyMessages.STARTING);
+
+        private final ApplicationAvailability availability;
+        private final CsrfTokenRepository csrfTokenRepository;
+        private final JsonSecurityHandlers jsonSecurityHandlers;
+
+        ReadinessGate(ApplicationAvailability availability, CsrfTokenRepository csrfTokenRepository,
+                JsonSecurityHandlers jsonSecurityHandlers) {
+            this.availability = availability;
+            this.csrfTokenRepository = csrfTokenRepository;
+            this.jsonSecurityHandlers = jsonSecurityHandlers;
+        }
+
+        @Override
+        protected boolean shouldNotFilter(HttpServletRequest request) {
+            return !API_PATHS.matches(request);
+        }
+
+        @Override
+        protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
+                throws ServletException, IOException {
+            if (availability.getReadinessState() == ReadinessState.ACCEPTING_TRAFFIC) {
+                chain.doFilter(request, response);
+                return;
+            }
+            // The CSRF filter never sees this request, so its token cookie is issued here for the client's retry.
+            csrfTokenRepository.loadDeferredToken(request, response).get();
+            response.setHeader(HttpHeaders.RETRY_AFTER, RETRY_AFTER_SECONDS);
+            jsonSecurityHandlers.write(response, STARTING);
+        }
     }
 }

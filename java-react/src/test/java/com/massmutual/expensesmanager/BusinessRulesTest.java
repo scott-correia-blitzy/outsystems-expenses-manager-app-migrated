@@ -4,6 +4,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.junit.jupiter.params.provider.Arguments.arguments;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.massmutual.expensesmanager.domain.AppUser;
 import com.massmutual.expensesmanager.domain.EarningReport;
 import com.massmutual.expensesmanager.domain.Expense;
@@ -31,6 +34,7 @@ import com.massmutual.expensesmanager.service.LineService;
 import com.massmutual.expensesmanager.service.ReferenceDataService;
 import com.massmutual.expensesmanager.service.ReportCodeGenerator;
 import com.massmutual.expensesmanager.service.ReportService;
+import com.massmutual.expensesmanager.service.SeedDataLoader;
 import com.massmutual.expensesmanager.service.model.BlogPostView;
 import com.massmutual.expensesmanager.service.model.FieldViolation;
 import com.massmutual.expensesmanager.service.model.InvoiceFile;
@@ -43,6 +47,7 @@ import com.massmutual.expensesmanager.service.model.ReportSummary;
 import com.massmutual.expensesmanager.service.model.UserDashboard;
 import com.massmutual.expensesmanager.support.MutableClock;
 import com.massmutual.expensesmanager.support.TestDatabase;
+import java.io.UncheckedIOException;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
@@ -64,6 +69,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 import java.util.stream.Stream;
 import org.assertj.core.api.ThrowableAssert.ThrowingCallable;
 import org.hibernate.exception.ConstraintViolationException;
@@ -85,6 +91,7 @@ import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.Primary;
+import org.springframework.core.io.ByteArrayResource;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.DynamicPropertyRegistry;
@@ -101,6 +108,30 @@ class BusinessRulesTest {
 
     private static final LocalDate LINE_DATE = LocalDate.of(2024, 5, 21);
     private static final byte[] PNG_BYTES = {(byte) 0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'};
+    private static final ObjectMapper JSON = new ObjectMapper();
+    private static final String SEED_PASSWORD = "Seedcheck-Pass-7741";
+    private static final String SEED_TEMPLATE = """
+            {
+              "users": [
+                {"username": "%1$s_owner", "name": "Seedcheck Owner", "password": "%2$s", "roles": ["User"]},
+                {"username": "%1$s_admin", "name": "Seedcheck Admin", "password": null, "roles": ["Administrator"]}
+              ],
+              "reports": [
+                {"kind": "expense", "code": "901/2099 EX", "title": "Seedcheck expenses", "owner": "%1$s_owner",
+                 "status": "Submitted", "createdOn": "2099-03-02T09:00:00", "submitedOn": "2099-03-03T09:00:00",
+                 "lines": [
+                   {"date": "2099-03-01", "title": "Seedcheck lunch", "typeId": 1, "amount": 80.00},
+                   {"date": "2099-03-02", "title": "Seedcheck mileage", "typeId": 3, "kilometers": 10}
+                 ]},
+                {"kind": "earning", "code": "901/2099 EA", "title": "Seedcheck earnings", "owner": "%1$s_owner",
+                 "status": "Draft", "createdOn": "2099-03-05T09:00:00", "lines": []}
+              ],
+              "blogPosts": [
+                {"title": "Seedcheck post", "description": "Seedcheck news", "author": "%1$s_admin",
+                 "createdOn": "2099-03-16T10:00:00"}
+              ]
+            }
+            """;
 
     @TempDir
     static Path dir;
@@ -141,6 +172,8 @@ class BusinessRulesTest {
     private ReferenceDataService referenceDataService;
     @Autowired
     private ScriptedCodeGenerator reportCodeGenerator;
+    @Autowired
+    private SeedDataLoader seedDataLoader;
 
     @Autowired
     private MutableClock clock;
@@ -822,6 +855,120 @@ class BusinessRulesTest {
         assertThat(report.getSubmitedBy()).isEqualTo(owner.id());
         assertThat(report.getUpdatedBy()).isEqualTo(owner.id());
         return report;
+    }
+
+    static Stream<Arguments> seedFileMissingARequiredPartFailsBeforeWritingAnyRow() {
+        return Stream.of(
+                arguments("no users section", edit(seed -> seed.remove("users")), "users is missing"),
+                arguments("no reports section", edit(seed -> seed.remove("reports")), "reports is missing"),
+                arguments("no blogPosts section", edit(seed -> seed.remove("blogPosts")), "blogPosts is missing"),
+                arguments("an empty object", edit(ObjectNode::removeAll),
+                        "users is missing; reports is missing; blogPosts is missing"),
+                arguments("a misspelt section key", edit(seed -> seed.set("blogposts", seed.remove("blogPosts"))),
+                        "blogPosts is missing"),
+                arguments("a null user", edit(seed -> seed.putArray("users").addNull()), "users[0] is null"),
+                arguments("a user without roles", edit(seed -> element(seed, "users", 0).remove("roles")),
+                        "users[0].roles (seedcheck_invalid_owner) is missing"),
+                arguments("a Registered role",
+                        edit(seed -> element(seed, "users", 0).putArray("roles").add("Registered")),
+                        "users[0].roles[0] (seedcheck_invalid_owner) is Registered"),
+                arguments("a duplicate username",
+                        edit(seed -> seed.withArrayProperty("users").add(element(seed, "users", 0).deepCopy())),
+                        "users[2] (seedcheck_invalid_owner) repeats an earlier username"),
+                arguments("a report without lines", edit(seed -> element(seed, "reports", 0).remove("lines")),
+                        "reports[0].lines (901/2099 EX) is missing"),
+                arguments("a line without amount", edit(seed -> seedLine(seed, 0).remove("amount")),
+                        "reports[0].lines[0] (901/2099 EX) has no amount"),
+                arguments("a mileage line without kilometers", edit(seed -> seedLine(seed, 1).remove("kilometers")),
+                        "reports[0].lines[1] (901/2099 EX) has no kilometers"),
+                arguments("a post without author", edit(seed -> element(seed, "blogPosts", 0).remove("author")),
+                        "blogPosts[0] (Seedcheck post) has no author"),
+                arguments("an unknown owner",
+                        edit(seed -> element(seed, "reports", 0).put("owner", "seedcheck_ghost")),
+                        "reports[0] (901/2099 EX) has unknown owner seedcheck_ghost"));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource
+    void seedFileMissingARequiredPartFailsBeforeWritingAnyRow(
+            String variant, Consumer<ObjectNode> edit, String problem) {
+        ObjectNode seed = seedTree("seedcheck_invalid");
+        edit.accept(seed);
+        ByteArrayResource resource = seedResource(seed);
+        SeedRows before = seedRows();
+
+        assertThatExceptionOfType(IllegalStateException.class)
+                .isThrownBy(() -> seedDataLoader.seed(resource))
+                .satisfies(error -> assertThat(error.getMessage())
+                        .startsWith("Seed file " + resource.getDescription() + " is invalid: ")
+                        .contains(problem)
+                        .doesNotContain(SEED_PASSWORD));
+        assertThat(seedRows()).isEqualTo(before);
+    }
+
+    @Test
+    void seedFailingDuringInsertRollsBackEveryRow() {
+        ObjectNode seed = seedTree("seedcheck_rollback");
+        element(seed, "reports", 1).put("kind", "expense").put("code", "901/2099 EX");
+        SeedRows before = seedRows();
+
+        assertThatExceptionOfType(DataIntegrityViolationException.class)
+                .isThrownBy(() -> seedDataLoader.seed(seedResource(seed)));
+
+        assertThat(seedRows()).isEqualTo(before);
+        assertThat(appUserRepository.findByUsername("seedcheck_rollback_owner")).isEmpty();
+    }
+
+    @Test
+    void validSeedFileWithAnExplicitlyEmptyLineListLoadsEveryRow() {
+        SeedRows before = seedRows();
+
+        seedDataLoader.seed(seedResource(seedTree("seedcheck_valid")));
+
+        assertThat(seedRows()).isEqualTo(new SeedRows(before.users() + 2, before.posts() + 1, 1, 1, 2, 0));
+        Long ownerId = appUserRepository.findByUsername("seedcheck_valid_owner").orElseThrow().getId();
+        assertThat(expenseReportRepository.findAll()).singleElement().satisfies(report -> {
+            assertThat(report.getCode()).isEqualTo("901/2099 EX");
+            assertThat(report.getCreatedBy()).isEqualTo(ownerId);
+        });
+        assertThat(earningReportRepository.findAll()).singleElement()
+                .satisfies(report -> assertThat(report.getCode()).isEqualTo("901/2099 EA"));
+        assertThat(expenseRepository.findAll()).extracting(Expense::getAmountInEuros)
+                .usingElementComparator(BigDecimal::compareTo)
+                .containsExactlyInAnyOrder(new BigDecimal("80.00"), new BigDecimal("3.70"));
+    }
+
+    private record SeedRows(long users, long posts, long expenseReports, long earningReports, long expenses,
+            long earnings) {
+    }
+
+    private SeedRows seedRows() {
+        return new SeedRows(appUserRepository.count(), blogPostRepository.count(), expenseReportRepository.count(),
+                earningReportRepository.count(), expenseRepository.count(), earningRepository.count());
+    }
+
+    private static ObjectNode seedTree(String usernamePrefix) {
+        try {
+            return (ObjectNode) JSON.readTree(SEED_TEMPLATE.formatted(usernamePrefix, SEED_PASSWORD));
+        } catch (JsonProcessingException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    private static ByteArrayResource seedResource(ObjectNode seed) {
+        return new ByteArrayResource(seed.toString().getBytes(StandardCharsets.UTF_8), "seedcheck fixture");
+    }
+
+    private static ObjectNode element(ObjectNode seed, String section, int index) {
+        return (ObjectNode) seed.get(section).get(index);
+    }
+
+    private static ObjectNode seedLine(ObjectNode seed, int index) {
+        return (ObjectNode) element(seed, "reports", 0).get("lines").get(index);
+    }
+
+    private static Consumer<ObjectNode> edit(Consumer<ObjectNode> edit) {
+        return edit;
     }
 
     private Long storeReport(ReportKind kind, String code, int statusId, Caller owner) {

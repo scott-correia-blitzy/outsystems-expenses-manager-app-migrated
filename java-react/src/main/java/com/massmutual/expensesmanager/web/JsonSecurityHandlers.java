@@ -59,7 +59,7 @@ public class JsonSecurityHandlers implements AuthenticationEntryPoint, AccessDen
         return authentication == null || trustResolver.isAnonymous(authentication);
     }
 
-    private void write(HttpServletResponse response, ErrorResponse body) throws IOException {
+    void write(HttpServletResponse response, ErrorResponse body) throws IOException {
         if (response.isCommitted()) {
             return;
         }
