@@ -17,6 +17,7 @@ import {
 import { invoiceDownloadUrl } from '../api/api';
 import { MESSAGES, type InvoiceInfo, type Kind, type LineView } from '../api/types';
 import { formatEuro, formatIsoDate } from '../format/format';
+import { useDialogFocus } from './ConfirmDialog';
 
 export type LineViewDialogProps = {
   open: boolean;
@@ -110,18 +111,19 @@ function InvoicePanel({ invoice, downloadUrl }: { invoice: InvoiceInfo | null; d
 
 export function LineViewDialog({ open, kind, line, vatRate, onClose, onEdit }: LineViewDialogProps) {
   const titleId = useId();
+  const dialogFocus = useDialogFocus(open);
 
   return (
-    <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth aria-labelledby={titleId}>
+    <Dialog {...dialogFocus} open={open} onClose={onClose} maxWidth="md" fullWidth aria-labelledby={titleId}>
       <Stack
         direction="row"
         spacing={1}
         sx={{ alignItems: 'center', justifyContent: 'space-between', paddingInlineEnd: 2 }}
       >
-        <DialogTitle id={titleId} variant="h5" sx={{ overflowWrap: 'anywhere' }}>
+        <DialogTitle id={titleId} sx={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere' }}>
           {line.title}
         </DialogTitle>
-        <IconButton aria-label="Close" color="primary" onClick={onClose}>
+        <IconButton aria-label="Close" color="primary" onClick={onClose} sx={{ flexShrink: 0 }}>
           <CloseIcon />
         </IconButton>
       </Stack>
@@ -164,7 +166,11 @@ export function LineViewDialog({ open, kind, line, vatRate, onClose, onEdit }: L
                     sx={{ alignSelf: 'flex-start', bgcolor: 'grey.50', p: 2, borderRadius: 1 }}
                   >
                     <Typography variant="body2">Total:</Typography>
-                    <Typography variant="h4" component="p" sx={{ fontWeight: 'fontWeightBold' }}>
+                    <Typography
+                      variant="h4"
+                      component="p"
+                      sx={{ fontWeight: 'fontWeightBold', overflowWrap: 'anywhere' }}
+                    >
                       {formatEuro(line.amountInEuros)}
                     </Typography>
                     <Typography variant="body2">{`${vatLabel(vatRate)}: ${formatEuro(line.vat)}`}</Typography>
@@ -185,9 +191,11 @@ export function LineViewDialog({ open, kind, line, vatRate, onClose, onEdit }: L
       </DialogContent>
       {onEdit && (
         <DialogActions>
-          <Button variant="outlined" onClick={onEdit}>
-            Edit Details
-          </Button>
+          <Stack direction="row" spacing={1} sx={{ flexGrow: 1, paddingInline: 2, paddingBlockEnd: 2 }}>
+            <Button variant="outlined" onClick={onEdit}>
+              Edit Details
+            </Button>
+          </Stack>
         </DialogActions>
       )}
     </Dialog>

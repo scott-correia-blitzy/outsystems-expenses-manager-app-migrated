@@ -1693,3 +1693,38 @@ describe('previews and tool forms', () => {
     TEST_TIMEOUT,
   );
 });
+
+describe('new report dialog', () => {
+  it(
+    'creates one report when Submit is activated twice in one task',
+    async () => {
+      renderRoute('/reports', 'user');
+      expect(await heading('Reports')).toBeInTheDocument();
+      vi.mocked(api.createReport).mockClear();
+      vi.mocked(api.getReport).mockResolvedValue({
+        ...REPORT_DETAILS['expense/12'],
+        id: 13,
+        code: '13/2024 EX',
+        title: 'Double Create',
+        totalEur: 0,
+        vatTotal: 0,
+        lines: [],
+      });
+
+      await clickControl('New Report');
+      await fillField('Report Title', 'Double Create');
+      fireEvent.click(screen.getByRole('button', { name: 'Expense' }));
+      const submit = screen.getByRole('button', { name: 'Submit' });
+      // One act scope keeps React from re-rendering between the clicks, as two clicks in one browser task do.
+      act(() => {
+        submit.click();
+        submit.click();
+      });
+
+      await arriveAt('/reports/expense/13', /^13\/2024 EX: Double Create/);
+      expect(api.createReport).toHaveBeenCalledTimes(1);
+      expect(api.createReport).toHaveBeenCalledWith({ kind: 'expense', title: 'Double Create' });
+    },
+    TEST_TIMEOUT,
+  );
+});

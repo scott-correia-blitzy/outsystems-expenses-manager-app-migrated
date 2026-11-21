@@ -17,6 +17,7 @@ import {
 import { createReport } from '../api/api';
 import { ApiError, MESSAGES, type CreateReportBody, type Kind, type ReportSummary } from '../api/types';
 import { reportPath } from '../routes';
+import { useDialogFocus } from './ConfirmDialog';
 import { useFeedback } from './Feedback';
 
 export type NewReportDialogProps = {
@@ -55,6 +56,7 @@ export function NewReportDialog({ open, onClose }: NewReportDialogProps) {
   const formId = useId();
   const kindLabelId = useId();
   const kindHelperId = useId();
+  const dialogFocus = useDialogFocus(open);
   const formRef = useRef<HTMLFormElement>(null);
   const titleInput = useRef<HTMLInputElement>(null);
   const kindGroup = useRef<HTMLDivElement>(null);
@@ -63,6 +65,8 @@ export function NewReportDialog({ open, onClose }: NewReportDialogProps) {
   const [kind, setKind] = useState<Kind | null>(null);
   const [errors, setErrors] = useState<FieldErrors>({});
   const [saving, setSaving] = useState(false);
+  // Unlike saving, the ref updates at once, so a second submit before the next render is ignored.
+  const saveInFlight = useRef(false);
   const [failedSaves, setFailedSaves] = useState(0);
   const [errorFocus, setErrorFocus] = useState<{ field: FieldName } | null>(null);
 
@@ -72,6 +76,7 @@ export function NewReportDialog({ open, onClose }: NewReportDialogProps) {
       setKind(null);
       setErrors({});
       setSaving(false);
+      saveInFlight.current = false;
     }
   }, [open]);
 
@@ -131,11 +136,13 @@ export function NewReportDialog({ open, onClose }: NewReportDialogProps) {
     }
     setErrors({});
     const body: CreateReportBody = { kind, title: title.trim() };
+    saveInFlight.current = true;
     setSaving(true);
     let created: ReportSummary;
     try {
       created = await createReport(body);
     } catch (err) {
+      saveInFlight.current = false;
       setSaving(false);
       showFailure(err);
       return;
@@ -147,13 +154,14 @@ export function NewReportDialog({ open, onClose }: NewReportDialogProps) {
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!saving) {
+    if (!saveInFlight.current) {
       void submit();
     }
   };
 
   return (
     <Dialog
+      {...dialogFocus}
       open={open}
       onClose={saving ? undefined : onClose}
       maxWidth="md"

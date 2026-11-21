@@ -43,7 +43,9 @@ import {
   type ReferenceData,
 } from '../api/types';
 import { formatEuro } from '../format/format';
+import { useDialogFocus } from './ConfirmDialog';
 import { useFeedback } from './Feedback';
+import { SelectLabel } from './LineTable';
 import { vatLabel } from './LineViewDialog';
 
 export type LineFormDialogProps = {
@@ -261,6 +263,7 @@ export function LineFormDialog({
   const currencyHelperId = useId();
   const uploadLabelId = useId();
   const fileHelperId = useId();
+  const dialogFocus = useDialogFocus(open);
   const formRef = useRef<HTMLFormElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const saveButton = useRef<HTMLButtonElement>(null);
@@ -411,6 +414,7 @@ export function LineFormDialog({
 
   return (
     <Dialog
+      {...dialogFocus}
       open={open}
       onClose={saving ? undefined : onClose}
       maxWidth="md"
@@ -424,10 +428,16 @@ export function LineFormDialog({
         spacing={2}
         sx={{ paddingInlineEnd: 2 }}
       >
-        <DialogTitle id={titleId} sx={{ overflowWrap: 'anywhere' }}>
+        <DialogTitle id={titleId} sx={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere' }}>
           {heading}
         </DialogTitle>
-        <IconButton aria-label="Close" color="primary" onClick={onClose} disabled={saving}>
+        <IconButton
+          aria-label="Close"
+          color="primary"
+          onClick={onClose}
+          disabled={saving}
+          sx={{ flexShrink: 0 }}
+        >
           <CloseIcon />
         </IconButton>
       </Stack>
@@ -459,6 +469,7 @@ export function LineFormDialog({
                 onChange={(event) => setField('typeId', Number(event.target.value))}
                 error={Boolean(errors.typeId)}
                 helperText={errors.typeId}
+                slots={{ inputLabel: SelectLabel }}
               >
                 {types.map((type) => (
                   <MenuItem key={type.id} value={type.id}>
@@ -647,7 +658,12 @@ export function LineFormDialog({
               {/* For a Kilometers line this total is the reimbursement value, so it is not shown twice. */}
               <Stack spacing={1} sx={{ bgcolor: 'grey.50', borderRadius: 1, p: 2 }}>
                 <Typography variant="body2">Total:</Typography>
-                <Typography variant="h4" component="p" aria-live="polite">
+                <Typography
+                  variant="h4"
+                  component="p"
+                  aria-live="polite"
+                  sx={{ fontWeight: 'fontWeightBold', overflowWrap: 'anywhere' }}
+                >
                   {formatEuro(previewTotal)}
                 </Typography>
                 <Typography variant="body2">
