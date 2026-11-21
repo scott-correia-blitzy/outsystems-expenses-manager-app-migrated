@@ -95,7 +95,7 @@ public class ApiExceptionHandler {
 
     @ExceptionHandler(MethodArgumentTypeMismatchException.class)
     public ResponseEntity<ErrorResponse> handleTypeMismatch(MethodArgumentTypeMismatchException ex) {
-        // A converter's own 422, such as the ReportKind one, arrives wrapped in a ConversionFailedException.
+        // A converter's own 422 arrives wrapped in a ConversionFailedException.
         return findCause(ex, ApiException.class)
                 .map(apiException -> respond(ErrorResponse.from(apiException)))
                 .orElseGet(() -> validationFailed(

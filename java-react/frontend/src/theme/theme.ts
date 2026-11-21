@@ -14,6 +14,7 @@ declare module '@mui/material/styles' {
 const brandTertiary = '#002E6B';
 const gray200 = '#C6C6C6';
 const gray500 = '#767676';
+const textPrimary = 'rgba(0, 0, 0, 0.85)';
 
 const bodyFont = '"Lato", Helvetica, Arial, sans-serif';
 const headingFont = '"MMSharpSans", Helvetica, Arial, sans-serif';
@@ -24,9 +25,9 @@ const base = createTheme({
     secondary: { main: '#003D8C' },
     info: { main: brandTertiary },
     success: { main: '#327320' },
-    warning: { main: '#DB7C0F' },
+    warning: { main: '#DB7C0F', contrastText: textPrimary },
     error: { main: '#E21224' },
-    text: { primary: 'rgba(0, 0, 0, 0.85)', secondary: '#555555', disabled: gray500 },
+    text: { primary: textPrimary, secondary: '#555555', disabled: gray500 },
     divider: gray200,
     background: { paper: '#FFFFFF', default: '#F8F8F8' },
     grey: {
@@ -57,6 +58,16 @@ const base = createTheme({
   spacing: 8,
   components: {
     MuiButton: { styleOverrides: { root: { borderRadius: '9999rem' } } },
+    // Filled alerts ignore contrastText and pick white, which falls below AA contrast on the brand orange.
+    MuiAlert: {
+      variants: [
+        {
+          props: ({ variant, color, severity }) =>
+            variant === 'filled' && (color ?? severity) === 'warning',
+          style: ({ theme }) => ({ color: theme.palette.warning.contrastText }),
+        },
+      ],
+    },
     MuiAppBar: {
       styleOverrides: {
         root: ({ theme }) => ({
