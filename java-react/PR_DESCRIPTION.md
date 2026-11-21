@@ -300,7 +300,7 @@ Build first (`./mvnw -q package`) and record the build time separately. Stop the
 | Measurement | Result |
 |---|---|
 | Seconds from jar launch to the 8 seeded rows | Not run yet |
-| Build time (`./mvnw -q package`) | Not run yet |
+| Build time (`./mvnw -q package`) | 30 s from a clean checkout (no `target/`, `node/` or `frontend/node_modules/`) with the Maven and npm caches already filled; exit 0, no compiler or type-check errors |
 
 `ResponseTimeIT` also asserts, on every `./mvnw verify`, a start with seeding under 30 s on a fresh H2 file, and a 95th percentile (the 48th of 50 sorted calls, after 5 warm-up calls) under 300 ms for `GET /api/reports?kind=expense` and `kind=earning` as `em_user1` and as `em_admin`, `GET /api/dashboard/user` and `GET /api/dashboard/admin`.
 
