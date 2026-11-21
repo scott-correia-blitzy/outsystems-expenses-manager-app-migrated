@@ -1,6 +1,8 @@
 import { cleanup, fireEvent, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import type { SessionCategory } from './fixtures';
+import * as api from '../api/api';
+import { ApiError, type FieldError } from '../api/types';
+import { REFERENCE, type SessionCategory } from './fixtures';
 import { expectLocation, renderRoute } from './renderRoute';
 
 vi.mock('../api/api');
@@ -246,6 +248,93 @@ describe('line form preview', () => {
 
       expect(await screen.findByText(/€ 5,00/, {}, { timeout: FIND_TIMEOUT })).toBeInTheDocument();
       expect(screen.queryByText(/€ 3,70/)).toBeNull();
+    },
+    TEST_TIMEOUT,
+  );
+});
+
+async function fillField(label: string | RegExp, value: string): Promise<void> {
+  fireEvent.change(await screen.findByLabelText(label, {}, { timeout: FIND_TIMEOUT }), { target: { value } });
+}
+
+type ServerErrorCase = {
+  path: string;
+  category: SessionCategory;
+  name: string;
+  fill: () => Promise<void>;
+  submit: string;
+  endpoint: typeof api.createBlogPost | typeof api.usdToEur | typeof api.mileage;
+  label: string | RegExp;
+  field: string;
+  messages: [string, string];
+  unknown: FieldError;
+};
+
+const SERVER_ERROR_CASES: ServerErrorCase[] = [
+  {
+    path: '/blog/posts/new',
+    category: 'administrator',
+    name: 'New Blog Post',
+    fill: () => fillField(/^Title/, 'Quarterly update'),
+    submit: 'Save',
+    endpoint: api.createBlogPost,
+    label: /^Title/,
+    field: 'title',
+    messages: ['Title is already in use', 'Title must not end with a period'],
+    unknown: { field: 'slug', message: 'Slug is already in use' },
+  },
+  {
+    path: '/tools/usd-to-eur',
+    category: 'user',
+    name: 'USD/EUR Currency Converter',
+    fill: async () => {
+      await fillField('USD Amount', '100');
+      await waitFor(() =>
+        expect(screen.getByLabelText('Exchange Rate USD/EUR')).toHaveValue(REFERENCE.dollarsToEuros),
+      );
+    },
+    submit: 'Convert',
+    endpoint: api.usdToEur,
+    label: 'USD Amount',
+    field: 'amount',
+    messages: ['Amount is too large', 'Amount allows at most 2 decimals'],
+    unknown: { field: 'currency', message: 'Currency is not supported' },
+  },
+  {
+    path: '/tools/mileage',
+    category: 'user',
+    name: 'Mileage Reimbursement',
+    fill: () => fillField('Mileage', '10'),
+    submit: 'Convert',
+    endpoint: api.mileage,
+    label: 'Mileage',
+    field: 'km',
+    messages: ['Distance is too large', 'Distance allows at most 2 decimals'],
+    unknown: { field: 'vehicle', message: 'Vehicle is required' },
+  },
+];
+
+describe('server field errors', () => {
+  it.each(SERVER_ERROR_CASES)(
+    '$path shows every server field error',
+    async ({ path, category, name, fill, submit, endpoint, label, field, messages, unknown }) => {
+      renderRoute(path, category);
+      expect(await heading(name)).toBeInTheDocument();
+      vi.mocked(endpoint).mockRejectedValueOnce(
+        new ApiError(422, 'VALIDATION_FAILED', messages[0], [
+          { field, message: messages[0] },
+          { field, message: messages[1] },
+          unknown,
+        ]),
+      );
+      await fill();
+      await clickControl(submit);
+
+      const toast = await screen.findByRole('alert', {}, { timeout: FIND_TIMEOUT });
+      expect(toast).toHaveTextContent(`${unknown.field}: ${unknown.message}`);
+      expect(toast).not.toHaveTextContent(`${field}: ${messages[1]}`);
+      const helperId = screen.getByLabelText(label).getAttribute('aria-describedby') ?? '';
+      expect(document.getElementById(helperId)?.textContent).toBe(messages.join('\n'));
     },
     TEST_TIMEOUT,
   );

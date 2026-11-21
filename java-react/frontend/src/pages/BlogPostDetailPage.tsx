@@ -2,7 +2,7 @@ import { useEffect, useState, type ChangeEvent, type FormEvent } from 'react';
 import { Box, Button, Card, CardContent, CircularProgress, Stack, TextField } from '@mui/material';
 import { Link as RouterLink, Navigate, useNavigate, useParams } from 'react-router';
 import { createBlogPost, getBlogPost, updateBlogPost } from '../api/api';
-import { ApiError, MESSAGES, type BlogPostBody } from '../api/types';
+import { ApiError, MESSAGES, type BlogPostBody, type FieldError } from '../api/types';
 import { useFeedback } from '../components/Feedback';
 import { PageHeader } from '../layout/PageHeader';
 import { PATHS } from '../routes';
@@ -44,17 +44,29 @@ function isPostField(field: string): field is PostField {
   return field === 'title' || field === 'description';
 }
 
-function serverFieldErrors(err: unknown): FieldErrors | null {
+type ServerFieldErrors = { fields: FieldErrors; unplaced: ApiError | null };
+
+function serverFieldErrors(err: unknown): ServerFieldErrors | null {
   if (!(err instanceof ApiError)) {
     return null;
   }
-  const errors: FieldErrors = { ...NO_ERRORS };
+  const fields: FieldErrors = { ...NO_ERRORS };
+  const unplaced: FieldError[] = [];
   for (const fieldError of err.fieldErrors ?? []) {
-    if (isPostField(fieldError.field) && errors[fieldError.field] === '') {
-      errors[fieldError.field] = fieldError.message;
+    if (isPostField(fieldError.field)) {
+      const current = fields[fieldError.field];
+      fields[fieldError.field] = current === '' ? fieldError.message : `${current}\n${fieldError.message}`;
+    } else {
+      unplaced.push(fieldError);
     }
   }
-  return hasErrors(errors) ? errors : null;
+  if (!hasErrors(fields)) {
+    return null;
+  }
+  return {
+    fields,
+    unplaced: unplaced.length > 0 ? new ApiError(err.status, err.code, err.message, unplaced) : null,
+  };
 }
 
 export function BlogPostDetailPage() {
@@ -131,11 +143,14 @@ export function BlogPostDetailPage() {
       feedback.success(MESSAGES.BLOG_POST_PUBLISHED);
       navigate(PATHS.blog);
     } catch (err) {
-      const fieldErrors = serverFieldErrors(err);
-      if (fieldErrors === null) {
+      const serverErrors = serverFieldErrors(err);
+      if (serverErrors === null) {
         feedback.error(err);
       } else {
-        setErrors(fieldErrors);
+        setErrors(serverErrors.fields);
+        if (serverErrors.unplaced) {
+          feedback.error(serverErrors.unplaced);
+        }
       }
     } finally {
       setSaving(false);
@@ -165,7 +180,10 @@ export function BlogPostDetailPage() {
                   onChange={handleTitleChange}
                   error={errors.title !== ''}
                   helperText={errors.title || undefined}
-                  slotProps={{ htmlInput: { maxLength: TITLE_MAX_LENGTH } }}
+                  slotProps={{
+                    htmlInput: { maxLength: TITLE_MAX_LENGTH },
+                    formHelperText: { sx: { whiteSpace: 'pre-line' } },
+                  }}
                 />
                 <TextField
                   label="Description"
@@ -176,7 +194,10 @@ export function BlogPostDetailPage() {
                   onChange={handleDescriptionChange}
                   error={errors.description !== ''}
                   helperText={errors.description || undefined}
-                  slotProps={{ htmlInput: { maxLength: DESCRIPTION_MAX_LENGTH } }}
+                  slotProps={{
+                    htmlInput: { maxLength: DESCRIPTION_MAX_LENGTH },
+                    formHelperText: { sx: { whiteSpace: 'pre-line' } },
+                  }}
                 />
                 <Stack direction="row" spacing={2}>
                   <Button component={RouterLink} to={PATHS.blog} variant="outlined">

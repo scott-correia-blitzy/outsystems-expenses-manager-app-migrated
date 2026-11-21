@@ -44,12 +44,19 @@ export function MileageReimbursementPage() {
       }
     } catch (err) {
       if (requestId === latestRequest.current) {
-        const fieldError =
-          err instanceof ApiError ? err.fieldErrors?.find((f) => f.field === KM_FIELD) : undefined;
-        if (fieldError) {
-          setError(fieldError.message);
-        } else {
+        const fieldErrors = err instanceof ApiError ? (err.fieldErrors ?? []) : [];
+        const kmError = fieldErrors
+          .filter((f) => f.field === KM_FIELD)
+          .map((f) => f.message)
+          .join('\n');
+        const unplaced = fieldErrors.filter((f) => f.field !== KM_FIELD);
+        if (kmError === '') {
           feedback.error(err);
+        } else {
+          setError(kmError);
+          if (err instanceof ApiError && unplaced.length > 0) {
+            feedback.error(new ApiError(err.status, err.code, err.message, unplaced));
+          }
         }
       }
     } finally {
@@ -89,6 +96,7 @@ export function MileageReimbursementPage() {
                 slotProps={{
                   input: { endAdornment: <InputAdornment position="end">km</InputAdornment> },
                   htmlInput: { min: 0, step: 'any' },
+                  formHelperText: { sx: { whiteSpace: 'pre-line' } },
                 }}
               />
               <TextField

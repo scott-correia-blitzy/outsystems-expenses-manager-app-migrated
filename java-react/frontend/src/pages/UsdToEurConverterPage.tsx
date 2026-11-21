@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
 import { Alert, Box, Button, Card, CardContent, InputAdornment, Stack, TextField } from '@mui/material';
 import { reference, usdToEur } from '../api/api';
-import { ApiError, MESSAGES, type UsdToEurResult } from '../api/types';
+import { ApiError, MESSAGES, type FieldError, type UsdToEurResult } from '../api/types';
 import { useFeedback } from '../components/Feedback';
 import { PageHeader } from '../layout/PageHeader';
 
@@ -86,15 +86,27 @@ export function UsdToEurConverterPage() {
       setResult(converted);
     } catch (err) {
       const serverErrors: FieldErrors = { ...NO_ERRORS };
+      let unplaced: ApiError | null = null;
       if (err instanceof ApiError) {
-        for (const fieldError of err.fieldErrors) {
-          if (isConverterField(fieldError.field) && serverErrors[fieldError.field] === '') {
-            serverErrors[fieldError.field] = fieldError.message;
+        const otherErrors: FieldError[] = [];
+        for (const fieldError of err.fieldErrors ?? []) {
+          if (isConverterField(fieldError.field)) {
+            const current = serverErrors[fieldError.field];
+            serverErrors[fieldError.field] =
+              current === '' ? fieldError.message : `${current}\n${fieldError.message}`;
+          } else {
+            otherErrors.push(fieldError);
           }
+        }
+        if (otherErrors.length > 0) {
+          unplaced = new ApiError(err.status, err.code, err.message, otherErrors);
         }
       }
       if (serverErrors.amount !== '' || serverErrors.rate !== '') {
         setErrors(serverErrors);
+        if (unplaced) {
+          feedback.error(unplaced);
+        }
       } else {
         feedback.error(err);
       }
@@ -120,6 +132,7 @@ export function UsdToEurConverterPage() {
                 slotProps={{
                   input: { endAdornment: <InputAdornment position="end">$</InputAdornment> },
                   htmlInput: { step: 'any' },
+                  formHelperText: { sx: { whiteSpace: 'pre-line' } },
                 }}
               />
               <TextField
@@ -129,7 +142,10 @@ export function UsdToEurConverterPage() {
                 onChange={handleRateChange}
                 error={errors.rate !== ''}
                 helperText={errors.rate || undefined}
-                slotProps={{ htmlInput: { step: 'any' } }}
+                slotProps={{
+                  htmlInput: { step: 'any' },
+                  formHelperText: { sx: { whiteSpace: 'pre-line' } },
+                }}
               />
               <Button type="submit" variant="contained" loading={converting} sx={{ alignSelf: 'flex-start' }}>
                 Convert
