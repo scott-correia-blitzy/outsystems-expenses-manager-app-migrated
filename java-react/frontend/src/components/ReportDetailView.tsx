@@ -1,7 +1,15 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import { Box, Button, CircularProgress, Grid, IconButton, Stack } from '@mui/material';
+import { Alert, Box, Button, CircularProgress, Grid, IconButton, Stack } from '@mui/material';
 import { useNavigate } from 'react-router';
-import { decideReport, deleteLine, deleteReport, getReport, reference, submitReport } from '../api/api';
+import {
+  decideReport,
+  deleteLine,
+  deleteReport,
+  getReport,
+  listReports,
+  reference,
+  submitReport,
+} from '../api/api';
 import {
   ApiError,
   MESSAGES,
@@ -10,6 +18,7 @@ import {
   type ReferenceData,
   type ReportDetail,
 } from '../api/types';
+import { useAuth } from '../auth/AuthContext';
 import { formatCreatedAt, formatEuro } from '../format/format';
 import { PageHeader } from '../layout/PageHeader';
 import { PATHS } from '../routes';
@@ -33,7 +42,20 @@ type PendingAction = 'submit' | 'approve' | 'decline';
 
 type LineDialog = { open: boolean; line?: LineView };
 
-type LoadedReport = { kind: Kind; id: number; detail: ReportDetail };
+type LoadState =
+  | { phase: 'loading' }
+  | { phase: 'error'; error: unknown }
+  | { phase: 'ready'; detail: ReportDetail; owned: boolean };
+
+type ReferenceState =
+  | { phase: 'loading' }
+  | { phase: 'error'; error: unknown }
+  | { phase: 'ready'; data: ReferenceData };
+
+type ReportDetailContentProps = ReportDetailViewProps & {
+  referenceState: ReferenceState;
+  onRetryReference: () => void;
+};
 
 const CLOSED_DIALOG: LineDialog = { open: false };
 
@@ -61,24 +83,113 @@ function hidden(dialog: LineDialog): LineDialog {
   return { ...dialog, open: false };
 }
 
+function errorMessage(err: unknown): string {
+  return err instanceof ApiError ? err.message : MESSAGES.GENERIC_ERROR;
+}
+
 export function ReportDetailView({ kind, mode, id }: ReportDetailViewProps) {
+  const [referenceState, setReferenceState] = useState<ReferenceState>({ phase: 'loading' });
+  const latestReference = useRef(0);
+
+  const fetchReference = useCallback(() => {
+    latestReference.current += 1;
+    const requestId = latestReference.current;
+    reference().then(
+      (data) => {
+        if (requestId === latestReference.current) {
+          setReferenceState({ phase: 'ready', data });
+        }
+      },
+      (error: unknown) => {
+        if (requestId === latestReference.current) {
+          setReferenceState({ phase: 'error', error });
+        }
+      },
+    );
+  }, []);
+
+  useEffect(() => {
+    fetchReference();
+    return () => {
+      latestReference.current += 1;
+    };
+  }, [fetchReference]);
+
+  const retryReference = useCallback(() => {
+    setReferenceState({ phase: 'loading' });
+    fetchReference();
+  }, [fetchReference]);
+
+  // Keyed by report identity so dialogs, pending actions and loads never carry over to another report.
+  return (
+    <ReportDetailContent
+      key={`${kind}/${id ?? ''}`}
+      kind={kind}
+      mode={mode}
+      id={id}
+      referenceState={referenceState}
+      onRetryReference={retryReference}
+    />
+  );
+}
+
+function ReportDetailContent({
+  kind,
+  mode,
+  id,
+  referenceState,
+  onRetryReference,
+}: ReportDetailContentProps) {
   const feedback = useFeedback();
   const navigate = useNavigate();
+  const isAdministrator = useAuth().hasRole('Administrator');
   const reportId = parseReportId(id);
-  const [loaded, setLoaded] = useState<LoadedReport | null>(null);
-  const [referenceData, setReferenceData] = useState<ReferenceData | null>(null);
+  const [loadState, setLoadState] = useState<LoadState>({ phase: 'loading' });
   const [pending, setPending] = useState<PendingAction | null>(null);
   const [lineForm, setLineForm] = useState<LineDialog>(CLOSED_DIALOG);
   const [lineView, setLineView] = useState<LineDialog>(CLOSED_DIALOG);
   const [lineToDelete, setLineToDelete] = useState<LineView | null>(null);
   const [reportDeleteOpen, setReportDeleteOpen] = useState(false);
   const latestLoad = useRef(0);
+  const reportShown = useRef(false);
+  const ownership = useRef<boolean | null>(null);
+  const alive = useRef(false);
+
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
 
   const rejectInvalidReport = useCallback(() => {
     feedback.warning(MESSAGES.INVALID_REPORT);
     // All legacy detail screens, admin and earning ones too, fall back to the user dashboard.
     navigate(PATHS.dashboard, { replace: true });
   }, [feedback, navigate]);
+
+  // The detail body names no owner: a successful read by a caller without Administrator proves ownership,
+  // and the Draft list returns an administrator only the Drafts they own.
+  const resolveOwnership = useCallback(
+    async (detail: ReportDetail): Promise<boolean> => {
+      if (mode !== 'owner') {
+        return false;
+      }
+      if (!isAdministrator) {
+        return true;
+      }
+      if (ownership.current !== null) {
+        return ownership.current;
+      }
+      if (detail.status !== 'Draft') {
+        return false;
+      }
+      const drafts = await listReports({ kind, status: 'Draft', q: detail.code });
+      ownership.current = drafts.some((row) => row.id === detail.id);
+      return ownership.current;
+    },
+    [kind, mode, isAdministrator],
+  );
 
   const load = useCallback(async () => {
     if (reportId === null) {
@@ -88,8 +199,10 @@ export function ReportDetailView({ kind, mode, id }: ReportDetailViewProps) {
     const loadId = latestLoad.current;
     try {
       const detail = await getReport(kind, reportId);
+      const owned = await resolveOwnership(detail);
       if (loadId === latestLoad.current) {
-        setLoaded({ kind, id: reportId, detail });
+        reportShown.current = true;
+        setLoadState({ phase: 'ready', detail, owned });
       }
     } catch (err) {
       if (loadId !== latestLoad.current) {
@@ -97,11 +210,18 @@ export function ReportDetailView({ kind, mode, id }: ReportDetailViewProps) {
       }
       if (err instanceof ApiError && (err.status === 404 || err.status === 403)) {
         rejectInvalidReport();
-      } else {
+      } else if (reportShown.current) {
         feedback.error(err);
+      } else {
+        setLoadState({ phase: 'error', error: err });
       }
     }
-  }, [kind, reportId, feedback, rejectInvalidReport]);
+  }, [kind, reportId, feedback, rejectInvalidReport, resolveOwnership]);
+
+  const retryLoad = () => {
+    setLoadState({ phase: 'loading' });
+    void load();
+  };
 
   useEffect(() => {
     if (reportId === null) {
@@ -114,28 +234,18 @@ export function ReportDetailView({ kind, mode, id }: ReportDetailViewProps) {
     };
   }, [reportId, load, rejectInvalidReport]);
 
+  const referenceData = referenceState.phase === 'ready' ? referenceState.data : null;
+  const referenceFailed = referenceState.phase === 'error';
+
+  // A line dialog requested while the reference data was loading must not pop up after a later retry.
   useEffect(() => {
-    let active = true;
-    reference().then(
-      (data) => {
-        if (active) {
-          setReferenceData(data);
-        }
-      },
-      (err: unknown) => {
-        if (active) {
-          feedback.error(err);
-        }
-      },
-    );
-    return () => {
-      active = false;
-    };
-  }, [feedback]);
+    if (referenceFailed) {
+      setLineForm(CLOSED_DIALOG);
+      setLineView(CLOSED_DIALOG);
+    }
+  }, [referenceFailed]);
 
-  const report = loaded !== null && loaded.kind === kind && loaded.id === reportId ? loaded.detail : null;
-
-  if (report === null) {
+  if (loadState.phase === 'loading') {
     return (
       <Stack alignItems="center" justifyContent="center" sx={{ paddingBlock: 8 }}>
         <CircularProgress aria-label="Loading" />
@@ -143,8 +253,26 @@ export function ReportDetailView({ kind, mode, id }: ReportDetailViewProps) {
     );
   }
 
+  if (loadState.phase === 'error') {
+    return (
+      <Stack sx={{ paddingBlock: 3 }}>
+        <Alert
+          severity="error"
+          action={
+            <Button color="inherit" size="small" onClick={retryLoad}>
+              Retry
+            </Button>
+          }
+        >
+          {errorMessage(loadState.error)}
+        </Alert>
+      </Stack>
+    );
+  }
+
+  const report = loadState.detail;
   const labels = LABELS[kind];
-  const canEdit = mode === 'owner' && report.status === 'Draft';
+  const canEdit = mode === 'owner' && loadState.owned && report.status === 'Draft';
   const canDecide = mode === 'admin' && report.status === 'Submitted';
   const busy = pending !== null;
   const viewedLine = lineView.line;
@@ -154,13 +282,20 @@ export function ReportDetailView({ kind, mode, id }: ReportDetailViewProps) {
     try {
       await send();
     } catch (err) {
-      setPending(null);
       feedback.error(err);
+      if (alive.current) {
+        setPending(null);
+      }
       return;
     }
     feedback.success(success);
+    if (!alive.current) {
+      return;
+    }
     await load();
-    setPending(null);
+    if (alive.current) {
+      setPending(null);
+    }
   };
 
   const submit = () =>
@@ -177,12 +312,17 @@ export function ReportDetailView({ kind, mode, id }: ReportDetailViewProps) {
     try {
       await deleteReport(kind, report.id);
     } catch (err) {
-      setReportDeleteOpen(false);
       feedback.error(err);
+      if (alive.current) {
+        setReportDeleteOpen(false);
+      }
+      return;
+    }
+    feedback.success(`${labels.noun} report was deleted`);
+    if (!alive.current) {
       return;
     }
     setReportDeleteOpen(false);
-    feedback.success(`${labels.noun} report was deleted`);
     navigate(PATHS.reports);
   };
 
@@ -193,16 +333,24 @@ export function ReportDetailView({ kind, mode, id }: ReportDetailViewProps) {
     try {
       await deleteLine(kind, lineToDelete.id);
     } catch (err) {
-      setLineToDelete(null);
       feedback.error(err);
+      if (alive.current) {
+        setLineToDelete(null);
+      }
+      return;
+    }
+    feedback.success(`${labels.noun} was deleted`);
+    if (!alive.current) {
       return;
     }
     setLineToDelete(null);
-    feedback.success(`${labels.noun} was deleted`);
     void load();
   };
 
   const handleLineSaved = () => {
+    if (!alive.current) {
+      return;
+    }
     setLineForm(hidden);
     void load();
   };
@@ -292,16 +440,35 @@ export function ReportDetailView({ kind, mode, id }: ReportDetailViewProps) {
             <KpiCard label={labels.total} value={formatEuro(report.totalEur)} />
           </Grid>
         </Grid>
+        {referenceState.phase === 'error' && (
+          <Alert
+            severity="error"
+            action={
+              <Button color="inherit" size="small" onClick={onRetryReference}>
+                Retry
+              </Button>
+            }
+          >
+            {errorMessage(referenceState.error)}
+          </Alert>
+        )}
         <LineTable
           kind={kind}
           lines={report.lines}
           canEdit={canEdit}
+          viewDisabled={referenceFailed}
+          editDisabled={busy || referenceFailed}
+          deleteDisabled={busy}
           onView={(line) => setLineView({ open: true, line })}
           onEdit={(line) => setLineForm({ open: true, line })}
           onDelete={setLineToDelete}
           actions={
             canEdit ? (
-              <Button variant="contained" disabled={busy} onClick={() => setLineForm({ open: true })}>
+              <Button
+                variant="contained"
+                disabled={busy || referenceFailed}
+                onClick={() => setLineForm({ open: true })}
+              >
                 {labels.addLine}
               </Button>
             ) : undefined
@@ -326,7 +493,7 @@ export function ReportDetailView({ kind, mode, id }: ReportDetailViewProps) {
           line={viewedLine}
           vatRate={referenceData.vatRate}
           onClose={() => setLineView(hidden)}
-          onEdit={canEdit ? () => editFromView(viewedLine) : undefined}
+          onEdit={canEdit && !busy ? () => editFromView(viewedLine) : undefined}
         />
       )}
       <ConfirmDialog

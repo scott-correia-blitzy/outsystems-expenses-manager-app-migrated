@@ -2,7 +2,7 @@ import { useRef, useState, type ChangeEvent, type FormEvent } from 'react';
 import { Box, Button, Card, CardContent, InputAdornment, Stack, TextField } from '@mui/material';
 import { mileage } from '../api/api';
 import { ApiError, MESSAGES, type MileageResult } from '../api/types';
-import { useFeedback } from '../components/Feedback';
+import { LiveStatus, useFeedback } from '../components/Feedback';
 import { formatEuro } from '../format/format';
 import { PageHeader } from '../layout/PageHeader';
 
@@ -20,6 +20,8 @@ export function MileageReimbursementPage() {
   const feedback = useFeedback();
   const [km, setKm] = useState('');
   const [result, setResult] = useState<MileageResult | null>(null);
+  // The result shown when Convert was pressed stays silent, so only a fresh conversion is announced.
+  const [staleResult, setStaleResult] = useState<MileageResult | null>(null);
   const [error, setError] = useState('');
   const [converting, setConverting] = useState(false);
   const latestRequest = useRef(0);
@@ -74,8 +76,12 @@ export function MileageReimbursementPage() {
       setError(MESSAGES.DISTANCE_POSITIVE);
       return;
     }
+    setStaleResult(result);
     void convert(distance);
   };
+
+  const announcement =
+    result !== null && result !== staleResult ? `Result in EUR: ${formatEuro(result.eur)}` : '';
 
   return (
     <>
@@ -112,6 +118,7 @@ export function MileageReimbursementPage() {
           </Box>
         </CardContent>
       </Card>
+      <LiveStatus message={announcement} />
     </>
   );
 }

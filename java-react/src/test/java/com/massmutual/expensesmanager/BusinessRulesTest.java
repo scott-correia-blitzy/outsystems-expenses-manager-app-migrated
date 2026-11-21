@@ -25,6 +25,7 @@ import com.massmutual.expensesmanager.repository.InvoiceEarningRepository;
 import com.massmutual.expensesmanager.repository.InvoiceExpenseRepository;
 import com.massmutual.expensesmanager.service.AmountCalculator;
 import com.massmutual.expensesmanager.service.ApiException;
+import com.massmutual.expensesmanager.service.AuthService;
 import com.massmutual.expensesmanager.service.BlogService;
 import com.massmutual.expensesmanager.service.Caller;
 import com.massmutual.expensesmanager.service.DashboardService;
@@ -58,6 +59,7 @@ import java.nio.file.Path;
 import java.time.Clock;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -100,6 +102,8 @@ import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.Primary;
 import org.springframework.core.io.ByteArrayResource;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.security.core.AuthenticationException;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -183,6 +187,10 @@ class BusinessRulesTest {
     private SeedDataLoader seedDataLoader;
     @Autowired
     private Validator validator;
+    @Autowired
+    private AuthService authService;
+    @Autowired
+    private PasswordEncoder passwordEncoder;
 
     @Autowired
     private MutableClock clock;
@@ -754,6 +762,47 @@ class BusinessRulesTest {
                 .toList();
 
         assertThat(listed).containsExactly(atTo).doesNotContain(atFrom, afterTo);
+    }
+
+    @ParameterizedTest(name = "{0}={1}")
+    @CsvSource({"from, 2024-13-45", "to, nonsense", "to, 2024-05-21T25:00"})
+    void unparsableListDateBoundIsRejectedWithTheParseFailureAsCause(String field, String value) {
+        Caller owner = newCaller(appUserRepository, Role.User);
+        String from = field.equals("from") ? value : null;
+        String to = field.equals("to") ? value : null;
+
+        assertThatExceptionOfType(ApiException.class)
+                .isThrownBy(() -> reportService.list(owner, ReportKind.EXPENSE, null, null, null, from, to))
+                .satisfies(error -> {
+                    assertThat(error.status()).isEqualTo(422);
+                    assertThat(error.code()).isEqualTo(ApiException.VALIDATION_FAILED);
+                    assertThat(error.getMessage()).isEqualTo(LegacyMessages.INVALID_VALUE);
+                    assertThat(error.fieldErrors())
+                            .containsExactly(new FieldViolation(field, LegacyMessages.INVALID_VALUE));
+                })
+                .withCauseInstanceOf(DateTimeParseException.class);
+    }
+
+    @ParameterizedTest(name = "registered user: {0}")
+    @ValueSource(booleans = {true, false})
+    void rejectedLoginIsBadCredentialsWithTheAuthenticationFailureAsCause(boolean registered) {
+        String username = "login-" + UUID.randomUUID();
+        String password = "123456";
+        if (registered) {
+            appUserRepository.save(new AppUser(username, "Login User", passwordEncoder.encode(password),
+                    EnumSet.of(Role.User)));
+        }
+        String attempt = registered ? "wrong" : password;
+
+        assertThatExceptionOfType(ApiException.class)
+                .isThrownBy(() -> authService.authenticate(username, attempt))
+                .satisfies(error -> {
+                    assertThat(error.status()).isEqualTo(401);
+                    assertThat(error.code()).isEqualTo(ApiException.BAD_CREDENTIALS);
+                    assertThat(error.getMessage()).isEqualTo(LegacyMessages.BAD_CREDENTIALS);
+                    assertThat(error.fieldErrors()).isEmpty();
+                })
+                .withCauseInstanceOf(AuthenticationException.class);
     }
 
     @ParameterizedTest(name = "sort \"{0}\"")

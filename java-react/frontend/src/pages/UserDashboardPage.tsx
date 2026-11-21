@@ -20,7 +20,7 @@ import {
 } from '@mui/material';
 import { userDashboard } from '../api/api';
 import type { DatedAmount, Kind, StatusCounts, TypeShare, UserDashboard } from '../api/types';
-import { useFeedback } from '../components/Feedback';
+import { LiveStatus, useFeedback } from '../components/Feedback';
 import { KpiCard } from '../components/KpiCard';
 import {
   formatEuro,
@@ -109,9 +109,14 @@ function DashboardSection({ title, note, children }: { title: string; note?: str
   );
 }
 
+const FOCUS_VISIBLE_SX = {
+  '&:focus-visible': { outline: 2, outlineColor: 'primary.main', outlineOffset: 2 },
+} as const;
+
 function PerDateChart({ points }: { points: DatedAmount[] }) {
   const sorted = [...points].sort((a, b) => a.date.localeCompare(b.date));
-  const largest = Math.max(0, ...sorted.map((point) => point.amountInEuros));
+  // A spread argument list overflows the engine limit on long series.
+  const largest = sorted.reduce((max, point) => Math.max(max, point.amountInEuros), 0);
 
   return (
     <Stack spacing={2}>
@@ -122,7 +127,8 @@ function PerDateChart({ points }: { points: DatedAmount[] }) {
           justifyContent: 'center',
           gap: 0.5,
           height: (theme) => theme.spacing(25),
-          borderBlockEnd: (theme) => `1px solid ${theme.palette.divider}`,
+          borderBottom: 1,
+          borderColor: 'divider',
         }}
       >
         {sorted.map((point, index) => {
@@ -136,9 +142,10 @@ function PerDateChart({ points }: { points: DatedAmount[] }) {
                 aria-label={text}
                 tabIndex={0}
                 sx={{
+                  ...FOCUS_VISIBLE_SX,
                   flex: 1,
                   maxWidth: (theme) => theme.spacing(6),
-                  minHeight: (theme) => theme.spacing(0.5),
+                  minHeight: (theme) => (point.amountInEuros > 0 ? theme.spacing(0.5) : 0),
                   height: `${percentOf(point.amountInEuros, largest)}%`,
                   bgcolor: series.color,
                 }}
@@ -173,18 +180,20 @@ function ExpensesPerType({ shares }: { shares: TypeShare[] }) {
       tabIndex={0}
       disablePadding
       // Tall enough for the four expense types; any further type scrolls.
-      sx={{ maxHeight: (theme) => theme.spacing(40), overflow: 'auto' }}
+      sx={{ ...FOCUS_VISIBLE_SX, maxHeight: (theme) => theme.spacing(40), overflow: 'auto' }}
     >
       {shares.map((share, index) => (
-        <ListItem key={share.typeId} divider={index < shares.length - 1} sx={{ gap: 2 }}>
-          <ListItemText primary={share.label} secondary={`Count: ${share.count}`} />
-          <Stack alignItems="flex-end" sx={{ flexShrink: 0, textAlign: 'end' }}>
-            <Typography variant="body2" sx={{ fontWeight: 'fontWeightBold' }}>
-              {formatPercent(share.sharePercent)}
-            </Typography>
-            <Typography variant="body2" color="text.secondary">
-              {formatEuro(share.sum)}
-            </Typography>
+        <ListItem key={share.typeId} divider={index < shares.length - 1}>
+          <Stack direction="row" spacing={2} alignItems="center" useFlexGap sx={{ width: 1 }}>
+            <ListItemText primary={share.label} secondary={`Count: ${share.count}`} />
+            <Stack alignItems="flex-end" sx={{ flexShrink: 0, textAlign: 'end' }}>
+              <Typography variant="body2" sx={{ fontWeight: 'fontWeightBold' }}>
+                {formatPercent(share.sharePercent)}
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                {formatEuro(share.sum)}
+              </Typography>
+            </Stack>
           </Stack>
         </ListItem>
       ))}
@@ -221,9 +230,11 @@ function ReportStatusSummary({ counts }: { counts: StatusCounts }) {
   return (
     <List disablePadding aria-label="Report Status Summary">
       {STATUS_ROWS.map((row, index) => (
-        <ListItem key={row.key} divider={index < STATUS_ROWS.length - 1} sx={{ gap: 2 }}>
-          <ListItemText primary={row.label} />
-          <Chip size="small" color={row.color} label={counts[row.key]} />
+        <ListItem key={row.key} divider={index < STATUS_ROWS.length - 1}>
+          <Stack direction="row" spacing={2} alignItems="center" useFlexGap sx={{ width: 1 }}>
+            <ListItemText primary={row.label} />
+            <Chip size="small" color={row.color} label={counts[row.key]} />
+          </Stack>
         </ListItem>
       ))}
     </List>
@@ -344,6 +355,7 @@ export function UserDashboardPage() {
         </Box>
       )}
       {dashboard && <DashboardContent dashboard={dashboard} />}
+      <LiveStatus message={dashboard ? 'Dashboard loaded' : ''} />
     </>
   );
 }

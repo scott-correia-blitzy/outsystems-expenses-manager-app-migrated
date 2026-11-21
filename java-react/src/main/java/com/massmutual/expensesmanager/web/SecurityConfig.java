@@ -6,11 +6,34 @@ import com.massmutual.expensesmanager.service.AppUserDetailsService;
 import com.massmutual.expensesmanager.service.LegacyMessages;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
+import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletRequestWrapper;
 import jakarta.servlet.http.HttpServletResponse;
+import jakarta.servlet.http.HttpServletResponseWrapper;
+import jakarta.servlet.http.HttpSession;
 import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.util.Collections;
+import java.util.Enumeration;
+import java.util.HashMap;
+import java.util.LinkedHashSet;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import org.apache.catalina.Context;
+import org.apache.catalina.Manager;
+import org.apache.catalina.Session;
+import org.apache.catalina.connector.Request;
+import org.apache.catalina.connector.Response;
+import org.apache.catalina.util.SessionConfig;
+import org.apache.catalina.valves.ValveBase;
+import org.apache.tomcat.util.buf.EncodedSolidusHandling;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.availability.ApplicationAvailability;
 import org.springframework.boot.availability.ReadinessState;
+import org.springframework.boot.web.embedded.tomcat.TomcatServletWebServerFactory;
+import org.springframework.boot.web.server.WebServerFactoryCustomizer;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpHeaders;
@@ -21,6 +44,7 @@ import org.springframework.security.authentication.ProviderManager;
 import org.springframework.security.authentication.dao.DaoAuthenticationProvider;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
+import org.springframework.security.config.annotation.web.configuration.WebSecurityCustomizer;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -74,6 +98,28 @@ public class SecurityConfig {
     @Bean
     public CsrfTokenRequestHandler csrfTokenRequestHandler() {
         return new SpaCsrfTokenRequestHandler();
+    }
+
+    @Bean
+    public WebSecurityCustomizer webSecurityCustomizer(JsonSecurityHandlers jsonSecurityHandlers) {
+        return web -> web.requestRejectedHandler(jsonSecurityHandlers);
+    }
+
+    // Tomcat would reject encoded (back)slashes with an HTML 400; passed through, the firewall rejects them as JSON.
+    @Bean
+    public WebServerFactoryCustomizer<TomcatServletWebServerFactory> encodedSlashPassThrough() {
+        return factory -> factory.addConnectorCustomizers(connector -> {
+            connector.setEncodedSolidusHandling(EncodedSolidusHandling.PASS_THROUGH.getValue());
+            connector.setEncodedReverseSolidusHandling(EncodedSolidusHandling.PASS_THROUGH.getValue());
+        });
+    }
+
+    // Tomcat refuses other malformed URIs before any application code runs; under /api they still get the JSON body.
+    @Bean
+    public WebServerFactoryCustomizer<TomcatServletWebServerFactory> connectorRejectionBody(
+            ObjectProvider<JsonSecurityHandlers> jsonSecurityHandlers) {
+        return factory -> factory.addContextCustomizers(context -> context.getParent().getPipeline()
+                .addValve(new ConnectorRejectionValve(context, jsonSecurityHandlers)));
     }
 
     @Bean
@@ -163,6 +209,131 @@ public class SecurityConfig {
             csrfTokenRepository.loadDeferredToken(request, response).get();
             response.setHeader(HttpHeaders.RETRY_AFTER, RETRY_AFTER_SECONDS);
             jsonSecurityHandlers.write(response, STARTING);
+        }
+    }
+
+    // Writes before passing the request on, so Boot's HTML error report finds it committed whichever valve runs first.
+    private static final class ConnectorRejectionValve extends ValveBase {
+
+        private final Context context;
+        private final ObjectProvider<JsonSecurityHandlers> jsonSecurityHandlers;
+
+        private ConnectorRejectionValve(Context context, ObjectProvider<JsonSecurityHandlers> jsonSecurityHandlers) {
+            super(true);
+            this.context = context;
+            this.jsonSecurityHandlers = jsonSecurityHandlers;
+        }
+
+        @Override
+        public void invoke(Request request, Response response) throws IOException, ServletException {
+            // An error before any Context was mapped means the connector refused the URI.
+            if (request.getContext() == null && response.isError() && !response.isCommitted()) {
+                RootContextRequest rootRequest = new RootContextRequest(request, context);
+                if (JsonSecurityHandlers.isApiPath(rootRequest)) {
+                    // Undoes sendError's suspension; an unreported error makes the error valve drop the connection.
+                    response.setSuspended(false);
+                    jsonSecurityHandlers.getObject()
+                            .reject(rootRequest, new RootContextResponse(response, context, rootRequest));
+                    response.setErrorReported();
+                }
+            }
+            getNext().invoke(request, response);
+        }
+    }
+
+    // A refused URI maps no Context, so the root application's session store is read here and never adds a session.
+    private static final class RootContextRequest extends HttpServletRequestWrapper {
+
+        private final Context context;
+        // Tomcat reports attribute removal to the mapped Context, so changes stay here; null marks a removal.
+        private final Map<String, Object> attributes = new HashMap<>();
+
+        private RootContextRequest(Request request, Context context) {
+            super(request);
+            this.context = context;
+        }
+
+        @Override
+        public String getContextPath() {
+            return context.getPath();
+        }
+
+        @Override
+        public String getServletPath() {
+            return "";
+        }
+
+        @Override
+        public Object getAttribute(String name) {
+            return attributes.containsKey(name) ? attributes.get(name) : super.getAttribute(name);
+        }
+
+        @Override
+        public Enumeration<String> getAttributeNames() {
+            Set<String> names = new LinkedHashSet<>(Collections.list(super.getAttributeNames()));
+            attributes.forEach((name, value) -> {
+                if (value == null) {
+                    names.remove(name);
+                } else {
+                    names.add(name);
+                }
+            });
+            return Collections.enumeration(names);
+        }
+
+        @Override
+        public void setAttribute(String name, Object value) {
+            attributes.put(Objects.requireNonNull(name, "name"), value);
+        }
+
+        @Override
+        public void removeAttribute(String name) {
+            attributes.put(name, null);
+        }
+
+        @Override
+        public HttpSession getSession() {
+            return getSession(false);
+        }
+
+        @Override
+        public HttpSession getSession(boolean create) {
+            Manager manager = context.getManager();
+            Cookie[] cookies = getCookies();
+            if (manager == null || cookies == null) {
+                return null;
+            }
+            String sessionCookieName = SessionConfig.getSessionCookieName(context);
+            try {
+                for (Cookie cookie : cookies) {
+                    Session session = sessionCookieName.equals(cookie.getName())
+                            ? manager.findSession(cookie.getValue()) : null;
+                    if (session != null && session.isValid()) {
+                        return session.getSession();
+                    }
+                }
+            } catch (IOException e) {
+                throw new UncheckedIOException(e);
+            }
+            return null;
+        }
+    }
+
+    // Tomcat formats cookies with the mapped Context's processor, which a refused request lacks.
+    private static final class RootContextResponse extends HttpServletResponseWrapper {
+
+        private final Context context;
+        private final HttpServletRequest request;
+
+        private RootContextResponse(Response response, Context context, HttpServletRequest request) {
+            super(response);
+            this.context = context;
+            this.request = request;
+        }
+
+        @Override
+        public void addCookie(Cookie cookie) {
+            addHeader(HttpHeaders.SET_COOKIE, context.getCookieProcessor().generateHeader(cookie, request));
         }
     }
 }

@@ -297,6 +297,24 @@ export const USD_TO_EUR_RESULT: UsdToEurResult = { eur: 90, rate: 0.9 };
 export const MILEAGE_RESULT: MileageResult = { eur: 5, rate: 0.5 };
 
 let currentSession: SessionUser | null = null;
+const sessionListeners = new Set<() => void>();
+
+export function expireSession(): void {
+  currentSession = null;
+}
+
+// A protected call without a session answers 401 and reports the expiry, as api.ts does.
+function signedIn<A extends unknown[], R>(impl: (...args: A) => R | Promise<R>): (...args: A) => Promise<R> {
+  return async (...args: A) => {
+    if (currentSession === null) {
+      for (const listener of [...sessionListeners]) {
+        listener();
+      }
+      throw new ApiError(401, 'UNAUTHENTICATED', MESSAGES.UNAUTHENTICATED);
+    }
+    return impl(...args);
+  };
+}
 
 function orNotFound<T>(item: T | undefined): T {
   if (item === undefined) {
@@ -374,69 +392,94 @@ export function installApiMocks(category: SessionCategory): void {
   vi.mocked(api.logout).mockImplementation(async () => {
     currentSession = null;
   });
-
-  vi.mocked(api.reference).mockResolvedValue(REFERENCE);
-  vi.mocked(api.userDashboard).mockResolvedValue(USER_DASHBOARD);
-  vi.mocked(api.adminDashboard).mockResolvedValue(ADMIN_DASHBOARD);
-  vi.mocked(api.usdToEur).mockResolvedValue(USD_TO_EUR_RESULT);
-  vi.mocked(api.mileage).mockResolvedValue(MILEAGE_RESULT);
-
-  vi.mocked(api.listReports).mockImplementation(async (query) => {
-    const administrator = currentSession?.roles.includes('Administrator') ?? false;
-    return rowsFor(query.kind, administrator).filter(
-      (row) =>
-        (query.status === undefined || row.status === query.status) && matches(query.q, row.code, row.title),
-    );
+  sessionListeners.clear();
+  vi.mocked(api.onSessionExpired).mockImplementation((listener) => {
+    sessionListeners.add(listener);
+    return () => {
+      sessionListeners.delete(listener);
+    };
   });
-  vi.mocked(api.getReport).mockImplementation(async (kind, id) => {
-    const known: ReportDetail | undefined = REPORT_DETAILS[`${kind}/${Number(id)}`];
-    return known ?? detail(kind, findRow(kind, id), []);
-  });
-  vi.mocked(api.createReport).mockImplementation(async (body) => {
-    const code = body.kind === 'expense' ? '13/2024 EX' : '11/2024 EA';
-    return summary(Number.parseInt(code, 10), code, body.title, 'Draft', NOW, 0);
-  });
-  vi.mocked(api.renameReport).mockImplementation(async (kind, id, title) => ({ ...findRow(kind, id), title }));
-  vi.mocked(api.submitReport).mockImplementation(async (kind, id) => ({
-    ...findRow(kind, id),
-    status: 'Submitted',
-    submitedOn: NOW,
-  }));
-  vi.mocked(api.decideReport).mockImplementation(async (kind, id, accept) => ({
-    ...findRow(kind, id),
-    status: accept ? 'Approved' : 'Declined',
-  }));
-  vi.mocked(api.deleteReport).mockResolvedValue(undefined);
 
-  vi.mocked(api.createLine).mockImplementation(async (kind, reportId, body) =>
-    lineFromBody(kind, { ...FLIGHT_TICKETS, id: 122, reportId }, body),
+  vi.mocked(api.reference).mockImplementation(signedIn(() => REFERENCE));
+  vi.mocked(api.userDashboard).mockImplementation(signedIn(() => USER_DASHBOARD));
+  vi.mocked(api.adminDashboard).mockImplementation(signedIn(() => ADMIN_DASHBOARD));
+  vi.mocked(api.usdToEur).mockImplementation(signedIn(() => USD_TO_EUR_RESULT));
+  vi.mocked(api.mileage).mockImplementation(signedIn(() => MILEAGE_RESULT));
+
+  vi.mocked(api.listReports).mockImplementation(
+    signedIn(async (query) => {
+      const administrator = currentSession?.roles.includes('Administrator') ?? false;
+      return rowsFor(query.kind, administrator).filter(
+        (row) =>
+          (query.status === undefined || row.status === query.status) && matches(query.q, row.code, row.title),
+      );
+    }),
   );
-  vi.mocked(api.updateLine).mockImplementation(async (kind, lineId, body) =>
-    lineFromBody(kind, findLine(kind, lineId) ?? { ...FLIGHT_TICKETS, id: lineId }, body),
+  vi.mocked(api.getReport).mockImplementation(
+    signedIn(async (kind, id) => {
+      const known: ReportDetail | undefined = REPORT_DETAILS[`${kind}/${Number(id)}`];
+      return known ?? detail(kind, findRow(kind, id), []);
+    }),
   );
-  vi.mocked(api.deleteLine).mockResolvedValue(undefined);
-  vi.mocked(api.uploadInvoice).mockResolvedValue(undefined);
+  vi.mocked(api.createReport).mockImplementation(
+    signedIn(async (body) => {
+      const code = body.kind === 'expense' ? '13/2024 EX' : '11/2024 EA';
+      return summary(Number.parseInt(code, 10), code, body.title, 'Draft', NOW, 0);
+    }),
+  );
+  vi.mocked(api.renameReport).mockImplementation(
+    signedIn(async (kind, id, title) => ({ ...findRow(kind, id), title })),
+  );
+  vi.mocked(api.submitReport).mockImplementation(
+    signedIn(async (kind, id) => ({
+      ...findRow(kind, id),
+      status: 'Submitted',
+      submitedOn: NOW,
+    })),
+  );
+  vi.mocked(api.decideReport).mockImplementation(
+    signedIn(async (kind, id, accept) => ({
+      ...findRow(kind, id),
+      status: accept ? 'Approved' : 'Declined',
+    })),
+  );
+  vi.mocked(api.deleteReport).mockImplementation(signedIn(() => undefined));
+
+  vi.mocked(api.createLine).mockImplementation(
+    signedIn(async (kind, reportId, body) => lineFromBody(kind, { ...FLIGHT_TICKETS, id: 122, reportId }, body)),
+  );
+  vi.mocked(api.updateLine).mockImplementation(
+    signedIn(async (kind, lineId, body) =>
+      lineFromBody(kind, findLine(kind, lineId) ?? { ...FLIGHT_TICKETS, id: lineId }, body),
+    ),
+  );
+  vi.mocked(api.deleteLine).mockImplementation(signedIn(() => undefined));
+  vi.mocked(api.uploadInvoice).mockImplementation(signedIn(() => undefined));
   vi.mocked(api.invoiceDownloadUrl).mockImplementation((kind, lineId) => `/api/lines/${kind}/${lineId}/invoice`);
 
-  vi.mocked(api.listBlogPosts).mockImplementation(async (q) =>
-    BLOG_POSTS.filter((post) => matches(q, post.title, post.description)),
+  vi.mocked(api.listBlogPosts).mockImplementation(
+    signedIn(async (q) => BLOG_POSTS.filter((post) => matches(q, post.title, post.description))),
   );
-  vi.mocked(api.getBlogPost).mockImplementation(async (id) => findPost(id));
-  vi.mocked(api.createBlogPost).mockImplementation(async (body) => ({
-    id: 3,
-    title: body.title,
-    description: body.description,
-    createdOn: NOW,
-    createdByName: ADMIN,
-    updatedOn: NOW,
-    updatedByName: ADMIN,
-  }));
-  vi.mocked(api.updateBlogPost).mockImplementation(async (id, body) => ({
-    ...findPost(id),
-    title: body.title,
-    description: body.description,
-    updatedOn: NOW,
-    updatedByName: ADMIN,
-  }));
+  vi.mocked(api.getBlogPost).mockImplementation(signedIn(async (id) => findPost(id)));
+  vi.mocked(api.createBlogPost).mockImplementation(
+    signedIn(async (body) => ({
+      id: 3,
+      title: body.title,
+      description: body.description,
+      createdOn: NOW,
+      createdByName: ADMIN,
+      updatedOn: NOW,
+      updatedByName: ADMIN,
+    })),
+  );
+  vi.mocked(api.updateBlogPost).mockImplementation(
+    signedIn(async (id, body) => ({
+      ...findPost(id),
+      title: body.title,
+      description: body.description,
+      updatedOn: NOW,
+      updatedByName: ADMIN,
+    })),
+  );
 }
 

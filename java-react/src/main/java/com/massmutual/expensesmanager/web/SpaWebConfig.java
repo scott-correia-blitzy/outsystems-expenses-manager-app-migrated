@@ -3,13 +3,20 @@ package com.massmutual.expensesmanager.web;
 import com.massmutual.expensesmanager.domain.ReportKind;
 import com.massmutual.expensesmanager.service.ApiException;
 import com.massmutual.expensesmanager.service.LegacyMessages;
+import jakarta.servlet.RequestDispatcher;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import org.springframework.boot.web.servlet.error.ErrorController;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.convert.converter.Converter;
 import org.springframework.core.io.Resource;
 import org.springframework.format.FormatterRegistry;
+import org.springframework.stereotype.Controller;
 import org.springframework.web.bind.WebDataBinder;
 import org.springframework.web.bind.annotation.ControllerAdvice;
 import org.springframework.web.bind.annotation.InitBinder;
+import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.servlet.config.annotation.ResourceHandlerRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 import org.springframework.web.servlet.resource.PathResourceResolver;
@@ -52,6 +59,26 @@ public class SpaWebConfig implements WebMvcConfigurer {
                     setValue(REPORT_KIND.convert(text));
                 }
             });
+        }
+    }
+
+    // Replaces Boot's error page: a direct visit is one more SPA path, while a container error dispatch gets JSON.
+    @Controller
+    static class SpaErrorController implements ErrorController {
+
+        private final JsonSecurityHandlers jsonSecurityHandlers;
+
+        SpaErrorController(JsonSecurityHandlers jsonSecurityHandlers) {
+            this.jsonSecurityHandlers = jsonSecurityHandlers;
+        }
+
+        @RequestMapping("${server.error.path:/error}")
+        void error(HttpServletRequest request, HttpServletResponse response) throws ServletException, IOException {
+            if (request.getAttribute(RequestDispatcher.ERROR_STATUS_CODE) instanceof Integer status) {
+                jsonSecurityHandlers.write(response, ErrorResponse.forStatus(status));
+                return;
+            }
+            request.getRequestDispatcher("/" + INDEX_HTML).forward(request, response);
         }
     }
 

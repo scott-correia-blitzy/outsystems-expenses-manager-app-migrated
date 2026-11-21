@@ -15,6 +15,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.UUID;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -23,19 +24,32 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.logging.LogLevel;
+import org.springframework.boot.logging.LoggerConfiguration;
+import org.springframework.boot.logging.LoggingSystem;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.core.env.Environment;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+import org.springframework.mock.web.MockHttpServletRequest;
+import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.web.firewall.RequestRejectedException;
 import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.web.HttpMediaTypeNotAcceptableException;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -59,6 +73,9 @@ import com.massmutual.expensesmanager.service.LegacyMessages;
 import com.massmutual.expensesmanager.support.ApiClient;
 import com.massmutual.expensesmanager.support.ApiClient.Response;
 import com.massmutual.expensesmanager.support.TestDatabase;
+import com.massmutual.expensesmanager.web.ApiExceptionHandler;
+import com.massmutual.expensesmanager.web.ErrorResponse;
+import com.massmutual.expensesmanager.web.JsonSecurityHandlers;
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @DirtiesContext
@@ -82,6 +99,18 @@ class RoleMatrixIT {
             "/login", "/invalid-permissions", "/dashboard", "/reports", "/reports/expense/1", "/reports/earning/1",
             "/admin", "/admin/reports/expense/1", "/admin/reports/earning/1",
             "/blog", "/blog/posts/1", "/tools/usd-to-eur", "/tools/mileage", "/home");
+    private static final String FIREWALL_REJECTED_API_PATH = "/api/blog/%2e%2e%2f";
+    // Decoded, its dot segments climb above the root, so Tomcat refuses it before the firewall runs.
+    private static final String CONNECTOR_REJECTED_API_PATH = "/api/%2e%2e/%2e%2e/blog";
+    // All but the first are rejected before any controller sees them, by the firewall or by Tomcat itself.
+    private static final List<String> UNMAPPED_API_PATHS = List.of("/api/does-not-exist",
+            "/api/reports/expense/..%2F1", FIREWALL_REJECTED_API_PATH, "/api/blog//x", "/api/blog;x=1",
+            CONNECTOR_REJECTED_API_PATH, "/api/blog/%2e%2e/%2e%2e/%2e%2e/x");
+    private static final String REJECTED_METHOD = "PROPFIND";
+    private static final String REJECTED_SPA_PATH = "/reports//x";
+    private static final String ERROR_PATH = "/error";
+    private static final ErrorResponse INTERNAL_ERROR_BODY =
+            ErrorResponse.of(500, "INTERNAL_ERROR", LegacyMessages.INTERNAL_ERROR);
 
     @TempDir
     static Path dir;
@@ -405,11 +434,118 @@ class RoleMatrixIT {
         }
     }
 
+    static Stream<Arguments> unmappedApiPathCases() {
+        Call rejectedMethod = new Call(REJECTED_METHOD + " /api/blog",
+                c -> c.sendWithoutCsrf(REJECTED_METHOD, "/api/blog", null));
+        return Arrays.stream(Account.values())
+                .flatMap(account -> Stream.concat(UNMAPPED_API_PATHS.stream().map(RoleMatrixIT::get),
+                        Stream.of(rejectedMethod)).map(call -> Arguments.of(account, call)));
+    }
+
+    @ParameterizedTest(name = "{0} calls {1}")
+    @MethodSource("unmappedApiPathCases")
+    @DisplayName("Unmapped API paths need a session and then answer 404")
+    void unmappedApiPath(Account account, Call call) {
+        Response response = expect(account, call, account.signedIn() ? 404 : 401);
+        assertThat(response.header("Content-Type")).as(call.endpoint()).startsWith(MediaType.APPLICATION_JSON_VALUE);
+        assertThat(response.header("X-Content-Type-Options")).as(call.endpoint()).isEqualTo("nosniff");
+        assertThat(response.header("Cache-Control")).as(call.endpoint()).contains("no-store");
+    }
+
     @ParameterizedTest(name = "{0}")
     @EnumSource(Account.class)
-    @DisplayName("Unmapped API paths need a session and then answer 404")
-    void unmappedApiPath(Account account) {
-        expect(account, get("/api/does-not-exist"), account.signedIn() ? 404 : 401);
+    @DisplayName("A firewall-rejected SPA path answers the JSON 404")
+    void rejectedSpaPath(Account account) {
+        Response response = expect(account, get(REJECTED_SPA_PATH), 404);
+        assertThat(response.header("Content-Type")).startsWith(MediaType.APPLICATION_JSON_VALUE);
+        assertThat(response.header("X-Content-Type-Options")).isEqualTo("nosniff");
+        assertThat(response.header("Cache-Control")).contains("no-store");
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {FIREWALL_REJECTED_API_PATH, CONNECTOR_REJECTED_API_PATH})
+    @DisplayName("A rejected API path issues the CSRF token cookie that any other 401 issues")
+    void rejectedApiPathIssuesCsrfToken(String path) {
+        try (ApiClient rejected = new ApiClient(port); ApiClient reference = new ApiClient(port)) {
+            Response response = assertStatus(Account.ANONYMOUS, "GET " + path, rejected.get(path), 401);
+            assertThat(rejected.cookie(ApiClient.CSRF_COOKIE)).as(path).isPresent();
+            assertThat(csrfCookieAttributes(response)).isEqualTo(csrfCookieAttributes(reference.me()));
+        }
+    }
+
+    @Test
+    @ExtendWith(OutputCaptureExtension.class)
+    @DisplayName("Firewall rejections are logged at DEBUG without the rejection message")
+    void firewallRejectionLogOmitsMessage(@Autowired JsonSecurityHandlers handlers,
+            @Autowired LoggingSystem loggingSystem, CapturedOutput output) throws Exception {
+        String marker = "REJECTED_HEADER_" + UUID.randomUUID().toString().replace("-", "");
+        String logger = JsonSecurityHandlers.class.getName();
+        LoggerConfiguration configuration = loggingSystem.getLoggerConfiguration(logger);
+        LogLevel configuredLevel = configuration == null ? null : configuration.getConfiguredLevel();
+        loggingSystem.setLogLevel(logger, LogLevel.DEBUG);
+        try {
+            int logStart = output.getAll().length();
+            MockHttpServletResponse response = new MockHttpServletResponse();
+
+            handlers.handle(new MockHttpServletRequest("GET", "/api/blog"), response, new RequestRejectedException(
+                    "The request was rejected because the header value \"" + marker + "\" is not allowed."));
+
+            assertThat(response.getStatus()).isEqualTo(401);
+            assertThat(output.getAll().substring(logStart))
+                    .contains("Firewall rejected a request (REQUEST dispatch)")
+                    .doesNotContain(marker);
+        } finally {
+            loggingSystem.setLogLevel(logger, configuredLevel);
+        }
+    }
+
+    @ParameterizedTest(name = "Accept: {0}")
+    @ValueSource(strings = {"%s;;==,,/", "text/csv;marker=%s"})
+    @ExtendWith(OutputCaptureExtension.class)
+    @DisplayName("An unusable Accept header gets the generic 500 and stays out of the log")
+    void unusableAcceptHeaderIsNotLogged(String acceptTemplate, CapturedOutput output) {
+        String marker = "ACCEPT_MARKER_" + UUID.randomUUID().toString().replace("-", "");
+        int logStart = output.getAll().length();
+
+        Response response = client(Account.EM_USER1)
+                .sendWithoutCsrf("GET", "/api/blog", null, Map.of("Accept", acceptTemplate.formatted(marker)));
+
+        assertThat(response.status()).as(response.toString()).isEqualTo(500);
+        assertThat(response.header("Content-Type")).startsWith(MediaType.APPLICATION_JSON_VALUE);
+        assertThat(response.as(ErrorResponse.class)).isEqualTo(INTERNAL_ERROR_BODY);
+        assertThat(output.getAll().substring(logStart)).doesNotContain(marker);
+        List<String> handlerLines = handlerLogLines(output, logStart);
+        assertThat(handlerLines).noneMatch(line -> line.contains("ERROR"));
+        assertThat(handlerLines).anyMatch(line ->
+                line.contains("WARN") && line.contains(HttpMediaTypeNotAcceptableException.class.getName()));
+    }
+
+    @Test
+    @ExtendWith(OutputCaptureExtension.class)
+    @DisplayName("Unexpected errors are logged with class names and stack frames but no exception message")
+    void unexpectedErrorLogOmitsExceptionMessages(@Autowired ApiExceptionHandler handler, CapturedOutput output) {
+        String password = "PASSWORD_" + UUID.randomUUID();
+        String token = "TOKEN_" + UUID.randomUUID();
+        String header = "HEADER_" + UUID.randomUUID();
+        IllegalStateException failure =
+                new IllegalStateException("password=" + password, new IllegalArgumentException("Bearer " + token));
+        UnsupportedOperationException suppressed = new UnsupportedOperationException("X-Api-Key: " + header);
+        // Pointing back at the top exception makes the chain a cycle the redaction must survive.
+        suppressed.initCause(failure);
+        failure.addSuppressed(suppressed);
+        int logStart = output.getAll().length();
+
+        ResponseEntity<ErrorResponse> response =
+                handler.handleUnexpected(failure, new MockHttpServletRequest("GET", "/api/blog"));
+
+        assertThat(response.getStatusCode().value()).isEqualTo(500);
+        assertThat(response.getHeaders().getContentType()).isEqualTo(MediaType.APPLICATION_JSON);
+        assertThat(response.getBody()).isEqualTo(INTERNAL_ERROR_BODY);
+        String logged = output.getAll().substring(logStart);
+        assertThat(logged).contains("Unhandled error on GET /api/blog",
+                IllegalStateException.class.getName(), IllegalArgumentException.class.getName(),
+                UnsupportedOperationException.class.getName(), "at " + RoleMatrixIT.class.getName() + ".");
+        assertThat(logged).doesNotContain(password, token, header);
     }
 
     static Stream<Arguments> listScopeCases() {
@@ -452,12 +588,13 @@ class RoleMatrixIT {
 
     static Stream<Arguments> deepLinkCases() {
         return MATRIX_CALLERS.stream()
-                .flatMap(account -> SPA_ROUTES.stream().map(path -> Arguments.of(account, path)));
+                .flatMap(account -> Stream.concat(SPA_ROUTES.stream(), Stream.of(ERROR_PATH))
+                        .map(path -> Arguments.of(account, path)));
     }
 
     @ParameterizedTest(name = "{0} opens {1}")
     @MethodSource("deepLinkCases")
-    @DisplayName("Every SPA route loads index.html as a deep link")
+    @DisplayName("Every SPA route, and a direct visit to the error path, loads index.html")
     void deepLink(Account account, String path) {
         Response response = client(account).get(path);
         assertThat(response.status()).as("%s as %s: %s", path, account, response).isEqualTo(200);
@@ -474,6 +611,19 @@ class RoleMatrixIT {
 
     private static boolean isOwnedBy(Account account, ReportEntity report) {
         return Objects.equals(report.getSubmitedBy(), userIds.get(account));
+    }
+
+    private static List<String> handlerLogLines(CapturedOutput output, int logStart) {
+        return output.getAll().substring(logStart).lines()
+                .filter(line -> line.contains(ApiExceptionHandler.class.getSimpleName()))
+                .toList();
+    }
+
+    private static List<String> csrfCookieAttributes(Response response) {
+        return response.headerValues("Set-Cookie").stream()
+                .filter(cookie -> cookie.startsWith(ApiClient.CSRF_COOKIE + "="))
+                .map(cookie -> cookie.replaceFirst("^[^;]*", ""))
+                .toList();
     }
 
     private static Response expect(Account account, Call call, int status) {

@@ -52,6 +52,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
+  useEffect(
+    () =>
+      api.onSessionExpired(() => {
+        sessionGeneration.current += 1;
+        setState(ANONYMOUS);
+      }),
+    [],
+  );
+
   const login = useCallback(async (credentials: LoginRequest): Promise<SessionUser> => {
     const user = await api.login({
       username: credentials.username,

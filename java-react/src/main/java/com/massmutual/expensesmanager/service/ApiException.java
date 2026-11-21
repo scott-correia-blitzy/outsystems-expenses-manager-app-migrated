@@ -5,7 +5,7 @@ import com.massmutual.expensesmanager.service.model.FieldViolation;
 import java.util.List;
 import java.util.Objects;
 
-public class ApiException extends RuntimeException {
+public final class ApiException extends RuntimeException {
 
     private static final long serialVersionUID = 1L;
 
@@ -30,6 +30,14 @@ public class ApiException extends RuntimeException {
         this.status = status;
         this.code = Objects.requireNonNull(code, "code");
         this.fieldErrors = fieldErrors == null ? List.of() : List.copyOf(fieldErrors);
+    }
+
+    // Without a cause the cause stays unset, so callers can still attach one with initCause.
+    public ApiException(int status, String code, String message, List<FieldViolation> fieldErrors, Throwable cause) {
+        this(status, code, message, fieldErrors);
+        if (cause != null) {
+            initCause(cause);
+        }
     }
 
     public int status() {
@@ -65,14 +73,22 @@ public class ApiException extends RuntimeException {
     }
 
     public static ApiException validation(String field, String message) {
-        return validation(List.of(new FieldViolation(field, message)));
+        return validation(field, message, null);
+    }
+
+    public static ApiException validation(String field, String message, Throwable cause) {
+        return validation(List.of(new FieldViolation(field, message)), cause);
     }
 
     public static ApiException validation(List<FieldViolation> violations) {
+        return validation(violations, null);
+    }
+
+    private static ApiException validation(List<FieldViolation> violations, Throwable cause) {
         if (violations == null || violations.isEmpty()) {
             throw new IllegalArgumentException("At least one field violation is required");
         }
-        return new ApiException(422, VALIDATION_FAILED, violations.getFirst().message(), violations);
+        return new ApiException(422, VALIDATION_FAILED, violations.getFirst().message(), violations, cause);
     }
 
     public static ApiException noLines() {
@@ -91,7 +107,7 @@ public class ApiException extends RuntimeException {
         return new ApiException(413, PAYLOAD_TOO_LARGE, LegacyMessages.FILE_TOO_LARGE, List.of());
     }
 
-    public static ApiException badCredentials() {
-        return new ApiException(401, BAD_CREDENTIALS, LegacyMessages.BAD_CREDENTIALS, List.of());
+    public static ApiException badCredentials(Throwable cause) {
+        return new ApiException(401, BAD_CREDENTIALS, LegacyMessages.BAD_CREDENTIALS, List.of(), cause);
     }
 }

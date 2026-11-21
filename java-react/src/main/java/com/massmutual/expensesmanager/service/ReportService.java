@@ -331,7 +331,7 @@ public class ReportService {
         try {
             return text.indexOf('T') < 0 ? LocalDate.parse(text).atStartOfDay() : LocalDateTime.parse(text);
         } catch (DateTimeParseException e) {
-            throw ApiException.validation(field, LegacyMessages.INVALID_VALUE);
+            throw ApiException.validation(field, LegacyMessages.INVALID_VALUE, e);
         }
     }
 

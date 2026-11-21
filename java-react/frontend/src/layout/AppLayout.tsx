@@ -186,10 +186,17 @@ export function AppLayout({ children }: { children: ReactNode }) {
                   <NavEntry key={item.label} item={item} pathname={pathname} />
                 ))}
               </Stack>
-              <Stack direction="row" spacing={1.5} useFlexGap alignItems="center">
+              <Stack
+                direction="row"
+                spacing={1.5}
+                useFlexGap
+                alignItems="center"
+                sx={{ minWidth: 0, maxWidth: '100%' }}
+              >
                 <Avatar
                   aria-hidden="true"
                   sx={{
+                    flexShrink: 0,
                     width: (theme) => theme.spacing(4),
                     height: (theme) => theme.spacing(4),
                     typography: 'body2',
@@ -197,10 +204,15 @@ export function AppLayout({ children }: { children: ReactNode }) {
                 >
                   {initials(user.displayName, user.username)}
                 </Avatar>
-                <Typography variant="body2" color="inherit" noWrap>
+                <Typography variant="body2" color="inherit" noWrap sx={{ minWidth: 0 }}>
                   {user.displayName}
                 </Typography>
-                <IconButton color="inherit" aria-label="Logout" onClick={handleLogout} sx={barFocusRing}>
+                <IconButton
+                  color="inherit"
+                  aria-label="Logout"
+                  onClick={handleLogout}
+                  sx={{ ...barFocusRing, flexShrink: 0 }}
+                >
                   <LogoutIcon />
                 </IconButton>
               </Stack>

@@ -2,6 +2,7 @@ package com.massmutual.expensesmanager.web;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.massmutual.expensesmanager.service.ApiException;
+import com.massmutual.expensesmanager.service.LegacyMessages;
 import com.massmutual.expensesmanager.service.model.FieldViolation;
 
 import java.util.List;
@@ -10,9 +11,22 @@ import java.util.List;
 public record ErrorResponse(int status, String code, String message, List<FieldViolation> fieldErrors) {
 
     private static final int UNPROCESSABLE_ENTITY = 422;
+    private static final int INTERNAL_SERVER_ERROR = 500;
 
     public static ErrorResponse of(int status, String code, String message) {
         return new ErrorResponse(status, code, message, null);
+    }
+
+    // A bare status has no detail, so only statuses with a contract code keep it; the rest are server errors.
+    public static ErrorResponse forStatus(int status) {
+        return switch (status) {
+            case 401 -> of(status, ApiException.UNAUTHENTICATED, LegacyMessages.UNAUTHENTICATED);
+            case 403 -> of(status, ApiException.FORBIDDEN, LegacyMessages.NO_PERMISSIONS);
+            case 404 -> of(status, ApiException.NOT_FOUND, LegacyMessages.NOT_FOUND);
+            case 413 -> of(status, ApiException.PAYLOAD_TOO_LARGE, LegacyMessages.FILE_TOO_LARGE);
+            case 415 -> of(status, ApiException.UNSUPPORTED_MEDIA_TYPE, LegacyMessages.INVALID_VALUE);
+            default -> of(INTERNAL_SERVER_ERROR, ApiExceptionHandler.INTERNAL_ERROR, LegacyMessages.INTERNAL_ERROR);
+        };
     }
 
     public static ErrorResponse validation(String message, List<FieldViolation> fieldErrors) {

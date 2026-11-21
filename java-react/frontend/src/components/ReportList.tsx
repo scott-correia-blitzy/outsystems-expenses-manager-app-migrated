@@ -1,9 +1,10 @@
-import { useEffect, useId, useState, type ChangeEvent, type MouseEvent, type ReactNode } from 'react';
+import { useEffect, useId, useMemo, useRef, useState, type ChangeEvent, type MouseEvent, type ReactNode } from 'react';
 import { useNavigate } from 'react-router';
 import {
   Accordion,
   AccordionDetails,
   AccordionSummary,
+  Alert,
   Box,
   Button,
   Chip,
@@ -11,6 +12,8 @@ import {
   Grid,
   IconButton,
   InputAdornment,
+  InputLabel,
+  MenuItem,
   Paper,
   Stack,
   SvgIcon,
@@ -26,7 +29,9 @@ import {
   ToggleButton,
   ToggleButtonGroup,
   Typography,
+  type InputLabelProps,
   type SvgIconProps,
+  type Theme,
 } from '@mui/material';
 import { decideReport, getReport, listReports, reference as loadReference } from '../api/api';
 import type {
@@ -43,7 +48,7 @@ import type {
 import { formatEuro, formatListDate, formatRowDate } from '../format/format';
 import { adminReportPath, reportPath } from '../routes';
 import { useFeedback } from './Feedback';
-import { ViewIcon } from './LineTable';
+import { ResultStatus, ViewIcon } from './LineTable';
 import { LineViewDialog } from './LineViewDialog';
 import { StatusTag } from './StatusTag';
 
@@ -88,7 +93,7 @@ const SORT_LABEL_FOCUS_SX = {
   '&.Mui-focusVisible': {
     outline: 2,
     outlineColor: 'primary.main',
-    outlineOffset: 2,
+    outlineOffset: (theme: Theme) => theme.spacing(0.25),
     borderRadius: 0.5,
   },
 } as const;
@@ -149,6 +154,11 @@ function ExpandIcon(props: SvgIconProps) {
       <path d="M16.59 8.59 12 13.17 7.41 8.59 6 10l6 6 6-6z" />
     </SvgIcon>
   );
+}
+
+// A <label for> cannot target the select's div; the select names itself through aria-labelledby.
+function SelectLabel({ htmlFor: _htmlFor, ...props }: InputLabelProps) {
+  return <InputLabel {...props} component="span" sx={{ cursor: 'default' }} />;
 }
 
 type LineSubTableProps = {
@@ -262,6 +272,14 @@ function ReportRow({
         >
           {columns.map((column) => (
             <Grid key={column.key} component="span" size={{ xs: gridColumns / 2, md: column.size }}>
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                component="span"
+                sx={{ display: { xs: 'block', md: 'none' } }}
+              >
+                {column.label}
+              </Typography>
               {column.render(row)}
             </Grid>
           ))}
@@ -304,7 +322,7 @@ function ReportRow({
             <LineSubTable kind={kind} code={row.code} lines={detail.lines} onView={onViewLine} />
           ) : (
             <Stack alignItems="center" sx={{ paddingBlock: 2 }}>
-              <CircularProgress size={32} aria-label="Loading report lines" />
+              <CircularProgress aria-label="Loading report lines" />
             </Stack>
           )}
         </Stack>
@@ -326,13 +344,15 @@ export function ReportList({ mode, kind, onDecided }: ReportListProps) {
   const [sort, setSort] = useState<SortState>(null);
   const [rows, setRows] = useState<ReportSummary[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadFailed, setLoadFailed] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
   const [page, setPage] = useState(0);
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [details, setDetails] = useState<Record<number, ReportDetail>>({});
-  const [decidingId, setDecidingId] = useState<number | null>(null);
+  const decisionPending = useRef(false);
+  const [deciding, setDeciding] = useState(false);
   const [reference, setReference] = useState<ReferenceData | null>(null);
-  const [viewLine, setViewLine] = useState<LineView | null>(null);
+  const [viewer, setViewer] = useState<{ kind: Kind; line: LineView } | null>(null);
 
   // Reset during render so rows and details of the previous kind are never shown with the new one.
   const [listedKind, setListedKind] = useState(kind);
@@ -343,7 +363,13 @@ export function ReportList({ mode, kind, onDecided }: ReportListProps) {
     setExpandedId(null);
     setDetails({});
     setPage(0);
+    setViewer(null);
   }
+
+  const shownKind = useRef(kind);
+  useEffect(() => {
+    shownKind.current = kind;
+  }, [kind]);
 
   useEffect(() => {
     let cancelled = false;
@@ -356,15 +382,20 @@ export function ReportList({ mode, kind, onDecided }: ReportListProps) {
       to: to || undefined,
     };
     setLoading(true);
+    setLoadFailed(false);
     listReports(query)
       .then((result) => {
         if (!cancelled) {
           setRows(result);
+          setLoadFailed(false);
         }
       })
       .catch((err: unknown) => {
         if (!cancelled) {
           feedback.error(err);
+          // Rows of the previous filters would otherwise stay on screen as if they matched these.
+          setRows([]);
+          setLoadFailed(true);
         }
       })
       .finally(() => {
@@ -401,12 +432,15 @@ export function ReportList({ mode, kind, onDecided }: ReportListProps) {
     };
   }, [kind, expandedId, detailMissing, feedback]);
 
-  const columns = columnsFor(mode, kind);
-  const gridColumns = columns.reduce((sum, column) => sum + column.size, 0);
+  const columns = useMemo(() => columnsFor(mode, kind), [mode, kind]);
+  const gridColumns = useMemo(() => columns.reduce((sum, column) => sum + column.size, 0), [columns]);
   const rowsPerPage = ROWS_PER_PAGE[mode];
   const lastPage = Math.max(0, Math.ceil(rows.length / rowsPerPage) - 1);
   const currentPage = Math.min(page, lastPage);
-  const visibleRows = rows.slice(currentPage * rowsPerPage, (currentPage + 1) * rowsPerPage);
+  const visibleRows = useMemo(
+    () => rows.slice(currentPage * rowsPerPage, (currentPage + 1) * rowsPerPage),
+    [rows, currentPage, rowsPerPage],
+  );
 
   const changeStatus = (_event: MouseEvent<HTMLElement>, next: StatusFilter | null) => {
     if (next !== null) {
@@ -437,6 +471,13 @@ export function ReportList({ mode, kind, onDecided }: ReportListProps) {
     setPage(0);
   };
 
+  const selectSort = (event: ChangeEvent<HTMLInputElement>) => {
+    const [key, dir] = event.target.value.split(',');
+    const column = columns.find((candidate) => candidate.key === key);
+    setSort(column && (dir === 'asc' || dir === 'desc') ? { column: column.key, dir } : null);
+    setPage(0);
+  };
+
   const toggleRow = (id: number, isExpanded: boolean) => {
     setExpandedId(isExpanded ? id : null);
   };
@@ -446,36 +487,46 @@ export function ReportList({ mode, kind, onDecided }: ReportListProps) {
   };
 
   const decide = async (row: ReportSummary, accept: boolean) => {
-    setDecidingId(row.id);
+    if (decisionPending.current) {
+      return;
+    }
+    decisionPending.current = true;
+    setDeciding(true);
     try {
       await decideReport(kind, row.id, accept);
       feedback.success(
         `${kind === 'expense' ? 'Expense' : 'Earning'} report was ${accept ? 'approved' : 'declined'}`,
       );
-      setDetails((current) => {
-        const next = { ...current };
-        delete next[row.id];
-        return next;
-      });
+      // Expense and earning ids overlap, so a detail cached after a kind switch is not this report's.
+      if (shownKind.current === kind) {
+        setDetails((current) => {
+          const next = { ...current };
+          delete next[row.id];
+          return next;
+        });
+      }
       setReloadKey((key) => key + 1);
       onDecided?.();
     } catch (err) {
       feedback.error(err);
     } finally {
-      setDecidingId(null);
+      decisionPending.current = false;
+      setDeciding(false);
     }
   };
 
   const viewReportLine = async (line: LineView) => {
+    // Set before the reference loads; a kind switch clears it, so a late reply opens nothing.
+    const pending = { kind, line };
+    setViewer(pending);
     if (reference) {
-      setViewLine(line);
       return;
     }
     try {
       setReference(await loadReference());
-      setViewLine(line);
     } catch (err) {
       feedback.error(err);
+      setViewer((current) => (current === pending ? null : current));
     }
   };
 
@@ -505,7 +556,7 @@ export function ReportList({ mode, kind, onDecided }: ReportListProps) {
         role="group"
         aria-labelledby={rangeLabelId}
         spacing={0.5}
-        sx={{ flexGrow: 1, minInlineSize: { md: '18rem' } }}
+        sx={{ flexGrow: 1, minInlineSize: (theme) => ({ md: theme.spacing(36) }) }}
       >
         <Typography id={rangeLabelId} variant="caption" color="text.secondary">
           Filter by date range
@@ -536,7 +587,7 @@ export function ReportList({ mode, kind, onDecided }: ReportListProps) {
         placeholder="Search by title"
         value={q}
         onChange={changeSearch}
-        sx={{ flexGrow: 1, minInlineSize: { md: '15rem' } }}
+        sx={{ flexGrow: 1, minInlineSize: (theme) => ({ md: theme.spacing(30) }) }}
         slotProps={{
           htmlInput: { 'aria-label': 'Search by title' },
           input: {
@@ -554,45 +605,81 @@ export function ReportList({ mode, kind, onDecided }: ReportListProps) {
   const expandIconSpacer = <Box aria-hidden sx={{ inlineSize: (theme) => theme.spacing(3), flexShrink: 0 }} />;
 
   const header = (
-    <Paper variant="outlined" sx={{ display: { xs: 'none', md: 'block' } }}>
-      <Stack direction="row" alignItems="center" sx={{ paddingInline: 2, paddingBlock: 1.5 }}>
-        <Grid container columns={gridColumns} columnSpacing={2} sx={{ flexGrow: 1 }}>
-          {columns.map((column) => {
-            const active = sort?.column === column.key;
-            const direction = active ? sort.dir : 'asc';
-            return (
-              <Grid key={column.key} size={column.size}>
-                <TableSortLabel
-                  active={active}
-                  direction={direction}
-                  onClick={() => toggleSort(column.key)}
-                  aria-label={
-                    active
-                      ? `${column.label}, sorted ${direction === 'asc' ? 'ascending' : 'descending'}`
-                      : undefined
-                  }
-                  sx={SORT_LABEL_FOCUS_SX}
-                >
-                  {column.label}
-                </TableSortLabel>
-              </Grid>
-            );
-          })}
-        </Grid>
-        {expandIconSpacer}
-      </Stack>
-    </Paper>
+    <Box>
+      <TextField
+        select
+        fullWidth
+        size="small"
+        name="sort"
+        label="Sort by"
+        value={sort ? `${sort.column},${sort.dir}` : ''}
+        onChange={selectSort}
+        slots={{ inputLabel: SelectLabel }}
+        slotProps={{ select: { displayEmpty: true }, inputLabel: { shrink: true } }}
+        sx={{ display: { md: 'none' } }}
+      >
+        <MenuItem value="">Default</MenuItem>
+        {columns.flatMap((column) =>
+          (['asc', 'desc'] as const).map((dir) => (
+            <MenuItem key={`${column.key},${dir}`} value={`${column.key},${dir}`}>
+              {`${column.label}, ${dir === 'asc' ? 'ascending' : 'descending'}`}
+            </MenuItem>
+          )),
+        )}
+      </TextField>
+      <Paper variant="outlined" sx={{ display: { xs: 'none', md: 'block' } }}>
+        <Stack direction="row" alignItems="center" sx={{ paddingInline: 2, paddingBlock: 1.5 }}>
+          <Grid container columns={gridColumns} columnSpacing={2} sx={{ flexGrow: 1 }}>
+            {columns.map((column) => {
+              const active = sort?.column === column.key;
+              const direction = active ? sort.dir : 'asc';
+              return (
+                <Grid key={column.key} size={column.size}>
+                  <TableSortLabel
+                    active={active}
+                    direction={direction}
+                    onClick={() => toggleSort(column.key)}
+                    aria-label={
+                      active
+                        ? `${column.label}, sorted ${direction === 'asc' ? 'ascending' : 'descending'}`
+                        : undefined
+                    }
+                    sx={SORT_LABEL_FOCUS_SX}
+                  >
+                    {column.label}
+                  </TableSortLabel>
+                </Grid>
+              );
+            })}
+          </Grid>
+          {expandIconSpacer}
+        </Stack>
+      </Paper>
+    </Box>
   );
 
   let body: ReactNode;
-  if (rows.length === 0) {
-    body = loading ? (
+  if (rows.length === 0 && loading) {
+    body = (
       <Stack alignItems="center" sx={{ paddingBlock: 4 }}>
         <CircularProgress aria-label="Loading reports" />
       </Stack>
-    ) : (
-      <Typography color="text.secondary">No records yet</Typography>
     );
+  } else if (rows.length === 0 && loadFailed) {
+    body = (
+      <Alert
+        severity="error"
+        action={
+          <Button color="inherit" size="small" onClick={() => setReloadKey((key) => key + 1)}>
+            Retry
+          </Button>
+        }
+      >
+        Reports could not be loaded.
+      </Alert>
+    );
+  } else if (rows.length === 0) {
+    body = <Typography color="text.secondary">No records yet</Typography>;
   } else {
     body = (
       <Stack spacing={1} aria-busy={loading}>
@@ -609,7 +696,7 @@ export function ReportList({ mode, kind, onDecided }: ReportListProps) {
               idBase={idBase}
               expanded={expandedId === row.id}
               detail={details[row.id]}
-              deciding={decidingId === row.id}
+              deciding={deciding}
               onToggle={toggleRow}
               onDecide={decide}
               onOpen={openReport}
@@ -630,17 +717,32 @@ export function ReportList({ mode, kind, onDecided }: ReportListProps) {
     );
   }
 
+  // Blank while loading, so an unchanged result is announced again when the next load ends.
+  let statusMessage: string | undefined;
+  if (loading) {
+    statusMessage = '';
+  } else if (loadFailed) {
+    statusMessage = 'Reports failed to load';
+  }
+
   return (
     <Stack spacing={2} useFlexGap>
       {filterBar}
+      <ResultStatus
+        total={rows.length}
+        page={currentPage}
+        rowsPerPage={rowsPerPage}
+        nouns={['report', 'reports']}
+        message={statusMessage}
+      />
       {body}
-      {viewLine && reference && (
+      {viewer && reference && (
         <LineViewDialog
           open
-          kind={kind}
-          line={viewLine}
+          kind={viewer.kind}
+          line={viewer.line}
           vatRate={reference.vatRate}
-          onClose={() => setViewLine(null)}
+          onClose={() => setViewer(null)}
         />
       )}
     </Stack>

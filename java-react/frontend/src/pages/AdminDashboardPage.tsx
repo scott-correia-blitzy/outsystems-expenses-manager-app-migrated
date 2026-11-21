@@ -10,7 +10,7 @@ import {
 } from '@mui/material';
 import { adminDashboard } from '../api/api';
 import type { AdminDashboard, Kind } from '../api/types';
-import { useFeedback } from '../components/Feedback';
+import { LiveStatus, useFeedback } from '../components/Feedback';
 import { KpiCard } from '../components/KpiCard';
 import { ReportList } from '../components/ReportList';
 import { formatPercent } from '../format/format';
@@ -24,7 +24,9 @@ const KIND_OPTIONS: readonly { value: Kind; label: string }[] = [
   { value: 'earning', label: 'Earnings' },
 ];
 
-const KIND_BUTTON_SX = { minInlineSize: (theme: Theme) => theme.spacing(20) } as const;
+const KIND_BUTTON_SX = {
+  minInlineSize: (theme: Theme) => ({ xs: 0, sm: theme.spacing(20) }),
+} as const;
 
 function Counters({ counters }: { counters: AdminDashboard }) {
   return (
@@ -46,9 +48,18 @@ function Counters({ counters }: { counters: AdminDashboard }) {
   );
 }
 
+function counterSummary(counters: AdminDashboard): string {
+  return [
+    `Total Reports ${counters.totalReports}`,
+    `Reports Waiting Verification ${counters.waiting}`,
+    `Approved Report Rate ${formatPercent(counters.approvedRate)}`,
+  ].join(', ');
+}
+
 export function AdminDashboardPage() {
   const feedback = useFeedback();
   const [counters, setCounters] = useState<AdminDashboard | null>(null);
+  const [announcement, setAnnouncement] = useState('');
   const [loading, setLoading] = useState(true);
   const [kind, setKind] = useState<Kind>('expense');
   // Only the newest request may update state; bumping it on unmount drops every pending one.
@@ -56,10 +67,13 @@ export function AdminDashboardPage() {
 
   const reloadCounters = useCallback(() => {
     const request = ++latestRequest.current;
+    // Cleared first so an unchanged summary is still announced after a decision.
+    setAnnouncement('');
     adminDashboard()
       .then((data) => {
         if (request === latestRequest.current) {
           setCounters(data);
+          setAnnouncement(counterSummary(data));
         }
       })
       .catch((err: unknown) => {
@@ -105,16 +119,18 @@ export function AdminDashboardPage() {
         subtitle="Welcome to Expenses Manager"
         breadcrumbs={[{ label: 'Home', to: '/' }, { label: 'Dashboard' }]}
       />
+      <LiveStatus message={announcement} />
       <Stack spacing={3} useFlexGap>
         {counterArea}
         <Divider />
         <ToggleButtonGroup
           exclusive
+          size="small"
           color="primary"
           value={kind}
           onChange={changeKind}
           aria-label="Report type"
-          sx={{ alignSelf: 'flex-start' }}
+          sx={{ alignSelf: 'flex-start', maxInlineSize: '100%' }}
         >
           {KIND_OPTIONS.map((option) => (
             <ToggleButton key={option.value} value={option.value} sx={KIND_BUTTON_SX}>

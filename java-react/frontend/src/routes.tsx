@@ -1,9 +1,19 @@
-import type { ComponentType, ReactElement } from 'react';
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  type ComponentType,
+  type ReactElement,
+  type ReactNode,
+} from 'react';
 import { Navigate, Route, Routes, useLocation } from 'react-router';
 import { Box, CircularProgress } from '@mui/material';
 import type { Kind, Role } from './api/types';
 import { useAuth } from './auth/AuthContext';
 import { RequireRole } from './auth/RequireRole';
+import { VISUALLY_HIDDEN } from './components/Feedback';
 import { AppLayout } from './layout/AppLayout';
 import { AdminDashboardPage } from './pages/AdminDashboardPage';
 import { AdminEarningReportDetailPage } from './pages/AdminEarningReportDetailPage';
@@ -27,6 +37,7 @@ export interface AppRoute {
   page: ComponentType;
   roles: RouteRoles;
   screen: string;
+  title: string;
 }
 
 export interface MenuItem {
@@ -48,55 +59,80 @@ export const PATHS = {
 } as const;
 
 export const ROUTES: readonly AppRoute[] = [
-  { path: PATHS.login, page: LoginPage, roles: 'all', screen: 'Login' },
-  { path: PATHS.invalidPermissions, page: InvalidPermissionsPage, roles: 'all', screen: 'InvalidPermissions' },
-  { path: PATHS.dashboard, page: UserDashboardPage, roles: ['User'], screen: 'UserDashboard' },
-  { path: PATHS.reports, page: UserReportsPage, roles: ['User'], screen: 'User_ReportsPage' },
+  { path: PATHS.login, page: LoginPage, roles: 'all', screen: 'Login', title: 'Login' },
+  {
+    path: PATHS.invalidPermissions,
+    page: InvalidPermissionsPage,
+    roles: 'all',
+    screen: 'InvalidPermissions',
+    title: 'Invalid Permissions',
+  },
+  { path: PATHS.dashboard, page: UserDashboardPage, roles: ['User'], screen: 'UserDashboard', title: 'Dashboard' },
+  { path: PATHS.reports, page: UserReportsPage, roles: ['User'], screen: 'User_ReportsPage', title: 'Reports' },
   {
     path: '/reports/expense/:id',
     page: UserExpenseReportDetailPage,
     roles: ['User'],
     screen: 'User_ExpenseReportDetail',
+    title: 'Expense Report Detail',
   },
   {
     path: '/reports/earning/:id',
     page: UserEarningReportDetailPage,
     roles: ['User'],
     screen: 'User_EarningReportDetail',
+    title: 'Earning Report Detail',
   },
-  { path: PATHS.admin, page: AdminDashboardPage, roles: ['Administrator'], screen: 'AdminDashboard' },
+  {
+    path: PATHS.admin,
+    page: AdminDashboardPage,
+    roles: ['Administrator'],
+    screen: 'AdminDashboard',
+    title: 'Administrator Dashboard',
+  },
   {
     path: '/admin/reports/expense/:id',
     page: AdminExpenseReportDetailPage,
     roles: ['Administrator'],
     screen: 'Admin_ExpenseReportDetail',
+    title: 'Expense Report Detail',
   },
   {
     path: '/admin/reports/earning/:id',
     page: AdminEarningReportDetailPage,
     roles: ['Administrator'],
     screen: 'Admin_EarningReportDetail',
+    title: 'Earning Report Detail',
   },
   {
     path: PATHS.blog,
     page: BlogPage,
     roles: ['User', 'Registered', 'Approver', 'Administrator'],
     screen: 'Blog',
+    title: 'Blog',
   },
-  { path: '/blog/posts/:id', page: BlogPostDetailPage, roles: ['Administrator'], screen: 'BlogPostDetail' },
+  {
+    path: '/blog/posts/:id',
+    page: BlogPostDetailPage,
+    roles: ['Administrator'],
+    screen: 'BlogPostDetail',
+    title: 'Blog Post',
+  },
   {
     path: PATHS.usdToEur,
     page: UsdToEurConverterPage,
     roles: ['User', 'Approver', 'Administrator'],
     screen: 'TOOLS_UsdToEurConverter',
+    title: 'USD/EUR Currency Converter',
   },
   {
     path: PATHS.mileage,
     page: MileageReimbursementPage,
     roles: ['User', 'Approver', 'Administrator'],
     screen: 'TOOLS_MileageReimbursement',
+    title: 'Mileage Reimbursement',
   },
-  { path: PATHS.home, page: HomeScreenPage, roles: ['Registered'], screen: 'HomeScreen' },
+  { path: PATHS.home, page: HomeScreenPage, roles: ['Registered'], screen: 'HomeScreen', title: 'Home' },
 ];
 
 // Kept as hoisted function declarations: pages and the layout import them through a cycle with this module.
@@ -166,6 +202,50 @@ function Loading() {
   );
 }
 
+const APP_NAME = 'Expenses Manager V2';
+
+const ScreenAnnouncerContext = createContext<(title: string) => boolean>(() => false);
+
+function focusPageHeading(): boolean {
+  const main = document.querySelector('main');
+  const heading = main?.querySelector('h1') ?? null;
+  if (main === null || heading === null) {
+    return false;
+  }
+  const focused = document.activeElement;
+  // Focus already inside the page or a dialog, such as Login's autofocused field, is left alone.
+  if (focused === null || !(main.contains(focused) || focused.closest('[role="dialog"]') !== null)) {
+    heading.focus();
+  }
+  return true;
+}
+
+function RouteScreen({ title, children }: { title: string; children: ReactNode }) {
+  const announceScreen = useContext(ScreenAnnouncerContext);
+  const { pathname } = useLocation();
+  const shown = useRef<{ pathname: string; announced: boolean } | null>(null);
+
+  useEffect(() => {
+    document.title = `${title} - ${APP_NAME}`;
+    // StrictMode re-runs this effect for the same screen, which must not count as a new one.
+    if (shown.current?.pathname !== pathname) {
+      shown.current = { pathname, announced: announceScreen(title) };
+    }
+    if (!shown.current.announced || focusPageHeading()) {
+      return undefined;
+    }
+    const observer = new MutationObserver(() => {
+      if (focusPageHeading()) {
+        observer.disconnect();
+      }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, [announceScreen, title, pathname]);
+
+  return <>{children}</>;
+}
+
 function RootRedirect() {
   const { status, user } = useAuth();
   if (status === 'loading') {
@@ -174,39 +254,40 @@ function RootRedirect() {
   return <Navigate to={user === null ? PATHS.login : landingRouteFor(user.roles)} replace />;
 }
 
-function LoginRoute({ page: Page }: { page: ComponentType }) {
+function LoginRoute({ children }: { children: ReactNode }) {
   const { status, user } = useAuth();
   const { state } = useLocation();
   if (status === 'loading') {
     return <Loading />;
   }
   if (user === null) {
-    return <Page />;
+    return <>{children}</>;
   }
   return <Navigate to={returnPathFrom(state) ?? landingRouteFor(user.roles)} replace />;
 }
 
-function OpenRoute({ page: Page }: { page: ComponentType }) {
+function OpenRoute({ children }: { children: ReactNode }) {
   const { status, user } = useAuth();
   if (status === 'loading') {
     return <Loading />;
   }
   if (user === null) {
-    return <Page />;
+    return <>{children}</>;
   }
-  return (
-    <AppLayout>
-      <Page />
-    </AppLayout>
-  );
+  return <AppLayout>{children}</AppLayout>;
 }
 
-function routeElement({ path, page: Page, roles }: AppRoute): ReactElement {
+function routeElement({ path, page: Page, roles, title }: AppRoute): ReactElement {
+  const screen = (
+    <RouteScreen title={title}>
+      <Page />
+    </RouteScreen>
+  );
   if (path === PATHS.login) {
-    return <LoginRoute page={Page} />;
+    return <LoginRoute>{screen}</LoginRoute>;
   }
   if (roles === 'all') {
-    return <OpenRoute page={Page} />;
+    return <OpenRoute>{screen}</OpenRoute>;
   }
   if (path === PATHS.home) {
     return (
@@ -217,21 +298,36 @@ function routeElement({ path, page: Page, roles }: AppRoute): ReactElement {
   }
   return (
     <RequireRole roles={roles}>
-      <AppLayout>
-        <Page />
-      </AppLayout>
+      <AppLayout>{screen}</AppLayout>
     </RequireRole>
   );
 }
 
 export function AppRoutes() {
+  const liveRegion = useRef<HTMLDivElement>(null);
+  const firstScreenShown = useRef(false);
+  // The browser already reads the first screen on load, so only later screens are announced.
+  const announceScreen = useCallback((title: string): boolean => {
+    if (!firstScreenShown.current) {
+      firstScreenShown.current = true;
+      return false;
+    }
+    if (liveRegion.current !== null) {
+      liveRegion.current.textContent = title;
+    }
+    return true;
+  }, []);
+
   return (
-    <Routes>
-      <Route path="/" element={<RootRedirect />} />
-      {ROUTES.map((route) => (
-        <Route key={route.path} path={route.path} element={routeElement(route)} />
-      ))}
-      <Route path="*" element={<Navigate to="/" replace />} />
-    </Routes>
+    <ScreenAnnouncerContext.Provider value={announceScreen}>
+      <Routes>
+        <Route path="/" element={<RootRedirect />} />
+        {ROUTES.map((route) => (
+          <Route key={route.path} path={route.path} element={routeElement(route)} />
+        ))}
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+      <Box ref={liveRegion} role="status" aria-live="polite" aria-atomic="true" sx={VISUALLY_HIDDEN} />
+    </ScreenAnnouncerContext.Provider>
   );
 }

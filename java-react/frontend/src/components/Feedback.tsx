@@ -10,6 +10,7 @@ import {
 } from 'react';
 import {
   Alert,
+  Box,
   List,
   ListItem,
   ListItemText,
@@ -116,4 +117,25 @@ export function useFeedback(): FeedbackApi {
     throw new Error('useFeedback must be used inside FeedbackProvider');
   }
   return feedback;
+}
+
+// The zero inset keeps the box inside its containing block, so it never adds scrollable overflow.
+export const VISUALLY_HIDDEN = {
+  position: 'absolute',
+  insetBlockStart: 0,
+  insetInlineStart: 0,
+  inlineSize: 1,
+  blockSize: 1,
+  overflow: 'hidden',
+  clipPath: 'inset(50%)',
+  whiteSpace: 'nowrap',
+} as const;
+
+// Screen readers announce only changes to an existing region, so pages mount this before its text.
+export function LiveStatus({ message }: { message: string }) {
+  return (
+    <Box role="status" sx={VISUALLY_HIDDEN}>
+      {message}
+    </Box>
+  );
 }

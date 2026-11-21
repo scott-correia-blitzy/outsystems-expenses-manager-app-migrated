@@ -31,7 +31,7 @@ public class AuthService {
             throw new IllegalStateException("User lookup failed during login", ex);
         } catch (AuthenticationException ex) {
             // One answer for every rejection, so callers cannot tell an unknown user from a wrong password.
-            throw ApiException.badCredentials();
+            throw ApiException.badCredentials(ex);
         }
     }
 

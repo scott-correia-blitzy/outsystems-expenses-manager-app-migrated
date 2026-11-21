@@ -57,7 +57,7 @@ export function PageHeader({ title, subtitle, breadcrumbs, actions }: PageHeader
         alignItems={{ xs: 'flex-start', sm: 'center' }}
       >
         <Box sx={{ minWidth: 0 }}>
-          <Typography variant="h4" component="h1" sx={{ overflowWrap: 'break-word' }}>
+          <Typography variant="h4" component="h1" tabIndex={-1} sx={{ overflowWrap: 'break-word' }}>
             {title}
           </Typography>
           {isPresent(subtitle) && (

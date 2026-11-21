@@ -12,9 +12,17 @@ const TEST_TIMEOUT = 15_000;
 const CONTROL_ROLES = ['button', 'link', 'menuitem'] as const;
 
 const PERMISSIONS_HEADING = "You don't have permissions to view this screen.";
+const APP_NAME = 'Expenses Manager V2';
 
 async function heading(name: string | RegExp): Promise<HTMLElement> {
   return screen.findByRole('heading', { name }, { timeout: FIND_TIMEOUT });
+}
+
+// Pages keep their own status regions inside main, so the screen announcer is the one outside it.
+function liveRegion(): HTMLElement {
+  const announcers = screen.getAllByRole('status').filter((region) => region.closest('main') === null);
+  expect(announcers).toHaveLength(1);
+  return announcers[0];
 }
 
 async function clickControl(name: string | RegExp): Promise<void> {
@@ -44,31 +52,60 @@ async function arriveAt(path: string, name: string | RegExp): Promise<void> {
   await expectLocation(path);
 }
 
-type RenderCase = { path: string; category: SessionCategory; name: string | RegExp };
+type RenderCase = { path: string; category: SessionCategory; name: string | RegExp; title: string };
 
 const RENDER_CASES: RenderCase[] = [
-  { path: '/login', category: 'anonymous', name: 'Login' },
-  { path: '/invalid-permissions', category: 'anonymous', name: PERMISSIONS_HEADING },
-  { path: '/dashboard', category: 'user', name: 'Dashboard' },
-  { path: '/reports', category: 'user', name: 'Reports' },
-  { path: '/reports/expense/12', category: 'user', name: /^12\/2024 EX: London Trip/ },
-  { path: '/reports/earning/10', category: 'user', name: /^10\/2024 EA: Sales Commission/ },
-  { path: '/admin', category: 'administrator', name: 'Administrator Dashboard' },
-  { path: '/admin/reports/expense/9', category: 'administrator', name: /^9\/2024 EX: Business Trip Expenses/ },
-  { path: '/admin/reports/earning/9', category: 'administrator', name: /^9\/2024 EA: Consulting Fees/ },
-  { path: '/blog', category: 'user', name: 'Blog' },
-  { path: '/blog/posts/new', category: 'administrator', name: 'New Blog Post' },
-  { path: '/tools/usd-to-eur', category: 'user', name: 'USD/EUR Currency Converter' },
-  { path: '/tools/mileage', category: 'user', name: 'Mileage Reimbursement' },
+  { path: '/login', category: 'anonymous', name: 'Login', title: 'Login' },
+  { path: '/invalid-permissions', category: 'anonymous', name: PERMISSIONS_HEADING, title: 'Invalid Permissions' },
+  { path: '/dashboard', category: 'user', name: 'Dashboard', title: 'Dashboard' },
+  { path: '/reports', category: 'user', name: 'Reports', title: 'Reports' },
+  {
+    path: '/reports/expense/12',
+    category: 'user',
+    name: /^12\/2024 EX: London Trip/,
+    title: 'Expense Report Detail',
+  },
+  {
+    path: '/reports/earning/10',
+    category: 'user',
+    name: /^10\/2024 EA: Sales Commission/,
+    title: 'Earning Report Detail',
+  },
+  { path: '/admin', category: 'administrator', name: 'Administrator Dashboard', title: 'Administrator Dashboard' },
+  {
+    path: '/admin/reports/expense/9',
+    category: 'administrator',
+    name: /^9\/2024 EX: Business Trip Expenses/,
+    title: 'Expense Report Detail',
+  },
+  {
+    path: '/admin/reports/earning/9',
+    category: 'administrator',
+    name: /^9\/2024 EA: Consulting Fees/,
+    title: 'Earning Report Detail',
+  },
+  { path: '/blog', category: 'user', name: 'Blog', title: 'Blog' },
+  { path: '/blog/posts/new', category: 'administrator', name: 'New Blog Post', title: 'Blog Post' },
+  {
+    path: '/tools/usd-to-eur',
+    category: 'user',
+    name: 'USD/EUR Currency Converter',
+    title: 'USD/EUR Currency Converter',
+  },
+  { path: '/tools/mileage', category: 'user', name: 'Mileage Reimbursement', title: 'Mileage Reimbursement' },
 ];
 
 describe('route renders', () => {
   it.each(RENDER_CASES)(
     '$path renders its page for $category',
-    async ({ path, category, name }) => {
+    async ({ path, category, name, title }) => {
       renderRoute(path, category);
-      expect(await heading(name)).toBeInTheDocument();
+      const page = await heading(name);
+      expect(page).toBeInTheDocument();
       await expectLocation(path);
+      expect(document.title).toBe(`${title} - ${APP_NAME}`);
+      expect(liveRegion()).toBeEmptyDOMElement();
+      expect(page).not.toHaveFocus();
     },
     TEST_TIMEOUT,
   );
@@ -222,11 +259,90 @@ describe('in-app navigation', () => {
   );
 
   it(
-    'logging out returns to /login',
+    'logging out returns to /login with focus kept in Username',
     async () => {
       await startAt('user', '/dashboard');
       await clickControl(/log ?out/i);
       await arriveAt('/login', 'Login');
+      await waitFor(() => expect(liveRegion().textContent).toBe('Login'));
+      expect(screen.getByRole('textbox', { name: /Username/ })).toHaveFocus();
+      expect(document.title).toBe(`Login - ${APP_NAME}`);
+    },
+    TEST_TIMEOUT,
+  );
+});
+
+type AnnounceCase = {
+  via: string;
+  category: SessionCategory;
+  landing: string;
+  go: () => Promise<void>;
+  path: string;
+  name: string | RegExp;
+  title: string;
+};
+
+const ANNOUNCE_CASES: AnnounceCase[] = [
+  {
+    via: 'the Reports menu entry',
+    category: 'user',
+    landing: '/dashboard',
+    go: () => clickControl('Reports'),
+    path: '/reports',
+    name: 'Reports',
+    title: 'Reports',
+  },
+  {
+    via: 'a report row, whose heading renders after loading',
+    category: 'user',
+    landing: '/dashboard',
+    go: async () => {
+      await clickControl('View Reports');
+      await arriveAt('/reports', 'Reports');
+      await expandRow('12/2024 EX');
+    },
+    path: '/reports/expense/12',
+    name: /^12\/2024 EX: London Trip/,
+    title: 'Expense Report Detail',
+  },
+  {
+    via: 'the Tools menu',
+    category: 'user',
+    landing: '/dashboard',
+    go: async () => {
+      await clickControl('Tools');
+      await clickControl('USD to EUR Converter');
+    },
+    path: '/tools/usd-to-eur',
+    name: 'USD/EUR Currency Converter',
+    title: 'USD/EUR Currency Converter',
+  },
+  {
+    via: 'the Blog menu entry',
+    category: 'administrator',
+    landing: '/admin',
+    go: () => clickControl('Blog'),
+    path: '/blog',
+    name: 'Blog',
+    title: 'Blog',
+  },
+];
+
+describe('route announcements', () => {
+  it.each(ANNOUNCE_CASES)(
+    'announces and focuses $path reached through $via',
+    async ({ category, landing, go, path, name, title }) => {
+      await startAt(category, landing);
+      expect(liveRegion()).toBeEmptyDOMElement();
+
+      await go();
+      const page = await heading(name);
+      await expectLocation(path);
+      await waitFor(() => {
+        expect(liveRegion().textContent).toBe(title);
+        expect(page).toHaveFocus();
+      });
+      expect(document.title).toBe(`${title} - ${APP_NAME}`);
     },
     TEST_TIMEOUT,
   );

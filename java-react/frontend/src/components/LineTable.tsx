@@ -19,6 +19,7 @@ import {
 } from '@mui/material';
 import type { Kind, LineView, SortDir } from '../api/types';
 import { formatEuro, formatRowDate } from '../format/format';
+import { LiveStatus } from './Feedback';
 
 export function ViewIcon(props: SvgIconProps) {
   return (
@@ -44,10 +45,39 @@ export function DeleteIcon(props: SvgIconProps) {
   );
 }
 
+function resultSummary(
+  total: number,
+  page: number,
+  rowsPerPage: number,
+  [singular, plural]: readonly [string, string],
+): string {
+  if (total === 0) {
+    return `No ${plural} found`;
+  }
+  const first = page * rowsPerPage + 1;
+  const last = Math.min(total, first + rowsPerPage - 1);
+  return `Showing ${first} to ${last} of ${total} ${total === 1 ? singular : plural}`;
+}
+
+type ResultStatusProps = {
+  total: number;
+  page: number;
+  rowsPerPage: number;
+  nouns: readonly [string, string];
+  message?: string;
+};
+
+export function ResultStatus({ total, page, rowsPerPage, nouns, message }: ResultStatusProps) {
+  return <LiveStatus message={message ?? resultSummary(total, page, rowsPerPage, nouns)} />;
+}
+
 export type LineTableProps = {
   kind: Kind;
   lines: LineView[];
   canEdit: boolean;
+  viewDisabled?: boolean;
+  editDisabled?: boolean;
+  deleteDisabled?: boolean;
   onView: (line: LineView) => void;
   onEdit: (line: LineView) => void;
   onDelete: (line: LineView) => void;
@@ -108,6 +138,9 @@ export function LineTable({
   kind,
   lines,
   canEdit,
+  viewDisabled = false,
+  editDisabled = false,
+  deleteDisabled = false,
   onView,
   onEdit,
   onDelete,
@@ -159,7 +192,7 @@ export function LineTable({
           placeholder="Search"
           value={search}
           onChange={(event) => setSearch(event.target.value)}
-          sx={{ minWidth: { sm: '20rem' } }}
+          sx={{ minWidth: (theme) => ({ sm: theme.spacing(40) }) }}
           slotProps={{
             htmlInput: { 'aria-label': 'Search' },
             input: {
@@ -193,7 +226,7 @@ export function LineTable({
                         '&.Mui-focusVisible': {
                           outline: 2,
                           outlineColor: 'primary.main',
-                          outlineOffset: 2,
+                          outlineOffset: (theme) => theme.spacing(0.25),
                           borderRadius: 0.5,
                         },
                       }}
@@ -227,11 +260,21 @@ export function LineTable({
                   <TableCell>{line.typeLabel ?? ''}</TableCell>
                   <TableCell align="center">
                     <Stack direction="row" spacing={0.5} useFlexGap justifyContent="center">
-                      <IconButton aria-label="View" color="primary" onClick={() => onView(line)}>
+                      <IconButton
+                        aria-label="View"
+                        color="primary"
+                        disabled={viewDisabled}
+                        onClick={() => onView(line)}
+                      >
                         <ViewIcon />
                       </IconButton>
                       {canEdit && (
-                        <IconButton aria-label="Edit" color="primary" onClick={() => onEdit(line)}>
+                        <IconButton
+                          aria-label="Edit"
+                          color="primary"
+                          disabled={editDisabled}
+                          onClick={() => onEdit(line)}
+                        >
                           <EditIcon />
                         </IconButton>
                       )}
@@ -239,6 +282,7 @@ export function LineTable({
                         <IconButton
                           aria-label="Delete"
                           color="primary"
+                          disabled={deleteDisabled}
                           onClick={() => onDelete(line)}
                         >
                           <DeleteIcon />
@@ -260,6 +304,12 @@ export function LineTable({
         rowsPerPageOptions={[]}
         onPageChange={(_event, next) => setPage(next)}
         labelDisplayedRows={({ from, to, count }) => `${from} to ${to} of ${count} items`}
+      />
+      <ResultStatus
+        total={rows.length}
+        page={currentPage}
+        rowsPerPage={ROWS_PER_PAGE}
+        nouns={kind === 'expense' ? ['expense', 'expenses'] : ['earning', 'earnings']}
       />
     </Stack>
   );

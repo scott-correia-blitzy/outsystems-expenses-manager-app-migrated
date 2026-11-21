@@ -13,7 +13,7 @@ import { Link as RouterLink } from 'react-router';
 import { listBlogPosts } from '../api/api';
 import type { BlogPostView } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
-import { useFeedback } from '../components/Feedback';
+import { LiveStatus, useFeedback } from '../components/Feedback';
 import { formatBlogDate } from '../format/format';
 import { PageHeader } from '../layout/PageHeader';
 import { blogPostPath } from '../routes';
@@ -50,6 +50,10 @@ function wasEdited(post: BlogPostView): boolean {
 function byline(iso: string | null, name: string | null): string {
   const date = formatBlogDate(iso);
   return name ? `${date} by ${name}` : date;
+}
+
+function resultCount(count: number): string {
+  return `${count} blog ${count === 1 ? 'post' : 'posts'}`;
 }
 
 function BlogPostCard({ post, canEdit }: { post: BlogPostView; canEdit: boolean }) {
@@ -92,6 +96,7 @@ export function BlogPage() {
   const isAdmin = hasRole('Administrator');
   const [search, setSearch] = useState('');
   const [posts, setPosts] = useState<BlogPostView[] | null>(null);
+  const [postsQuery, setPostsQuery] = useState<string | null>(null);
   const [settled, setSettled] = useState(false);
   const query = search.trim();
 
@@ -104,6 +109,7 @@ export function BlogPage() {
             (result) => {
               if (active) {
                 setPosts(result);
+                setPostsQuery(query);
               }
             },
             (err: unknown) => {
@@ -135,7 +141,7 @@ export function BlogPage() {
     );
   } else if (posts !== null && posts.length === 0) {
     content = (
-      <Typography role="status" color="text.secondary">
+      <Typography color="text.secondary">
         No blog posts yet
       </Typography>
     );
@@ -148,6 +154,9 @@ export function BlogPage() {
       </Stack>
     );
   }
+
+  // Empty while a search is pending, so an unchanged count is announced again when it completes.
+  const announcement = posts !== null && postsQuery === query ? resultCount(posts.length) : '';
 
   return (
     <>
@@ -175,6 +184,7 @@ export function BlogPage() {
         />
         {content}
       </Stack>
+      <LiveStatus message={announcement} />
     </>
   );
 }

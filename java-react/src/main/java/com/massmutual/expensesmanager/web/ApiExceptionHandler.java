@@ -20,6 +20,7 @@ import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.util.StringUtils;
 import org.springframework.validation.FieldError;
+import org.springframework.web.HttpMediaTypeNotAcceptableException;
 import org.springframework.web.HttpMediaTypeNotSupportedException;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -38,6 +39,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
@@ -48,7 +50,7 @@ public class ApiExceptionHandler {
 
     private static final Logger log = LoggerFactory.getLogger(ApiExceptionHandler.class);
 
-    private static final String INTERNAL_ERROR = "INTERNAL_ERROR";
+    static final String INTERNAL_ERROR = "INTERNAL_ERROR";
 
     @ExceptionHandler(ApiException.class)
     public ResponseEntity<ErrorResponse> handleApiException(ApiException ex) {
@@ -137,9 +139,22 @@ public class ApiExceptionHandler {
                 ApiException.FORBIDDEN, LegacyMessages.NO_PERMISSIONS));
     }
 
+    // The error contract has no 406 code, so the generic body stays; a client's Accept header is not a server fault.
+    @ExceptionHandler(HttpMediaTypeNotAcceptableException.class)
+    public ResponseEntity<ErrorResponse> handleNotAcceptable(HttpMediaTypeNotAcceptableException ex,
+            HttpServletRequest request) {
+        log.warn("No acceptable representation on {} {}: {}",
+                request.getMethod(), request.getRequestURI(), ex.getClass().getName());
+        return internalError();
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ErrorResponse> handleUnexpected(Exception ex, HttpServletRequest request) {
-        log.error("Unhandled error on {} {}", request.getMethod(), request.getRequestURI(), ex);
+        log.error("Unhandled error on {} {}", request.getMethod(), request.getRequestURI(), RedactedThrowable.of(ex));
+        return internalError();
+    }
+
+    private static ResponseEntity<ErrorResponse> internalError() {
         return respond(ErrorResponse.of(HttpStatus.INTERNAL_SERVER_ERROR.value(),
                 INTERNAL_ERROR, LegacyMessages.INTERNAL_ERROR));
     }
@@ -199,5 +214,45 @@ public class ApiExceptionHandler {
             }
         }
         return Optional.empty();
+    }
+
+    // Exception messages can echo request headers or input, so logs keep only class names and stack frames.
+    private static final class RedactedThrowable extends Throwable {
+
+        private static final long serialVersionUID = 1L;
+
+        private RedactedThrowable(Throwable original) {
+            super(original.getClass().getName());
+            setStackTrace(original.getStackTrace());
+        }
+
+        static Throwable of(Throwable original) {
+            return redact(original, new IdentityHashMap<>());
+        }
+
+        private static Throwable redact(Throwable original, Map<Throwable, Throwable> redacted) {
+            Throwable known = redacted.get(original);
+            if (known != null) {
+                return known;
+            }
+            RedactedThrowable copy = new RedactedThrowable(original);
+            redacted.put(original, copy);
+            Throwable cause = original.getCause();
+            if (cause != null) {
+                Throwable redactedCause = redact(cause, redacted);
+                if (redactedCause != copy) {
+                    copy.initCause(redactedCause);
+                }
+            }
+            for (Throwable suppressed : original.getSuppressed()) {
+                copy.addSuppressed(redact(suppressed, redacted));
+            }
+            return copy;
+        }
+
+        @Override
+        public String toString() {
+            return getMessage();
+        }
     }
 }
