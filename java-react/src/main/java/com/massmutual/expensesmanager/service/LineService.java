@@ -58,7 +58,7 @@ public class LineService {
 
     @Transactional
     public LineView create(Caller caller, ReportKind kind, Long reportId, LineInput in) {
-        ReportEntity report = policy.loadReport(kind, reportId);
+        ReportEntity report = policy.loadReportForWrite(kind, reportId);
         policy.requireOwnerWrite(caller, report);
         policy.requireDraft(report, LegacyMessages.NOT_DRAFT);
         validate(kind, in);
@@ -78,8 +78,9 @@ public class LineService {
 
     @Transactional
     public LineView update(Caller caller, ReportKind kind, Long lineId, LineInput in) {
-        LineEntity line = policy.loadLine(kind, lineId);
-        ReportEntity report = policy.reportOf(kind, line);
+        ReportAccessPolicy.LockedLine locked = policy.loadLineForWrite(kind, lineId);
+        LineEntity line = locked.line();
+        ReportEntity report = locked.report();
         policy.requireOwnerWrite(caller, report);
         policy.requireDraft(report, LegacyMessages.NOT_DRAFT);
         validate(kind, in);
@@ -94,8 +95,9 @@ public class LineService {
     // The line's invoice is removed by the ON DELETE CASCADE foreign key in schema.sql.
     @Transactional
     public void delete(Caller caller, ReportKind kind, Long lineId) {
-        LineEntity line = policy.loadLine(kind, lineId);
-        ReportEntity report = policy.reportOf(kind, line);
+        ReportAccessPolicy.LockedLine locked = policy.loadLineForWrite(kind, lineId);
+        LineEntity line = locked.line();
+        ReportEntity report = locked.report();
         policy.requireOwnerWrite(caller, report);
         policy.requireDraft(report, LegacyMessages.DETAIL_CANT_BE_DELETED);
         kindRepositories.lines(kind).delete(line);

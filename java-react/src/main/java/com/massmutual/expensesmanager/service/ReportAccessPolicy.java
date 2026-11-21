@@ -36,6 +36,27 @@ public class ReportAccessPolicy {
         return loadReport(kind, line.getReportId());
     }
 
+    public ReportEntity loadReportForWrite(ReportKind kind, Long id) {
+        if (kind == null || id == null) {
+            throw ApiException.notFound();
+        }
+        return kindRepositories.reports(kind).findByIdForUpdate(id).orElseThrow(ApiException::notFound);
+    }
+
+    // The line is read only once its report is locked, so a line deleted while waiting is not found.
+    public LockedLine loadLineForWrite(ReportKind kind, Long lineId) {
+        if (kind == null || lineId == null) {
+            throw ApiException.notFound();
+        }
+        Long reportId = kindRepositories.lines(kind).findReportIdById(lineId).orElseThrow(ApiException::notFound);
+        ReportEntity report = loadReportForWrite(kind, reportId);
+        LineEntity line = kindRepositories.lines(kind).findById(lineId).orElseThrow(ApiException::notFound);
+        return new LockedLine(line, report);
+    }
+
+    public record LockedLine(LineEntity line, ReportEntity report) {
+    }
+
     // Holding Administrator as well grants no write access to another user's report.
     public void requireOwnerWrite(Caller caller, ReportEntity report) {
         if (!isOwningUser(caller, report)) {

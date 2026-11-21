@@ -25,6 +25,7 @@ import com.massmutual.expensesmanager.service.BlogService;
 import com.massmutual.expensesmanager.service.Caller;
 import com.massmutual.expensesmanager.service.DashboardService;
 import com.massmutual.expensesmanager.service.InvoiceService;
+import com.massmutual.expensesmanager.service.KindRepositories;
 import com.massmutual.expensesmanager.service.LegacyMessages;
 import com.massmutual.expensesmanager.service.LineService;
 import com.massmutual.expensesmanager.service.ReferenceDataService;
@@ -43,17 +44,30 @@ import com.massmutual.expensesmanager.service.model.UserDashboard;
 import com.massmutual.expensesmanager.support.MutableClock;
 import com.massmutual.expensesmanager.support.TestDatabase;
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.time.Clock;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Queue;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.FutureTask;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 import org.assertj.core.api.ThrowableAssert.ThrowingCallable;
+import org.hibernate.exception.ConstraintViolationException;
+import org.hibernate.exception.DataException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -61,20 +75,27 @@ import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.NullSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
+import org.springframework.context.annotation.Primary;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.TestPropertySource;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 // Not @Transactional: create() commits in its own REQUIRES_NEW transaction, so every assertion reads committed rows.
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE, properties = "expenses.seed.enabled=false")
-@Import(MutableClock.Beans.class)
+@Import({MutableClock.Beans.class, BusinessRulesTest.ScriptedCodes.class})
 @DirtiesContext
 class BusinessRulesTest {
 
@@ -119,10 +140,12 @@ class BusinessRulesTest {
     @Autowired
     private ReferenceDataService referenceDataService;
     @Autowired
-    private ReportCodeGenerator reportCodeGenerator;
+    private ScriptedCodeGenerator reportCodeGenerator;
 
     @Autowired
     private MutableClock clock;
+    @Autowired
+    private PlatformTransactionManager transactionManager;
 
     @BeforeEach
     void resetData() {
@@ -133,6 +156,7 @@ class BusinessRulesTest {
         expenseReportRepository.deleteAllInBatch();
         earningReportRepository.deleteAllInBatch();
         clock.set(MutableClock.DEFAULT_TIME);
+        reportCodeGenerator.reset();
     }
 
     @Test
@@ -168,7 +192,13 @@ class BusinessRulesTest {
                         MutableClock.DEFAULT_TIME, "12/2024 EX"),
                 arguments(ReportKind.EXPENSE, List.of("2/2024 EX", "11/2024 EX"),
                         LocalDateTime.of(2025, 1, 2, 10, 0), "1/2025 EX"),
-                arguments(ReportKind.EARNING, List.of("9/2024 EA"), MutableClock.DEFAULT_TIME, "10/2024 EA"));
+                arguments(ReportKind.EARNING, List.of("9/2024 EA"), MutableClock.DEFAULT_TIME, "10/2024 EA"),
+                arguments(ReportKind.EXPENSE, List.of("2147483647/2024 EX"),
+                        MutableClock.DEFAULT_TIME, "2147483648/2024 EX"),
+                arguments(ReportKind.EXPENSE, List.of("99999999999999999999/2024 EX", "5/2024 EX"),
+                        MutableClock.DEFAULT_TIME, "100000000000000000000/2024 EX"),
+                arguments(ReportKind.EXPENSE, List.of("abc/2024 EX", "3/2024 EX"),
+                        MutableClock.DEFAULT_TIME, "4/2024 EX"));
     }
 
     @ParameterizedTest(name = "{0} after {1} at {2} is {3}")
@@ -180,6 +210,19 @@ class BusinessRulesTest {
         clock.set(now);
 
         assertThat(reportCodeGenerator.nextCode(kind)).isEqualTo(expected);
+    }
+
+    @Test
+    void nextCodeRefusesACodeLongerThanTheCodeColumn() {
+        Caller owner = newCaller(appUserRepository, Role.User);
+        String longestCode = "9".repeat(42) + "/2024 EX";
+        ExpenseReport report = stamped(new ExpenseReport(), longestCode, ReferenceIds.STATUS_SUBMITTED, owner);
+        // The stamped "Report <code>" title would exceed the 50-character Title column.
+        report.setTitle("Longest code");
+        expenseReportRepository.save(report);
+
+        assertThatExceptionOfType(IllegalStateException.class)
+                .isThrownBy(() -> reportCodeGenerator.nextCode(ReportKind.EXPENSE));
     }
 
     @Test
@@ -201,6 +244,90 @@ class BusinessRulesTest {
 
         assertApiError(() -> reportService.create(owner, ReportKind.EXPENSE, "T".repeat(51)),
                 422, ApiException.VALIDATION_FAILED, LegacyMessages.MAX_LENGTH_50);
+    }
+
+    @ParameterizedTest(name = "padding-only title #{index}")
+    @ValueSource(strings = {"\u0000", "\u0000\u2003", "\u2003", " \t "})
+    void createAndRenameRejectATitleOfOnlyControlOrWhitespaceCharacters(String title) {
+        Caller owner = newCaller(appUserRepository, Role.User);
+        Long draftId = reportService.create(owner, ReportKind.EXPENSE, "Draft").id();
+
+        assertApiError(() -> reportService.create(owner, ReportKind.EXPENSE, title),
+                422, ApiException.VALIDATION_FAILED, LegacyMessages.INSERT_TITLE);
+        assertApiError(() -> reportService.rename(owner, ReportKind.EXPENSE, draftId, title),
+                422, ApiException.VALIDATION_FAILED, LegacyMessages.INSERT_TITLE);
+        assertThat(expenseReportRepository.findAll()).extracting(ExpenseReport::getTitle).containsExactly("Draft");
+    }
+
+    @Test
+    void createAndRenameStoreTheTitleWithoutControlOrWhitespacePadding() {
+        Caller owner = newCaller(appUserRepository, Role.User);
+        String fiftyCharacters = "T".repeat(50);
+
+        Long id = reportService.create(owner, ReportKind.EXPENSE, "\u0000\u2003" + fiftyCharacters + " \t").id();
+        assertThat(expenseReportRepository.findById(id).orElseThrow().getTitle()).isEqualTo(fiftyCharacters);
+
+        reportService.rename(owner, ReportKind.EXPENSE, id, "\u2003 Car Rental \u0000");
+        assertThat(expenseReportRepository.findById(id).orElseThrow().getTitle()).isEqualTo("Car Rental");
+    }
+
+    @ParameterizedTest(name = "{0} code {1} collides twice on {2}")
+    @CsvSource({
+            "EXPENSE, 1/2024 EX, PUBLIC.EXPENSEREPORT_UNIQUEINDEX_REPORTCODE",
+            "EARNING, 1/2024 EA, PUBLIC.EARNINGREPORT_UNIQUEINDEX_REPORTCODE"})
+    void createRetriesACodeCollisionOnceThenAnswersCodeConflict(ReportKind kind, String code, String index) {
+        Caller owner = newCaller(appUserRepository, Role.User);
+        storeReport(kind, code, ReferenceIds.STATUS_SUBMITTED, owner);
+        reportCodeGenerator.script(List.of(code, code));
+
+        assertThatExceptionOfType(ApiException.class)
+                .isThrownBy(() -> reportService.create(owner, kind, "Collides"))
+                .satisfies(error -> {
+                    assertThat(error.status()).isEqualTo(409);
+                    assertThat(error.code()).isEqualTo(ApiException.CODE_CONFLICT);
+                    assertThat(error.getMessage()).isEqualTo(LegacyMessages.GENERIC_ERROR);
+                })
+                .havingCause()
+                .isInstanceOf(DataIntegrityViolationException.class)
+                .havingCause()
+                .isInstanceOfSatisfying(ConstraintViolationException.class,
+                        violation -> assertThat(violation.getConstraintName()).isEqualTo(index));
+        assertThat(reportCodeGenerator.calls(kind)).isEqualTo(2);
+    }
+
+    @Test
+    void createRetriesACodeCollisionWithTheNextFreeCode() {
+        Caller owner = newCaller(appUserRepository, Role.User);
+        storeReport(ReportKind.EXPENSE, "1/2024 EX", ReferenceIds.STATUS_SUBMITTED, owner);
+        reportCodeGenerator.script(List.of("1/2024 EX"));
+
+        ReportSummary created = reportService.create(owner, ReportKind.EXPENSE, "Retried");
+
+        assertThat(created.code()).isEqualTo("2/2024 EX");
+        assertThat(created.status()).isEqualTo("Draft");
+        assertThat(reportCodeGenerator.calls(ReportKind.EXPENSE)).isEqualTo(2);
+    }
+
+    static Stream<Arguments> createPropagatesAnIntegrityFailureThatIsNotACodeCollision() {
+        String overlongCode = "X".repeat(51);
+        return Stream.of(
+                arguments(List.of(overlongCode), 1),
+                arguments(List.of("1/2024 EX", overlongCode), 2));
+    }
+
+    @ParameterizedTest(name = "integrity failure on attempt {1}")
+    @MethodSource
+    void createPropagatesAnIntegrityFailureThatIsNotACodeCollision(List<String> codes, int attempts) {
+        Caller owner = newCaller(appUserRepository, Role.User);
+        storeReport(ReportKind.EXPENSE, "1/2024 EX", ReferenceIds.STATUS_SUBMITTED, owner);
+        reportCodeGenerator.script(codes);
+
+        assertThatExceptionOfType(DataIntegrityViolationException.class)
+                .isThrownBy(() -> reportService.create(owner, ReportKind.EXPENSE, "Overlong code"))
+                .havingCause()
+                .isInstanceOf(DataException.class);
+        assertThat(reportCodeGenerator.calls(ReportKind.EXPENSE)).isEqualTo(attempts);
+        assertThat(expenseReportRepository.count()).isEqualTo(1);
     }
 
     @Test
@@ -251,6 +378,131 @@ class BusinessRulesTest {
         assertThat(expenseReportRepository.existsById(line.reportId())).isFalse();
         assertThat(expenseRepository.existsById(line.id())).isFalse();
         assertThat(invoiceExpenseRepository.existsById(line.id())).isFalse();
+    }
+
+    enum Write { SUBMIT, DECIDE, RENAME, DELETE_REPORT, CREATE_LINE, UPDATE_LINE, DELETE_LINE, UPLOAD_INVOICE }
+
+    static Stream<Arguments> competingWrites() {
+        return Stream.of(
+                arguments(Write.DELETE_LINE, Write.SUBMIT, 422, ApiException.NO_LINES, LegacyMessages.NO_LINES,
+                        ReferenceIds.STATUS_DRAFT, 0),
+                arguments(Write.SUBMIT, Write.DELETE_LINE, 409, ApiException.NOT_DRAFT,
+                        LegacyMessages.DETAIL_CANT_BE_DELETED, ReferenceIds.STATUS_SUBMITTED, 1),
+                arguments(Write.SUBMIT, Write.UPDATE_LINE, 409, ApiException.NOT_DRAFT, LegacyMessages.NOT_DRAFT,
+                        ReferenceIds.STATUS_SUBMITTED, 1),
+                arguments(Write.SUBMIT, Write.CREATE_LINE, 409, ApiException.NOT_DRAFT, LegacyMessages.NOT_DRAFT,
+                        ReferenceIds.STATUS_SUBMITTED, 1),
+                arguments(Write.SUBMIT, Write.UPLOAD_INVOICE, 409, ApiException.NOT_DRAFT, LegacyMessages.NOT_DRAFT,
+                        ReferenceIds.STATUS_SUBMITTED, 1),
+                arguments(Write.SUBMIT, Write.RENAME, 409, ApiException.NOT_DRAFT, LegacyMessages.NOT_DRAFT,
+                        ReferenceIds.STATUS_SUBMITTED, 1),
+                arguments(Write.SUBMIT, Write.DELETE_REPORT, 409, ApiException.NOT_DRAFT,
+                        LegacyMessages.REPORT_CANT_BE_DELETED, ReferenceIds.STATUS_SUBMITTED, 1),
+                arguments(Write.DECIDE, Write.UPLOAD_INVOICE, 409, ApiException.NOT_DRAFT, LegacyMessages.NOT_DRAFT,
+                        ReferenceIds.STATUS_APPROVED, 1),
+                arguments(Write.DELETE_LINE, Write.UPDATE_LINE, 404, ApiException.NOT_FOUND, LegacyMessages.NOT_FOUND,
+                        ReferenceIds.STATUS_DRAFT, 0));
+    }
+
+    @ParameterizedTest(name = "{1} waiting on {0} gives {2} {3}")
+    @MethodSource("competingWrites")
+    void aWriteWaitingOnTheReportLockSeesTheCommittedState(Write first, Write second, int status, String code,
+            String message, int statusAfter, int linesAfter) throws Exception {
+        Caller owner = newCaller(appUserRepository, Role.User);
+        Caller admin = newCaller(appUserRepository, Role.Administrator);
+        LineView line = draftWithLine(owner);
+        TransactionTemplate transaction = new TransactionTemplate(transactionManager);
+        CountDownLatch firstWritten = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        FutureTask<Void> holder = new FutureTask<>(() -> transaction.executeWithoutResult(tx -> {
+            try {
+                write(first, owner, admin, line);
+            } finally {
+                firstWritten.countDown();
+            }
+            awaitLatch(release);
+        }), null);
+        FutureTask<Void> waiter = new FutureTask<>(() -> write(second, owner, admin, line), null);
+
+        Thread.State waiterState;
+        ReportDetail readDuringLock;
+        try {
+            start(holder);
+            assertThat(firstWritten.await(10, TimeUnit.SECONDS)).as("first write ran").isTrue();
+            waiterState = awaitLockWaitOrEnd(start(waiter));
+            readDuringLock = reportService.detail(owner, ReportKind.EXPENSE, line.reportId());
+        } finally {
+            release.countDown();
+        }
+        holder.get(10, TimeUnit.SECONDS);
+
+        assertApiError(() -> outcomeOf(waiter), status, code, message);
+        assertThat(waiterState).as("second write waited for the report lock")
+                .isIn(Thread.State.WAITING, Thread.State.TIMED_WAITING);
+        assertThat(readDuringLock.status()).isEqualTo("Draft");
+        ExpenseReport report = expenseReportRepository.findById(line.reportId()).orElseThrow();
+        assertThat(report.getStatusId()).isEqualTo(statusAfter);
+        assertThat(report.getTitle()).isEqualTo("London Trip");
+        assertThat(expenseRepository.findByReportId(line.reportId())).hasSize(linesAfter)
+                .allSatisfy(stored -> assertThat(stored.getTitle()).isEqualTo("Flight tickets"));
+        assertThat(invoiceExpenseRepository.existsById(line.id())).isFalse();
+    }
+
+    private void write(Write write, Caller owner, Caller admin, LineView line) {
+        LineService.LineInput input = line(ReferenceIds.EXPENSE_TYPE_TRAVEL, ReferenceIds.CURRENCY_EURO,
+                new BigDecimal("10.00"), null, "Taxi", "", LINE_DATE);
+        switch (write) {
+            case SUBMIT -> reportService.submit(owner, ReportKind.EXPENSE, line.reportId());
+            case DECIDE -> reportService.decide(admin, ReportKind.EXPENSE, line.reportId(), true);
+            case RENAME -> reportService.rename(owner, ReportKind.EXPENSE, line.reportId(), "Renamed");
+            case DELETE_REPORT -> reportService.delete(owner, ReportKind.EXPENSE, line.reportId());
+            case CREATE_LINE -> lineService.create(owner, ReportKind.EXPENSE, line.reportId(), input);
+            case UPDATE_LINE -> lineService.update(owner, ReportKind.EXPENSE, line.id(), input);
+            case DELETE_LINE -> lineService.delete(owner, ReportKind.EXPENSE, line.id());
+            case UPLOAD_INVOICE -> invoiceService.upload(owner, ReportKind.EXPENSE, line.id(), "receipt.png",
+                    "image/png", PNG_BYTES);
+        }
+    }
+
+    private static Thread start(FutureTask<Void> task) {
+        Thread thread = new Thread(task);
+        thread.start();
+        return thread;
+    }
+
+    // H2 parks a session waiting for a row lock, so a parked thread inside H2 is waiting on the lock.
+    private static Thread.State awaitLockWaitOrEnd(Thread thread) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        Thread.State state = thread.getState();
+        while (System.nanoTime() < deadline) {
+            state = thread.getState();
+            boolean parked = state == Thread.State.WAITING || state == Thread.State.TIMED_WAITING;
+            if (state == Thread.State.TERMINATED || parked && Arrays.stream(thread.getStackTrace())
+                    .anyMatch(frame -> frame.getClassName().startsWith("org.h2."))) {
+                return state;
+            }
+            Thread.sleep(5);
+        }
+        return state;
+    }
+
+    private static void awaitLatch(CountDownLatch latch) {
+        try {
+            if (!latch.await(10, TimeUnit.SECONDS)) {
+                throw new IllegalStateException("Lock holder was never released");
+            }
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException(interrupted);
+        }
+    }
+
+    private static void outcomeOf(FutureTask<Void> task) throws Throwable {
+        try {
+            task.get(10, TimeUnit.SECONDS);
+        } catch (ExecutionException failure) {
+            throw failure.getCause();
+        }
     }
 
     @Test
@@ -362,6 +614,25 @@ class BusinessRulesTest {
     }
 
     @Test
+    void aRepeatUploadReplacesTheInvoice() {
+        Caller owner = newCaller(appUserRepository, Role.User);
+        LineView line = draftWithLine(owner);
+        byte[] pdf = "%PDF-1.7".getBytes(StandardCharsets.US_ASCII);
+        invoiceService.upload(owner, ReportKind.EXPENSE, line.id(), "receipt.png", "image/png", PNG_BYTES);
+        LocalDateTime replacedAt = MutableClock.DEFAULT_TIME.plusHours(1);
+        clock.set(replacedAt);
+
+        invoiceService.upload(owner, ReportKind.EXPENSE, line.id(), "invoice.pdf", "application/pdf", pdf);
+        InvoiceFile file = invoiceService.download(owner, ReportKind.EXPENSE, line.id());
+
+        assertThat(file.filename()).isEqualTo("invoice.pdf");
+        assertThat(file.contentType()).isEqualTo("application/pdf");
+        assertThat(file.content()).isEqualTo(pdf);
+        assertThat(invoiceExpenseRepository.count()).isEqualTo(1);
+        assertThat(invoiceExpenseRepository.findInfoById(line.id()).orElseThrow().getDatetime()).isEqualTo(replacedAt);
+    }
+
+    @Test
     void blogAcceptsTitleAndDescriptionAtTheirMaximumLengths() {
         Caller admin = newCaller(appUserRepository, Role.Administrator);
         String title = "B".repeat(50);
@@ -410,6 +681,37 @@ class BusinessRulesTest {
                 .toList();
 
         assertThat(listed).containsExactly(atTo).doesNotContain(atFrom, afterTo);
+    }
+
+    @ParameterizedTest(name = "sort \"{0}\"")
+    @ValueSource(strings = {"id", "title", "id,desc,extra", ",desc", "id,", "nope,asc", "id,up"})
+    void listRejectsASortThatIsNotAColumnAndDirection(String sort) {
+        Caller owner = newCaller(appUserRepository, Role.User);
+        ThrowingCallable listing = () -> reportService.list(owner, ReportKind.EXPENSE, null, null, sort, null, null);
+
+        assertApiError(listing, 422, ApiException.VALIDATION_FAILED, LegacyMessages.INVALID_VALUE);
+        assertThatExceptionOfType(ApiException.class).isThrownBy(listing).satisfies(error ->
+                assertThat(error.fieldErrors()).extracting(FieldViolation::field).containsExactly("sort"));
+    }
+
+    static Stream<Arguments> listOrdersByTheRequestedSort() {
+        List<String> newestFirst = List.of("Gamma", "Alpha", "Beta");
+        return Stream.of(
+                arguments("title,asc", List.of("Alpha", "Beta", "Gamma")),
+                arguments("Title,DESC", List.of("Gamma", "Beta", "Alpha")),
+                arguments("id,desc", newestFirst),
+                arguments(null, newestFirst));
+    }
+
+    @ParameterizedTest(name = "sort \"{0}\" lists {1}")
+    @MethodSource
+    void listOrdersByTheRequestedSort(String sort, List<String> titles) {
+        Caller owner = newCaller(appUserRepository, Role.User);
+        List.of("Beta", "Alpha", "Gamma").forEach(title -> reportService.create(owner, ReportKind.EXPENSE, title));
+
+        assertThat(reportService.list(owner, ReportKind.EXPENSE, null, null, sort, null, null))
+                .extracting(ReportSummary::title)
+                .containsExactlyElementsOf(titles);
     }
 
     @Test
@@ -491,6 +793,27 @@ class BusinessRulesTest {
         assertThat(afterDecision.getTitle()).isEqualTo("Stamps renamed");
     }
 
+    enum Submitter { CREATOR, ANOTHER_USER, NONE }
+
+    @ParameterizedTest(name = "submitter {0}")
+    @EnumSource(Submitter.class)
+    void detailNamesTheCreatorAndTheSubmitter(Submitter submitter) {
+        Caller owner = newCaller(appUserRepository, Role.User);
+        Caller submittedBy = switch (submitter) {
+            case CREATOR -> owner;
+            case ANOTHER_USER -> newCaller(appUserRepository, Role.User);
+            case NONE -> null;
+        };
+        ExpenseReport report = stamped(new ExpenseReport(), "1/2024 EX", ReferenceIds.STATUS_SUBMITTED, owner);
+        report.setSubmitedBy(submittedBy == null ? null : submittedBy.id());
+        Long id = expenseReportRepository.save(report).getId();
+
+        ReportDetail detail = reportService.detail(owner, ReportKind.EXPENSE, id);
+
+        assertThat(detail.createdByName()).isEqualTo(owner.displayName());
+        assertThat(detail.submittedBy()).isEqualTo(submittedBy == null ? null : submittedBy.displayName());
+    }
+
     private ExpenseReport assertOwnerStamps(Long id, Caller owner, LocalDateTime stampedAt) {
         ExpenseReport report = expenseReportRepository.findById(id).orElseThrow();
         assertThat(report.getCreatedOn()).isEqualTo(stampedAt);
@@ -559,6 +882,47 @@ class BusinessRulesTest {
         messages.add(error.getMessage());
         error.fieldErrors().stream().map(FieldViolation::message).forEach(messages::add);
         return messages;
+    }
+
+    @TestConfiguration(proxyBeanMethods = false)
+    static class ScriptedCodes {
+
+        @Bean
+        @Primary
+        ScriptedCodeGenerator scriptedCodeGenerator(KindRepositories kindRepositories, Clock clock) {
+            return new ScriptedCodeGenerator(kindRepositories, clock);
+        }
+    }
+
+    // Lets create() meet a chosen code, such as a taken one, before the real sequence resumes.
+    static class ScriptedCodeGenerator extends ReportCodeGenerator {
+
+        private final Queue<String> scripted = new ConcurrentLinkedQueue<>();
+        private final List<ReportKind> requests = new CopyOnWriteArrayList<>();
+
+        ScriptedCodeGenerator(KindRepositories kindRepositories, Clock clock) {
+            super(kindRepositories, clock);
+        }
+
+        @Override
+        public String nextCode(ReportKind kind) {
+            requests.add(kind);
+            String code = scripted.poll();
+            return code != null ? code : super.nextCode(kind);
+        }
+
+        void script(List<String> codes) {
+            scripted.addAll(codes);
+        }
+
+        int calls(ReportKind kind) {
+            return Collections.frequency(requests, kind);
+        }
+
+        void reset() {
+            scripted.clear();
+            requests.clear();
+        }
     }
 
     // @Nested classes must be inner (non-static); each loads its own context on the same H2 file.

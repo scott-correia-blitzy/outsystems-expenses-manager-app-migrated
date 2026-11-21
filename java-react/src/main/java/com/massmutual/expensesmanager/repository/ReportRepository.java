@@ -2,13 +2,16 @@ package com.massmutual.expensesmanager.repository;
 
 import com.massmutual.expensesmanager.domain.ReferenceIds;
 import com.massmutual.expensesmanager.domain.ReportEntity;
+import jakarta.persistence.LockModeType;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.NoRepositoryBean;
 import org.springframework.data.repository.query.Param;
@@ -93,4 +96,9 @@ public interface ReportRepository<R extends ReportEntity> extends JpaRepository<
 
     @Query("select r.code from #{#entityName} r where r.code like :pattern")
     List<String> findCodesLike(@Param("pattern") String pattern);
+
+    // Row lock held until commit, so a write's status and line checks cannot go stale.
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select r from #{#entityName} r where r.id = :id")
+    Optional<R> findByIdForUpdate(@Param("id") Long id);
 }

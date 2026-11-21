@@ -40,8 +40,9 @@ public class InvoiceService {
 
     @Transactional
     public void upload(Caller caller, ReportKind kind, Long lineId, String filename, String contentType, byte[] bytes) {
-        LineEntity line = policy.loadLine(kind, lineId);
-        ReportEntity report = policy.reportOf(kind, line);
+        ReportAccessPolicy.LockedLine locked = policy.loadLineForWrite(kind, lineId);
+        LineEntity line = locked.line();
+        ReportEntity report = locked.report();
         policy.requireOwnerWrite(caller, report);
         policy.requireDraft(report, LegacyMessages.NOT_DRAFT);
 
@@ -60,13 +61,15 @@ public class InvoiceService {
         }
         String filetype = acceptedContentType(filename, contentType);
 
-        InvoiceEntity invoice = kindRepositories.invoices(kind).findById(line.getId())
-                .orElseGet(() -> kindRepositories.newInvoice(kind, line.getId()));
-        invoice.setContent(bytes);
-        invoice.setFilename(filename);
-        invoice.setFiletype(filetype);
-        invoice.setDatetime(LocalDateTime.now(clock));
-        kindRepositories.invoices(kind).save(invoice);
+        LocalDateTime now = LocalDateTime.now(clock);
+        if (kindRepositories.invoices(kind).replace(line.getId(), bytes, filename, filetype, now) == 0) {
+            InvoiceEntity invoice = kindRepositories.newInvoice(kind, line.getId());
+            invoice.setContent(bytes);
+            invoice.setFilename(filename);
+            invoice.setFiletype(filetype);
+            invoice.setDatetime(now);
+            kindRepositories.invoices(kind).save(invoice);
+        }
     }
 
     @Transactional(readOnly = true)

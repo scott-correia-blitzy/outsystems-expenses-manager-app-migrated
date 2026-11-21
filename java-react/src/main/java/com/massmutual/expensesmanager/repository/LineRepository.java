@@ -7,6 +7,7 @@ import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.NoRepositoryBean;
@@ -21,6 +22,9 @@ public interface LineRepository<L extends LineEntity> extends JpaRepository<L, L
     List<L> findByReportIdAndTitleContainingIgnoreCase(Long reportId, String title);
 
     boolean existsByReportId(Long reportId);
+
+    @Query("select l.reportId from #{#entityName} l where l.id = :id")
+    Optional<Long> findReportIdById(@Param("id") Long id);
 
     @Query("select coalesce(sum(l.amountInEuros), 0) from #{#entityName} l where l.reportId = :reportId")
     BigDecimal sumByReportId(@Param("reportId") Long reportId);

@@ -26,6 +26,8 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Function;
+import java.util.stream.Stream;
+import org.hibernate.exception.ConstraintViolationException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -37,6 +39,8 @@ import org.springframework.transaction.support.TransactionTemplate;
 public class ReportService {
 
     private static final int TITLE_MAX_LENGTH = 50;
+    private static final List<String> REPORT_CODE_INDEXES =
+            List.of("ExpenseReport_UniqueIndex_ReportCode", "EarningReport_UniqueIndex_ReportCode");
     private static final String DEFAULT_SORT = "id,desc";
 
     private final KindRepositories kindRepositories;
@@ -120,6 +124,10 @@ public class ReportService {
                 .map(LineEntity::getAmountInEuros)
                 .filter(Objects::nonNull)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
+        Long createdBy = report.getCreatedBy();
+        Long submitedBy = report.getSubmitedBy();
+        Map<Long, String> names = appUserRepository.displayNames(
+                Stream.of(createdBy, submitedBy).filter(Objects::nonNull).distinct().toList());
         return new ReportDetail(
                 report.getId(),
                 kind.pathValue(),
@@ -127,10 +135,10 @@ public class ReportService {
                 report.getTitle(),
                 referenceData.statusLabel(report.getStatusId()),
                 report.getCreatedOn(),
-                name(report.getCreatedBy()),
+                createdBy == null ? null : names.get(createdBy),
                 report.getSubmitedOn(),
                 report.getProcessedOn(),
-                name(report.getSubmitedBy()),
+                submitedBy == null ? null : names.get(submitedBy),
                 calculator.money(total),
                 calculator.vat(total),
                 views);
@@ -139,21 +147,27 @@ public class ReportService {
     // Each attempt commits in its own transaction, so a report-code collision is retried after a rollback.
     public ReportSummary create(Caller caller, ReportKind kind, String title) {
         policy.requireAnyRole(caller, Role.User);
+        String storedTitle = normalizeTitle(title);
         List<FieldViolation> violations = new ArrayList<>();
         if (kind == null) {
             violations.add(new FieldViolation("kind", LegacyMessages.SELECT_REPORT_TYPE));
         }
-        titleViolation(title).ifPresent(violations::add);
+        titleViolation(storedTitle).ifPresent(violations::add);
         if (!violations.isEmpty()) {
             throw ApiException.validation(violations);
         }
-        String trimmedTitle = title.trim();
         try {
-            return insertDraft(caller, kind, trimmedTitle);
+            return insertDraft(caller, kind, storedTitle);
         } catch (DataIntegrityViolationException firstCollision) {
+            if (!isReportCodeCollision(firstCollision)) {
+                throw firstCollision;
+            }
             try {
-                return insertDraft(caller, kind, trimmedTitle);
+                return insertDraft(caller, kind, storedTitle);
             } catch (DataIntegrityViolationException secondCollision) {
+                if (!isReportCodeCollision(secondCollision)) {
+                    throw secondCollision;
+                }
                 ApiException conflict = ApiException.codeConflict();
                 conflict.initCause(secondCollision);
                 throw conflict;
@@ -163,22 +177,23 @@ public class ReportService {
 
     @Transactional
     public ReportSummary rename(Caller caller, ReportKind kind, Long id, String title) {
-        ReportEntity report = policy.loadReport(kind, id);
+        ReportEntity report = policy.loadReportForWrite(kind, id);
         policy.requireOwnerWrite(caller, report);
         policy.requireDraft(report, LegacyMessages.NOT_DRAFT);
-        Optional<FieldViolation> invalidTitle = titleViolation(title);
+        String storedTitle = normalizeTitle(title);
+        Optional<FieldViolation> invalidTitle = titleViolation(storedTitle);
         if (invalidTitle.isPresent()) {
             throw ApiException.validation(List.of(invalidTitle.get()));
         }
 
-        report.setTitle(title.trim());
+        report.setTitle(storedTitle);
         stampOwnerSave(report, caller, LocalDateTime.now(clock));
         return summary(kind, reports(kind).save(report));
     }
 
     @Transactional
     public ReportSummary submit(Caller caller, ReportKind kind, Long id) {
-        ReportEntity report = policy.loadReport(kind, id);
+        ReportEntity report = policy.loadReportForWrite(kind, id);
         policy.requireOwnerWrite(caller, report);
         policy.requireDraft(report, LegacyMessages.CANNOT_SUBMIT);
         if (!lines(kind).existsByReportId(report.getId())) {
@@ -194,7 +209,7 @@ public class ReportService {
 
     @Transactional
     public ReportSummary decide(Caller caller, ReportKind kind, Long id, boolean accept) {
-        ReportEntity report = policy.loadReport(kind, id);
+        ReportEntity report = policy.loadReportForWrite(kind, id);
         policy.requireAdministrator(caller);
 
         // No status check on purpose: an already decided report can be decided again.
@@ -206,7 +221,7 @@ public class ReportService {
     // Lines and their invoices go with the report through ON DELETE CASCADE in schema.sql.
     @Transactional
     public void delete(Caller caller, ReportKind kind, Long id) {
-        ReportEntity report = policy.loadReport(kind, id);
+        ReportEntity report = policy.loadReportForWrite(kind, id);
         policy.requireOwnerWrite(caller, report);
         policy.requireDraft(report, LegacyMessages.REPORT_CANT_BE_DELETED);
         reports(kind).delete(report);
@@ -222,6 +237,18 @@ public class ReportService {
             stampOwnerSave(report, caller, LocalDateTime.now(clock));
             return summary(kind, reports(kind).saveAndFlush(report));
         });
+    }
+
+    // H2 names the violated index upper-cased and schema-qualified, as in PUBLIC.EXPENSEREPORT_UNIQUEINDEX_REPORTCODE.
+    private static boolean isReportCodeCollision(DataIntegrityViolationException failure) {
+        for (Throwable cause = failure; cause != null; cause = cause.getCause()) {
+            if (cause instanceof ConstraintViolationException violation && violation.getConstraintName() != null) {
+                String name = violation.getConstraintName();
+                String index = name.substring(name.lastIndexOf('.') + 1);
+                return REPORT_CODE_INDEXES.stream().anyMatch(index::equalsIgnoreCase);
+            }
+        }
+        return false;
     }
 
     // Every owner save restamps the creation fields too, as the legacy save action did.
@@ -257,14 +284,34 @@ public class ReportService {
         return kindRepositories.lines(kind);
     }
 
-    private static Optional<FieldViolation> titleViolation(String title) {
-        if (title == null || title.isBlank()) {
+    private static Optional<FieldViolation> titleViolation(String storedTitle) {
+        if (storedTitle == null || storedTitle.isEmpty()) {
             return Optional.of(new FieldViolation("title", LegacyMessages.INSERT_TITLE));
         }
-        if (title.trim().length() > TITLE_MAX_LENGTH) {
+        if (storedTitle.length() > TITLE_MAX_LENGTH) {
             return Optional.of(new FieldViolation("title", LegacyMessages.MAX_LENGTH_50));
         }
         return Optional.empty();
+    }
+
+    private static String normalizeTitle(String title) {
+        if (title == null) {
+            return null;
+        }
+        int start = 0;
+        int end = title.length();
+        while (start < end && isTitlePadding(title.charAt(start))) {
+            start++;
+        }
+        while (end > start && isTitlePadding(title.charAt(end - 1))) {
+            end--;
+        }
+        return title.substring(start, end);
+    }
+
+    // trim() alone keeps Unicode spaces such as U+2003 and strip() alone keeps control characters such as U+0000.
+    private static boolean isTitlePadding(char c) {
+        return c <= ' ' || Character.isWhitespace(c);
     }
 
     private Integer statusFilter(String status) {
@@ -290,11 +337,10 @@ public class ReportService {
 
     private static Comparator<ReportSummary> sortOrder(String sort) {
         String[] parts = (sort == null || sort.isBlank() ? DEFAULT_SORT : sort).split(",", -1);
-        if (parts.length > 2) {
+        if (parts.length != 2) {
             throw ApiException.validation("sort", LegacyMessages.INVALID_VALUE);
         }
-        boolean descending = parts.length == 2 && descending(parts[1]);
-        return columnOrder(parts[0].trim(), descending)
+        return columnOrder(parts[0].trim(), descending(parts[1]))
                 .thenComparing(ReportSummary::id, Comparator.nullsLast(Comparator.reverseOrder()));
     }
 

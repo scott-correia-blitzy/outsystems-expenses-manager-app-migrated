@@ -6,6 +6,7 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.NoRepositoryBean;
 import org.springframework.data.repository.query.Param;
@@ -31,4 +32,15 @@ public interface InvoiceRepository<I extends InvoiceEntity> extends JpaRepositor
     @Query("select i.id as id, i.filename as filename, i.filetype as filetype, i.datetime as datetime"
             + " from #{#entityName} i where i.id = :id")
     Optional<InvoiceMeta> findInfoById(@Param("id") Long id);
+
+    // A bulk update, because assigning Content on a loaded invoice would first read the old bytes.
+    @Modifying
+    @Query("update #{#entityName} i set i.content = :content, i.filename = :filename, i.filetype = :filetype,"
+            + " i.datetime = :datetime where i.id = :id")
+    int replace(
+            @Param("id") Long id,
+            @Param("content") byte[] content,
+            @Param("filename") String filename,
+            @Param("filetype") String filetype,
+            @Param("datetime") LocalDateTime datetime);
 }
