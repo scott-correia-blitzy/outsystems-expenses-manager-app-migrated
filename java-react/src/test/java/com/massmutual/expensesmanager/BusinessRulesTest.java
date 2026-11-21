@@ -11,18 +11,29 @@ import com.massmutual.expensesmanager.domain.AppUser;
 import com.massmutual.expensesmanager.domain.EarningReport;
 import com.massmutual.expensesmanager.domain.Expense;
 import com.massmutual.expensesmanager.domain.ExpenseReport;
+import com.massmutual.expensesmanager.domain.InvoiceEarning;
+import com.massmutual.expensesmanager.domain.InvoiceEntity;
+import com.massmutual.expensesmanager.domain.InvoiceExpense;
+import com.massmutual.expensesmanager.domain.LineEntity;
 import com.massmutual.expensesmanager.domain.ReferenceIds;
 import com.massmutual.expensesmanager.domain.ReportEntity;
 import com.massmutual.expensesmanager.domain.ReportKind;
 import com.massmutual.expensesmanager.domain.Role;
 import com.massmutual.expensesmanager.repository.AppUserRepository;
 import com.massmutual.expensesmanager.repository.BlogPostRepository;
+import com.massmutual.expensesmanager.repository.CurrencyRepository;
 import com.massmutual.expensesmanager.repository.EarningReportRepository;
 import com.massmutual.expensesmanager.repository.EarningRepository;
+import com.massmutual.expensesmanager.repository.EarningTypeRepository;
 import com.massmutual.expensesmanager.repository.ExpenseReportRepository;
 import com.massmutual.expensesmanager.repository.ExpenseRepository;
+import com.massmutual.expensesmanager.repository.ExpenseTypeRepository;
 import com.massmutual.expensesmanager.repository.InvoiceEarningRepository;
 import com.massmutual.expensesmanager.repository.InvoiceExpenseRepository;
+import com.massmutual.expensesmanager.repository.InvoiceRepository;
+import com.massmutual.expensesmanager.repository.LineRepository;
+import com.massmutual.expensesmanager.repository.ReportRepository;
+import com.massmutual.expensesmanager.repository.StatusRepository;
 import com.massmutual.expensesmanager.service.AmountCalculator;
 import com.massmutual.expensesmanager.service.ApiException;
 import com.massmutual.expensesmanager.service.AuthService;
@@ -35,9 +46,11 @@ import com.massmutual.expensesmanager.service.KindRepositories;
 import com.massmutual.expensesmanager.service.LegacyMessages;
 import com.massmutual.expensesmanager.service.LineService;
 import com.massmutual.expensesmanager.service.ReferenceDataService;
+import com.massmutual.expensesmanager.service.ReportAccessPolicy;
 import com.massmutual.expensesmanager.service.ReportCodeGenerator;
 import com.massmutual.expensesmanager.service.ReportService;
 import com.massmutual.expensesmanager.service.SeedDataLoader;
+import com.massmutual.expensesmanager.service.ToolsService;
 import com.massmutual.expensesmanager.service.model.BlogPostView;
 import com.massmutual.expensesmanager.service.model.FieldViolation;
 import com.massmutual.expensesmanager.service.model.InvoiceFile;
@@ -67,6 +80,7 @@ import java.util.Comparator;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
 import java.util.Queue;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentLinkedQueue;
@@ -106,6 +120,7 @@ import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.Primary;
 import org.springframework.core.io.ByteArrayResource;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.core.AuthenticationException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.annotation.DirtiesContext;
@@ -123,6 +138,8 @@ class BusinessRulesTest {
 
     private static final LocalDate LINE_DATE = LocalDate.of(2024, 5, 21);
     private static final byte[] PNG_BYTES = {(byte) 0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'};
+    private static final StoredInvoice TWIN_INVOICE = new StoredInvoice("twin.jpg", "image/jpeg",
+            new byte[] {(byte) 0xFF, (byte) 0xD8, (byte) 0xFF}, LocalDateTime.of(2024, 5, 22, 8, 30));
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final String SEED_PASSWORD = "Seedcheck-Pass-7741";
     private static final String SEED_TEMPLATE = """
@@ -172,6 +189,14 @@ class BusinessRulesTest {
     private InvoiceEarningRepository invoiceEarningRepository;
     @Autowired
     private BlogPostRepository blogPostRepository;
+    @Autowired
+    private CurrencyRepository currencyRepository;
+    @Autowired
+    private StatusRepository statusRepository;
+    @Autowired
+    private ExpenseTypeRepository expenseTypeRepository;
+    @Autowired
+    private EarningTypeRepository earningTypeRepository;
 
     @Autowired
     private ReportService reportService;
@@ -195,11 +220,23 @@ class BusinessRulesTest {
     private AuthService authService;
     @Autowired
     private PasswordEncoder passwordEncoder;
+    @Autowired
+    private ToolsService toolsService;
+    @Autowired
+    private AmountCalculator amountCalculator;
+    @Autowired
+    private KindRepositories kindRepositories;
+    @Autowired
+    private ReportAccessPolicy reportAccessPolicy;
+    @Autowired
+    private ExpensesProperties expensesProperties;
 
     @Autowired
     private MutableClock clock;
     @Autowired
     private PlatformTransactionManager transactionManager;
+    @Autowired
+    private JdbcTemplate jdbcTemplate;
 
     @BeforeEach
     void resetData() {
@@ -271,6 +308,41 @@ class BusinessRulesTest {
                 });
     }
 
+    static Stream<Arguments> converterRejectsAMissingOrNonPositiveAmountOrRate() {
+        FieldViolation amount = new FieldViolation("amount", LegacyMessages.USD_AMOUNT_ABOVE_ZERO);
+        FieldViolation rate = new FieldViolation("rate", LegacyMessages.RATE_ABOVE_ZERO);
+        return Stream.of(
+                arguments(null, "0.93", List.of(amount)),
+                arguments("0", "0.93", List.of(amount)),
+                arguments("-1", "0.93", List.of(amount)),
+                arguments("100", null, List.of(rate)),
+                arguments("100", "0", List.of(rate)),
+                arguments("100", "-0.93", List.of(rate)),
+                arguments("0", "-0.93", List.of(amount, rate)),
+                arguments(null, null, List.of(amount, rate)));
+    }
+
+    @ParameterizedTest(name = "amount {0}, rate {1} rejects {2}")
+    @MethodSource
+    void converterRejectsAMissingOrNonPositiveAmountOrRate(String amount, String rate, List<FieldViolation> expected) {
+        assertThatExceptionOfType(ApiException.class)
+                .isThrownBy(() -> amountCalculator.usdToEur(decimal(amount), decimal(rate)))
+                .satisfies(error -> {
+                    assertThat(error.status()).isEqualTo(422);
+                    assertThat(error.code()).isEqualTo(ApiException.VALIDATION_FAILED);
+                    assertThat(error.fieldErrors()).containsExactlyElementsOf(expected);
+                });
+    }
+
+    @ParameterizedTest(name = "km {0}")
+    @NullSource
+    @ValueSource(strings = {"0", "-1"})
+    void mileageToolRejectsAMissingOrNonPositiveDistance(String km) {
+        Caller caller = newCaller(appUserRepository, Role.User);
+
+        assertFieldError(() -> toolsService.mileage(caller, decimal(km)), "km", LegacyMessages.DISTANCE_POSITIVE);
+    }
+
     static Stream<Arguments> nextCodeFollowsTheHighestNumberOfTheClockYear() {
         return Stream.of(
                 arguments(ReportKind.EXPENSE, List.of("2/2024 EX", "11/2024 EX"),
@@ -327,8 +399,8 @@ class BusinessRulesTest {
     void createRejectsAFiftyOneCharacterTitle() {
         Caller owner = newCaller(appUserRepository, Role.User);
 
-        assertApiError(() -> reportService.create(owner, ReportKind.EXPENSE, "T".repeat(51)),
-                422, ApiException.VALIDATION_FAILED, LegacyMessages.MAX_LENGTH_50);
+        assertFieldError(() -> reportService.create(owner, ReportKind.EXPENSE, "T".repeat(51)),
+                "title", LegacyMessages.MAX_LENGTH_50);
     }
 
     @ParameterizedTest(name = "padding-only title #{index}")
@@ -337,10 +409,10 @@ class BusinessRulesTest {
         Caller owner = newCaller(appUserRepository, Role.User);
         Long draftId = reportService.create(owner, ReportKind.EXPENSE, "Draft").id();
 
-        assertApiError(() -> reportService.create(owner, ReportKind.EXPENSE, title),
-                422, ApiException.VALIDATION_FAILED, LegacyMessages.INSERT_TITLE);
-        assertApiError(() -> reportService.rename(owner, ReportKind.EXPENSE, draftId, title),
-                422, ApiException.VALIDATION_FAILED, LegacyMessages.INSERT_TITLE);
+        assertFieldError(() -> reportService.create(owner, ReportKind.EXPENSE, title),
+                "title", LegacyMessages.INSERT_TITLE);
+        assertFieldError(() -> reportService.rename(owner, ReportKind.EXPENSE, draftId, title),
+                "title", LegacyMessages.INSERT_TITLE);
         assertThat(expenseReportRepository.findAll()).extracting(ExpenseReport::getTitle).containsExactly("Draft");
     }
 
@@ -484,17 +556,20 @@ class BusinessRulesTest {
                 409, ApiException.NOT_DRAFT, LegacyMessages.DETAIL_CANT_BE_DELETED);
     }
 
-    @Test
-    void deletingADraftReportRemovesItsLinesAndInvoices() {
+    @ParameterizedTest(name = "{0}")
+    @EnumSource(ReportKind.class)
+    void deletingADraftReportRemovesItsLinesAndInvoices(ReportKind kind) {
         Caller owner = newCaller(appUserRepository, Role.User);
-        LineView line = draftWithLine(owner);
-        invoiceService.upload(owner, ReportKind.EXPENSE, line.id(), "receipt.png", "image/png", PNG_BYTES);
+        LineView line = draftWithLineAndTwin(owner, kind);
+        invoiceService.upload(owner, kind, line.id(), "receipt.png", "image/png", PNG_BYTES);
+        assertThat(invoicesOf(kind).existsById(line.id())).isTrue();
 
-        reportService.delete(owner, ReportKind.EXPENSE, line.reportId());
+        reportService.delete(owner, kind, line.reportId());
 
-        assertThat(expenseReportRepository.existsById(line.reportId())).isFalse();
-        assertThat(expenseRepository.existsById(line.id())).isFalse();
-        assertThat(invoiceExpenseRepository.existsById(line.id())).isFalse();
+        assertThat(reportsOf(kind).existsById(line.reportId())).isFalse();
+        assertThat(linesOf(kind).existsById(line.id())).isFalse();
+        assertThat(invoicesOf(kind).existsById(line.id())).isFalse();
+        assertTwinUnchanged(otherKind(kind), line);
     }
 
     enum Write { SUBMIT, DECIDE, RENAME, DELETE_REPORT, CREATE_LINE, UPDATE_LINE, DELETE_LINE, UPLOAD_INVOICE }
@@ -631,6 +706,82 @@ class BusinessRulesTest {
                 403, ApiException.FORBIDDEN, LegacyMessages.NO_PERMISSIONS);
     }
 
+    enum Intruder { ANOTHER_USER, USER_AND_ADMINISTRATOR, ADMINISTRATOR_WITH_THE_OWNERS_ID }
+
+    static Stream<Arguments> ownerWritesByAnyoneButTheOwningUserAreForbidden() {
+        List<Write> ownerWrites = List.of(Write.RENAME, Write.DELETE_REPORT, Write.SUBMIT, Write.CREATE_LINE,
+                Write.UPDATE_LINE, Write.DELETE_LINE, Write.UPLOAD_INVOICE);
+        return Arrays.stream(ReportKind.values()).flatMap(kind -> ownerWrites.stream().flatMap(write ->
+                Arrays.stream(Intruder.values()).map(intruder -> arguments(kind, write, intruder))));
+    }
+
+    @ParameterizedTest(name = "{0} {1} by {2}")
+    @MethodSource
+    void ownerWritesByAnyoneButTheOwningUserAreForbidden(ReportKind kind, Write write, Intruder intruder) {
+        Caller owner = newCaller(appUserRepository, Role.User);
+        LineView line = draftWithLine(owner, kind);
+        invoiceService.upload(owner, kind, line.id(), "receipt.png", "image/png", PNG_BYTES);
+        Caller caller = callerOf(intruder, owner);
+        clock.set(MutableClock.DEFAULT_TIME.plusHours(1));
+
+        assertApiError(() -> ownerWrite(write, caller, kind, line),
+                403, ApiException.FORBIDDEN, LegacyMessages.FORBIDDEN);
+
+        ReportEntity report = reportsOf(kind).findById(line.reportId()).orElseThrow();
+        assertThat(report.getStatusId()).isEqualTo(ReferenceIds.STATUS_DRAFT);
+        assertThat(report.getTitle()).isEqualTo("London Trip");
+        assertThat(report.getCreatedOn()).isEqualTo(MutableClock.DEFAULT_TIME);
+        assertThat(report.getUpdatedOn()).isEqualTo(MutableClock.DEFAULT_TIME);
+        assertThat(report.getSubmitedOn()).isNull();
+        assertThat(report.getCreatedBy()).isEqualTo(owner.id());
+        assertThat(report.getSubmitedBy()).isEqualTo(owner.id());
+        assertThat(report.getUpdatedBy()).isEqualTo(owner.id());
+        assertThat(linesOf(kind).findByReportId(line.reportId())).singleElement().satisfies(stored -> {
+            assertThat(stored.getId()).isEqualTo(line.id());
+            assertThat(stored.getTitle()).isEqualTo("Flight tickets");
+            assertThat(stored.getAmountInEuros()).isEqualByComparingTo("42.00");
+        });
+        assertThat(invoicesOf(kind).findInfoById(line.id())).hasValueSatisfying(invoice -> {
+            assertThat(invoice.getFilename()).isEqualTo("receipt.png");
+            assertThat(invoice.getFiletype()).isEqualTo("image/png");
+            assertThat(invoice.getDatetime()).isEqualTo(MutableClock.DEFAULT_TIME);
+        });
+        assertThat(invoicesOf(kind).count()).isEqualTo(1);
+    }
+
+    private Caller callerOf(Intruder intruder, Caller owner) {
+        return switch (intruder) {
+            case ANOTHER_USER -> newCaller(appUserRepository, Role.User);
+            case USER_AND_ADMINISTRATOR -> {
+                String username = "user-administrator-" + UUID.randomUUID();
+                AppUser saved = appUserRepository.save(new AppUser(username, "User Administrator", "unused-hash",
+                        EnumSet.of(Role.User, Role.Administrator)));
+                yield new Caller(saved.getId(), username, saved.getName(),
+                        EnumSet.of(Role.User, Role.Administrator, Role.Registered));
+            }
+            // The owner's own id, so only the missing User role can refuse the write.
+            case ADMINISTRATOR_WITH_THE_OWNERS_ID -> new Caller(owner.id(), owner.username(), owner.displayName(),
+                    EnumSet.of(Role.Administrator, Role.Registered));
+        };
+    }
+
+    private void ownerWrite(Write write, Caller caller, ReportKind kind, LineView line) {
+        int typeId = kind == ReportKind.EXPENSE ? ReferenceIds.EXPENSE_TYPE_TRAVEL : ReferenceIds.EARNING_TYPE_SERVICE;
+        LineService.LineInput input = line(typeId, ReferenceIds.CURRENCY_EURO, new BigDecimal("10.00"), null, "Taxi",
+                "", LINE_DATE);
+        switch (write) {
+            case RENAME -> reportService.rename(caller, kind, line.reportId(), "Renamed");
+            case DELETE_REPORT -> reportService.delete(caller, kind, line.reportId());
+            case SUBMIT -> reportService.submit(caller, kind, line.reportId());
+            case CREATE_LINE -> lineService.create(caller, kind, line.reportId(), input);
+            case UPDATE_LINE -> lineService.update(caller, kind, line.id(), input);
+            case DELETE_LINE -> lineService.delete(caller, kind, line.id());
+            case UPLOAD_INVOICE -> invoiceService.upload(caller, kind, line.id(), "invoice.pdf", "application/pdf",
+                    "%PDF-1.7".getBytes(StandardCharsets.US_ASCII));
+            case DECIDE -> throw new IllegalArgumentException("A decision is not an owner write");
+        }
+    }
+
     @ParameterizedTest(name = "accept={0} gives {1}")
     @CsvSource({"true, Approved", "false, Declined"})
     void administratorDecisionSetsTheStatus(boolean accept, String expectedStatus) {
@@ -644,29 +795,41 @@ class BusinessRulesTest {
     static Stream<Arguments> serverComputesAndStoresEuroAmounts() {
         return Stream.of(
                 arguments(ReferenceIds.EXPENSE_TYPE_TRAVEL, ReferenceIds.CURRENCY_DOLLAR,
-                        "100.00", null, "93.00", "21.39"),
-                arguments(ReferenceIds.EXPENSE_TYPE_KILOMETERS, null, null, "10", "3.70", "0.85"),
+                        "100.00", null, "93.0000", "93.00", "21.39"),
+                arguments(ReferenceIds.EXPENSE_TYPE_KILOMETERS, null, null, "10", "3.7000", "3.70", "0.85"),
                 arguments(ReferenceIds.EXPENSE_TYPE_TRAVEL, ReferenceIds.CURRENCY_EURO,
-                        "42.00", null, "42.00", "9.66"));
+                        "42.00", null, "42.0000", "42.00", "9.66"),
+                // Each fractional row changes under two-decimal storage, truncation or half-even rounding.
+                arguments(ReferenceIds.EXPENSE_TYPE_TRAVEL, ReferenceIds.CURRENCY_EURO,
+                        "10.12345", null, "10.1235", "10.12", "2.33"),
+                arguments(ReferenceIds.EXPENSE_TYPE_TRAVEL, ReferenceIds.CURRENCY_EURO,
+                        "2.005", null, "2.0050", "2.01", "0.46"),
+                arguments(ReferenceIds.EXPENSE_TYPE_TRAVEL, ReferenceIds.CURRENCY_DOLLAR,
+                        "10.005", null, "9.3047", "9.30", "2.14"),
+                arguments(ReferenceIds.EXPENSE_TYPE_KILOMETERS, null, null, "0.12345", "0.0457", "0.05", "0.01"),
+                arguments(ReferenceIds.EXPENSE_TYPE_TRAVEL, ReferenceIds.CURRENCY_EURO,
+                        "1.50", null, "1.5000", "1.50", "0.35"),
+                arguments(ReferenceIds.EXPENSE_TYPE_TRAVEL, ReferenceIds.CURRENCY_EURO,
+                        "1.495", null, "1.4950", "1.50", "0.34"));
     }
 
-    @ParameterizedTest(name = "type {0}, currency {1}, amount {2}, km {3} stores {4} with VAT {5}")
+    @ParameterizedTest(name = "type {0}, currency {1}, amount {2}, km {3} stores {4}, shows {5} with VAT {6}")
     @MethodSource
-    void serverComputesAndStoresEuroAmounts(
-            int typeId, Integer currencyId, String amount, String kilometers, String euros, String vat) {
+    void serverComputesAndStoresEuroAmounts(int typeId, Integer currencyId, String amount, String kilometers,
+            String storedEuros, String euros, String vat) {
         Caller owner = newCaller(appUserRepository, Role.User);
         Long reportId = reportService.create(owner, ReportKind.EXPENSE, "Amounts").id();
 
         LineView view = lineService.create(owner, ReportKind.EXPENSE, reportId,
                 line(typeId, currencyId, decimal(amount), decimal(kilometers), "Amount", "", LINE_DATE));
 
-        assertThat(view.amountInEuros()).isEqualByComparingTo(euros);
-        assertThat(view.vat()).isEqualByComparingTo(vat);
         Expense stored = expenseRepository.findById(view.id()).orElseThrow();
-        assertThat(stored.getAmountInEuros()).isEqualByComparingTo(euros);
+        assertThat(stored.getAmountInEuros()).isEqualTo(new BigDecimal(storedEuros));
+        assertThat(view.amountInEuros()).isEqualTo(new BigDecimal(euros));
+        assertThat(view.vat()).isEqualTo(new BigDecimal(vat));
         ReportDetail detail = reportService.detail(owner, ReportKind.EXPENSE, reportId);
-        assertThat(detail.totalEur()).isEqualByComparingTo(euros);
-        assertThat(detail.vatTotal()).isEqualByComparingTo(vat);
+        assertThat(detail.totalEur()).isEqualTo(new BigDecimal(euros));
+        assertThat(detail.vatTotal()).isEqualTo(new BigDecimal(vat));
     }
 
     @Test
@@ -683,70 +846,109 @@ class BusinessRulesTest {
                 .isEqualByComparingTo("93.00");
     }
 
-    @ParameterizedTest(name = "filename \"{0}\"")
-    @NullSource
-    @ValueSource(strings = {"", "   "})
-    void uploadWithoutAFilenameIsRejected(String filename) {
+    @ParameterizedTest(name = "{0}")
+    @EnumSource(ReportKind.class)
+    void reportTotalsRoundTheSumOfTheStoredAmounts(ReportKind kind) {
         Caller owner = newCaller(appUserRepository, Role.User);
-        LineView line = draftWithLine(owner);
+        Long reportId = reportService.create(owner, kind, "Totals").id();
+        int typeId = kind == ReportKind.EXPENSE ? ReferenceIds.EXPENSE_TYPE_TRAVEL : ReferenceIds.EARNING_TYPE_SERVICE;
+        for (String title : List.of("Outbound", "Return")) {
+            lineService.create(owner, kind, reportId,
+                    line(typeId, ReferenceIds.CURRENCY_EURO, new BigDecimal("10.6825"), null, title, "", LINE_DATE));
+        }
 
-        assertApiError(() -> invoiceService.upload(owner, ReportKind.EXPENSE, line.id(), filename, "image/png",
-                        PNG_BYTES),
-                422, ApiException.VALIDATION_FAILED, LegacyMessages.NO_FILE_SELECTED);
+        assertThat(linesOf(kind).findByReportId(reportId)).extracting(LineEntity::getAmountInEuros)
+                .containsExactly(new BigDecimal("10.6825"), new BigDecimal("10.6825"));
+        ReportDetail detail = reportService.detail(owner, kind, reportId);
+        assertThat(detail.lines()).extracting(LineView::amountInEuros)
+                .containsExactly(new BigDecimal("10.68"), new BigDecimal("10.68"));
+        assertThat(detail.lines()).extracting(LineView::vat)
+                .containsExactly(new BigDecimal("2.46"), new BigDecimal("2.46"));
+        // Summing the rounded line figures would give 21.36 and 4.92.
+        assertThat(detail.totalEur()).isEqualTo(new BigDecimal("21.37"));
+        assertThat(detail.vatTotal()).isEqualTo(new BigDecimal("4.91"));
     }
 
-    @Test
-    void uploadOfANamedEmptyFileIsRejected() {
-        Caller owner = newCaller(appUserRepository, Role.User);
-        LineView line = draftWithLine(owner);
-
-        assertApiError(() -> invoiceService.upload(owner, ReportKind.EXPENSE, line.id(), "empty.png", "image/png",
-                        new byte[0]),
-                422, ApiException.VALIDATION_FAILED, LegacyMessages.NO_FILE_UPLOADED);
+    static Stream<Arguments> uploadWithoutAFilenameIsRejected() {
+        return Stream.of(ReportKind.values())
+                .flatMap(kind -> Stream.of(null, "", "   ").map(filename -> arguments(kind, filename)));
     }
 
-    @Test
-    void fiftyCharacterFilenameIsStoredAndDownloadedUnchanged() {
+    @ParameterizedTest(name = "{0} filename \"{1}\"")
+    @MethodSource
+    void uploadWithoutAFilenameIsRejected(ReportKind kind, String filename) {
         Caller owner = newCaller(appUserRepository, Role.User);
-        LineView line = draftWithLine(owner);
+        LineView line = draftWithLineAndTwin(owner, kind);
+
+        assertFieldError(() -> invoiceService.upload(owner, kind, line.id(), filename, "image/png", PNG_BYTES),
+                "file", LegacyMessages.NO_FILE_SELECTED);
+        assertThat(invoicesOf(kind).count()).isZero();
+        assertTwinUnchanged(otherKind(kind), line);
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @EnumSource(ReportKind.class)
+    void uploadOfANamedEmptyFileIsRejected(ReportKind kind) {
+        Caller owner = newCaller(appUserRepository, Role.User);
+        LineView line = draftWithLineAndTwin(owner, kind);
+
+        assertFieldError(() -> invoiceService.upload(owner, kind, line.id(), "empty.png", "image/png", new byte[0]),
+                "file", LegacyMessages.NO_FILE_UPLOADED);
+        assertThat(invoicesOf(kind).count()).isZero();
+        assertTwinUnchanged(otherKind(kind), line);
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @EnumSource(ReportKind.class)
+    void fiftyCharacterFilenameIsStoredAndDownloadedUnchanged(ReportKind kind) {
+        Caller owner = newCaller(appUserRepository, Role.User);
+        LineView line = draftWithLineAndTwin(owner, kind);
         String filename = "i".repeat(46) + ".png";
 
-        invoiceService.upload(owner, ReportKind.EXPENSE, line.id(), filename, "image/png", PNG_BYTES);
-        InvoiceFile file = invoiceService.download(owner, ReportKind.EXPENSE, line.id());
+        invoiceService.upload(owner, kind, line.id(), filename, "image/png", PNG_BYTES);
+        InvoiceFile file = invoiceService.download(owner, kind, line.id());
 
         assertThat(file.filename()).isEqualTo(filename).hasSize(50);
         assertThat(file.contentType()).isEqualTo("image/png");
         assertThat(file.content()).isEqualTo(PNG_BYTES);
+        assertThat(storedInvoice(kind, line.id())).get().usingRecursiveComparison()
+                .isEqualTo(new StoredInvoice(filename, "image/png", PNG_BYTES, MutableClock.DEFAULT_TIME));
+        assertTwinUnchanged(otherKind(kind), line);
     }
 
-    @Test
-    void fiftyOneCharacterFilenameIsRejected() {
+    @ParameterizedTest(name = "{0}")
+    @EnumSource(ReportKind.class)
+    void fiftyOneCharacterFilenameIsRejected(ReportKind kind) {
         Caller owner = newCaller(appUserRepository, Role.User);
-        LineView line = draftWithLine(owner);
+        LineView line = draftWithLineAndTwin(owner, kind);
         String filename = "i".repeat(47) + ".png";
 
-        assertApiError(() -> invoiceService.upload(owner, ReportKind.EXPENSE, line.id(), filename, "image/png",
-                        PNG_BYTES),
-                422, ApiException.VALIDATION_FAILED, LegacyMessages.FILE_NAME_TOO_LONG);
+        assertFieldError(() -> invoiceService.upload(owner, kind, line.id(), filename, "image/png", PNG_BYTES),
+                "file", LegacyMessages.FILE_NAME_TOO_LONG);
+        assertThat(invoicesOf(kind).count()).isZero();
+        assertTwinUnchanged(otherKind(kind), line);
     }
 
-    @Test
-    void aRepeatUploadReplacesTheInvoice() {
+    @ParameterizedTest(name = "{0}")
+    @EnumSource(ReportKind.class)
+    void aRepeatUploadReplacesTheInvoice(ReportKind kind) {
         Caller owner = newCaller(appUserRepository, Role.User);
-        LineView line = draftWithLine(owner);
+        LineView line = draftWithLineAndTwin(owner, kind);
         byte[] pdf = "%PDF-1.7".getBytes(StandardCharsets.US_ASCII);
-        invoiceService.upload(owner, ReportKind.EXPENSE, line.id(), "receipt.png", "image/png", PNG_BYTES);
+        invoiceService.upload(owner, kind, line.id(), "receipt.png", "image/png", PNG_BYTES);
         LocalDateTime replacedAt = MutableClock.DEFAULT_TIME.plusHours(1);
         clock.set(replacedAt);
 
-        invoiceService.upload(owner, ReportKind.EXPENSE, line.id(), "invoice.pdf", "application/pdf", pdf);
-        InvoiceFile file = invoiceService.download(owner, ReportKind.EXPENSE, line.id());
+        invoiceService.upload(owner, kind, line.id(), "invoice.pdf", "application/pdf", pdf);
+        InvoiceFile file = invoiceService.download(owner, kind, line.id());
 
         assertThat(file.filename()).isEqualTo("invoice.pdf");
         assertThat(file.contentType()).isEqualTo("application/pdf");
         assertThat(file.content()).isEqualTo(pdf);
-        assertThat(invoiceExpenseRepository.count()).isEqualTo(1);
-        assertThat(invoiceExpenseRepository.findInfoById(line.id()).orElseThrow().getDatetime()).isEqualTo(replacedAt);
+        assertThat(invoicesOf(kind).count()).isEqualTo(1);
+        assertThat(storedInvoice(kind, line.id())).get().usingRecursiveComparison()
+                .isEqualTo(new StoredInvoice("invoice.pdf", "application/pdf", pdf, replacedAt));
+        assertTwinUnchanged(otherKind(kind), line);
     }
 
     @Test
@@ -763,20 +965,19 @@ class BusinessRulesTest {
 
     static Stream<Arguments> blogRejectsTitleOrDescriptionOverTheLimit() {
         return Stream.of(
-                arguments("B".repeat(51), "Description", LegacyMessages.MAX_LENGTH_50),
-                arguments("Title", "d".repeat(10_001), LegacyMessages.MAX_LENGTH_10000));
+                arguments("B".repeat(51), "Description", "title", LegacyMessages.MAX_LENGTH_50),
+                arguments("Title", "d".repeat(10_001), "description", LegacyMessages.MAX_LENGTH_10000));
     }
 
-    @ParameterizedTest(name = "rejected with \"{2}\"")
+    @ParameterizedTest(name = "{2} rejected with \"{3}\"")
     @MethodSource
-    void blogRejectsTitleOrDescriptionOverTheLimit(String title, String description, String message) {
+    void blogRejectsTitleOrDescriptionOverTheLimit(String title, String description, String field, String message) {
         Caller admin = newCaller(appUserRepository, Role.Administrator);
         BlogService.PostInput input = new BlogService.PostInput(title, description);
         Long existingId = blogService.create(admin, new BlogService.PostInput("Existing", "")).id();
 
-        assertApiError(() -> blogService.create(admin, input), 422, ApiException.VALIDATION_FAILED, message);
-        assertApiError(() -> blogService.update(admin, existingId, input),
-                422, ApiException.VALIDATION_FAILED, message);
+        assertFieldError(() -> blogService.create(admin, input), field, message);
+        assertFieldError(() -> blogService.update(admin, existingId, input), field, message);
     }
 
     @Test
@@ -845,11 +1046,8 @@ class BusinessRulesTest {
     @ValueSource(strings = {"id", "title", "id,desc,extra", ",desc", "id,", "nope,asc", "id,up"})
     void listRejectsASortThatIsNotAColumnAndDirection(String sort) {
         Caller owner = newCaller(appUserRepository, Role.User);
-        ThrowingCallable listing = () -> reportService.list(owner, ReportKind.EXPENSE, null, null, sort, null, null);
-
-        assertApiError(listing, 422, ApiException.VALIDATION_FAILED, LegacyMessages.INVALID_VALUE);
-        assertThatExceptionOfType(ApiException.class).isThrownBy(listing).satisfies(error ->
-                assertThat(error.fieldErrors()).extracting(FieldViolation::field).containsExactly("sort"));
+        assertFieldError(() -> reportService.list(owner, ReportKind.EXPENSE, null, null, sort, null, null),
+                "sort", LegacyMessages.INVALID_VALUE);
     }
 
     static Stream<Arguments> listOrdersByTheRequestedSort() {
@@ -889,20 +1087,19 @@ class BusinessRulesTest {
 
     static Stream<Arguments> lineRejectsTitleOrDescriptionOverTheLimit() {
         return Stream.of(
-                arguments("L".repeat(51), "", LegacyMessages.MAX_LENGTH_50),
-                arguments("Title", "d".repeat(1501), LegacyMessages.MAX_LENGTH_1500));
+                arguments("L".repeat(51), "", "title", LegacyMessages.MAX_LENGTH_50),
+                arguments("Title", "d".repeat(1501), "description", LegacyMessages.MAX_LENGTH_1500));
     }
 
-    @ParameterizedTest(name = "rejected with \"{2}\"")
+    @ParameterizedTest(name = "{2} rejected with \"{3}\"")
     @MethodSource
-    void lineRejectsTitleOrDescriptionOverTheLimit(String title, String description, String message) {
+    void lineRejectsTitleOrDescriptionOverTheLimit(String title, String description, String field, String message) {
         Caller owner = newCaller(appUserRepository, Role.User);
         Long reportId = reportService.create(owner, ReportKind.EXPENSE, "Limits").id();
         LineService.LineInput input = line(ReferenceIds.EXPENSE_TYPE_OTHER, ReferenceIds.CURRENCY_EURO, BigDecimal.TEN,
                 null, title, description, LINE_DATE);
 
-        assertApiError(() -> lineService.create(owner, ReportKind.EXPENSE, reportId, input),
-                422, ApiException.VALIDATION_FAILED, message);
+        assertFieldError(() -> lineService.create(owner, ReportKind.EXPENSE, reportId, input), field, message);
     }
 
     static Stream<Arguments> lineRequestReportsTheTextErrorsLineServiceReports() {
@@ -1003,6 +1200,130 @@ class BusinessRulesTest {
                 .satisfies(stored -> assertThat(stored.getAmountInEuros()).isEqualByComparingTo("42.00"));
     }
 
+    static Stream<Arguments> lineInputBreakingOneRuleIsRejectedAndChangesNothing() {
+        LocalDate tomorrow = LocalDate.of(2024, 5, 24);
+        Stream<Arguments> eitherKind = Arrays.stream(ReportKind.values()).flatMap(kind -> {
+            int type = kind == ReportKind.EXPENSE ? ReferenceIds.EXPENSE_TYPE_OTHER : ReferenceIds.EARNING_TYPE_SALARY;
+            String typeField = kind == ReportKind.EXPENSE ? "expenseTypeId" : "earningTypeId";
+            int eur = ReferenceIds.CURRENCY_EURO;
+            int usd = ReferenceIds.CURRENCY_DOLLAR;
+            return Stream.of(
+                    arguments(kind, type, eur, "10.00", null, null, "date", LegacyMessages.DATE_PAST_OR_CURRENT),
+                    arguments(kind, type, eur, "10.00", null, tomorrow, "date", LegacyMessages.DATE_PAST_OR_CURRENT),
+                    arguments(kind, null, eur, "10.00", null, LINE_DATE, typeField, LegacyMessages.FIELD_REQUIRED),
+                    arguments(kind, 99, eur, "10.00", null, LINE_DATE, typeField, LegacyMessages.FIELD_REQUIRED),
+                    arguments(kind, type, null, "10.00", null, LINE_DATE, "currencyId", LegacyMessages.FIELD_REQUIRED),
+                    arguments(kind, type, eur, null, null, LINE_DATE, "amount", LegacyMessages.MUST_SET_AMOUNT),
+                    arguments(kind, type, eur, "0", null, LINE_DATE, "amount", LegacyMessages.MUST_SET_AMOUNT),
+                    arguments(kind, type, eur, "-0.01", null, LINE_DATE, "amount", LegacyMessages.MUST_SET_AMOUNT),
+                    arguments(kind, type, usd, null, null, LINE_DATE, "amount", LegacyMessages.USD_AMOUNT_ABOVE_ZERO),
+                    arguments(kind, type, usd, "0", null, LINE_DATE, "amount", LegacyMessages.USD_AMOUNT_ABOVE_ZERO),
+                    arguments(kind, type, usd, "-1", null, LINE_DATE, "amount", LegacyMessages.USD_AMOUNT_ABOVE_ZERO));
+        });
+        Stream<Arguments> kilometers = Stream.of(null, "0", "-1").map(km -> arguments(ReportKind.EXPENSE,
+                ReferenceIds.EXPENSE_TYPE_KILOMETERS, null, null, km, LINE_DATE, "kilometers",
+                LegacyMessages.DISTANCE_POSITIVE));
+        return Stream.concat(eitherKind, kilometers);
+    }
+
+    @ParameterizedTest(name = "{0}: type {1}, currency {2}, amount {3}, km {4}, date {5} rejects {6}")
+    @MethodSource
+    void lineInputBreakingOneRuleIsRejectedAndChangesNothing(ReportKind kind, Integer typeId, Integer currencyId,
+            String amount, String kilometers, LocalDate date, String field, String message) {
+        Caller owner = newCaller(appUserRepository, Role.User);
+        LineView existing = draftWithLine(owner, kind);
+        LineService.LineInput input = line(typeId, currencyId, decimal(amount), decimal(kilometers), "Rejected", "",
+                date);
+
+        assertFieldError(() -> lineService.create(owner, kind, existing.reportId(), input), field, message);
+        assertFieldError(() -> lineService.update(owner, kind, existing.id(), input), field, message);
+        assertTheDraftHoldsOnlyItsUnchangedLine(kind, existing);
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @EnumSource(ReportKind.class)
+    void inactiveTypeIsRejectedThoughTheReferenceDataKnowsIt(ReportKind kind) {
+        Caller owner = newCaller(appUserRepository, Role.User);
+        // Created before the insert, so the shared ReferenceDataService never caches the inactive row.
+        LineView existing = draftWithLine(owner, kind);
+        String table = kind == ReportKind.EXPENSE ? "Expense" : "Earning";
+        String typeField = kind == ReportKind.EXPENSE ? "expenseTypeId" : "earningTypeId";
+        int inactiveTypeId = 90;
+        jdbcTemplate.update("INSERT INTO " + table + "Type (Id, Label, \"Order\", Is_Active) VALUES (?, ?, ?, FALSE)",
+                inactiveTypeId, "Retired", inactiveTypeId);
+        try {
+            ReferenceDataService referenceData = new ReferenceDataService(currencyRepository, statusRepository,
+                    expenseTypeRepository, earningTypeRepository, expensesProperties);
+            LineService lines = new LineService(kindRepositories, reportAccessPolicy, amountCalculator, referenceData,
+                    clock);
+            TransactionTemplate transaction = new TransactionTemplate(transactionManager);
+            LineService.LineInput input = line(inactiveTypeId, ReferenceIds.CURRENCY_EURO, new BigDecimal("10.00"),
+                    null, "Retired type", "", LINE_DATE);
+
+            assertThat(referenceData.typeLabel(kind, inactiveTypeId)).isEqualTo("Retired");
+            assertThat(referenceData.isActiveType(kind, inactiveTypeId)).isFalse();
+            assertFieldError(() -> transaction.execute(tx -> lines.create(owner, kind, existing.reportId(), input)),
+                    typeField, LegacyMessages.FIELD_REQUIRED);
+            assertFieldError(() -> transaction.execute(tx -> lines.update(owner, kind, existing.id(), input)),
+                    typeField, LegacyMessages.FIELD_REQUIRED);
+            assertTheDraftHoldsOnlyItsUnchangedLine(kind, existing);
+        } finally {
+            // Only a broken rule stores a line on the inactive type, and its foreign key would block the delete.
+            jdbcTemplate.update("DELETE FROM " + table + " WHERE " + table + "TypeId = ?", inactiveTypeId);
+            jdbcTemplate.update("DELETE FROM " + table + "Type WHERE Id = ?", inactiveTypeId);
+        }
+    }
+
+    static Stream<Arguments> lineInputTheRulesLeaveOpenIsAccepted() {
+        LocalDate today = LocalDate.of(2024, 5, 23);
+        int eur = ReferenceIds.CURRENCY_EURO;
+        int other = ReferenceIds.EXPENSE_TYPE_OTHER;
+        int kilometers = ReferenceIds.EXPENSE_TYPE_KILOMETERS;
+        int salary = ReferenceIds.EARNING_TYPE_SALARY;
+        return Stream.of(
+                arguments(ReportKind.EXPENSE, other, eur, "10.00", null, today, "10.00", null),
+                arguments(ReportKind.EARNING, salary, eur, "10.00", null, today, "10.00", null),
+                arguments(ReportKind.EXPENSE, kilometers, null, null, "10", LINE_DATE, "3.70", "10"),
+                arguments(ReportKind.EXPENSE, kilometers, null, "0", "10", LINE_DATE, "3.70", "10"),
+                arguments(ReportKind.EXPENSE, kilometers, null, "-5", "10", LINE_DATE, "3.70", "10"),
+                arguments(ReportKind.EARNING, salary, eur, "10.00", "0", LINE_DATE, "10.00", null),
+                arguments(ReportKind.EARNING, salary, eur, "10.00", "-1", LINE_DATE, "10.00", null));
+    }
+
+    @ParameterizedTest(name = "{0}: type {1}, currency {2}, amount {3}, km {4}, date {5} stores {6}")
+    @MethodSource
+    void lineInputTheRulesLeaveOpenIsAccepted(ReportKind kind, Integer typeId, Integer currencyId, String amount,
+            String kilometers, LocalDate date, String euros, String storedKilometers) {
+        Caller owner = newCaller(appUserRepository, Role.User);
+        LineView existing = draftWithLine(owner, kind);
+        LineService.LineInput input = line(typeId, currencyId, decimal(amount), decimal(kilometers), "Accepted", "",
+                date);
+
+        Long createdId = lineService.create(owner, kind, existing.reportId(), input).id();
+        lineService.update(owner, kind, existing.id(), input);
+
+        assertThat(linesOf(kind).findAllById(List.of(createdId, existing.id()))).hasSize(2).allSatisfy(stored -> {
+            assertThat(stored.getTitle()).isEqualTo("Accepted");
+            assertThat(stored.getDate()).isEqualTo(date);
+            assertThat(stored.getTypeId()).isEqualTo(typeId);
+            assertThat(stored.getCurrencyId()).isEqualTo(ReferenceIds.CURRENCY_EURO);
+            assertThat(stored.getAmount()).isEqualByComparingTo(euros);
+            assertThat(stored.getAmountInEuros()).isEqualByComparingTo(euros);
+            assertThat(stored.getKilometers()).usingComparator(Comparator.nullsFirst(BigDecimal::compareTo))
+                    .isEqualTo(decimal(storedKilometers));
+        });
+    }
+
+    private void assertTheDraftHoldsOnlyItsUnchangedLine(ReportKind kind, LineView existing) {
+        assertThat(linesOf(kind).findByReportId(existing.reportId())).singleElement().satisfies(stored -> {
+            assertThat(stored.getId()).isEqualTo(existing.id());
+            assertThat(stored.getTitle()).isEqualTo("Flight tickets");
+            assertThat(stored.getDate()).isEqualTo(LINE_DATE);
+            assertThat(stored.getTypeId()).isEqualTo(existing.typeId());
+            assertThat(stored.getAmountInEuros()).isEqualByComparingTo("42.00");
+        });
+    }
+
     @Test
     void lineWithAnUnknownCurrencyIsAValidationError() {
         Caller owner = newCaller(appUserRepository, Role.User);
@@ -1010,8 +1331,8 @@ class BusinessRulesTest {
         LineService.LineInput input = line(ReferenceIds.EXPENSE_TYPE_TRAVEL, 99, BigDecimal.TEN, null,
                 "Unknown currency", "", LINE_DATE);
 
-        assertApiError(() -> lineService.create(owner, ReportKind.EXPENSE, reportId, input),
-                422, ApiException.VALIDATION_FAILED, LegacyMessages.FIELD_REQUIRED);
+        assertFieldError(() -> lineService.create(owner, ReportKind.EXPENSE, reportId, input),
+                "currencyId", LegacyMessages.FIELD_REQUIRED);
         assertThat(expenseRepository.existsByReportId(reportId)).isFalse();
     }
 
@@ -1217,10 +1538,91 @@ class BusinessRulesTest {
     }
 
     private LineView draftWithLine(Caller owner) {
-        Long reportId = reportService.create(owner, ReportKind.EXPENSE, "London Trip").id();
-        return lineService.create(owner, ReportKind.EXPENSE, reportId, line(ReferenceIds.EXPENSE_TYPE_TRAVEL,
-                ReferenceIds.CURRENCY_EURO, new BigDecimal("42.00"), null, "Flight tickets",
-                "Tickets for flight to London", LINE_DATE));
+        return draftWithLine(owner, ReportKind.EXPENSE);
+    }
+
+    private LineView draftWithLine(Caller owner, ReportKind kind) {
+        Long reportId = reportService.create(owner, kind, "London Trip").id();
+        int typeId = kind == ReportKind.EXPENSE ? ReferenceIds.EXPENSE_TYPE_TRAVEL : ReferenceIds.EARNING_TYPE_SERVICE;
+        return lineService.create(owner, kind, reportId, line(typeId, ReferenceIds.CURRENCY_EURO,
+                new BigDecimal("42.00"), null, "Flight tickets", "Tickets for flight to London", LINE_DATE));
+    }
+
+    // The kind's own repositories, chosen here rather than through KindRepositories, which the tests check.
+    private ReportRepository<? extends ReportEntity> reportsOf(ReportKind kind) {
+        return switch (kind) {
+            case EXPENSE -> expenseReportRepository;
+            case EARNING -> earningReportRepository;
+        };
+    }
+
+    private LineRepository<? extends LineEntity> linesOf(ReportKind kind) {
+        return switch (kind) {
+            case EXPENSE -> expenseRepository;
+            case EARNING -> earningRepository;
+        };
+    }
+
+    private InvoiceRepository<? extends InvoiceEntity> invoicesOf(ReportKind kind) {
+        return switch (kind) {
+            case EXPENSE -> invoiceExpenseRepository;
+            case EARNING -> invoiceEarningRepository;
+        };
+    }
+
+    private static ReportKind otherKind(ReportKind kind) {
+        return kind == ReportKind.EXPENSE ? ReportKind.EARNING : ReportKind.EXPENSE;
+    }
+
+    // Each table counts ids on its own; restarting all four at one value gives the line an other-kind twin with the
+    // same report and line ids, so a write that reaches the wrong kind's tables changes the twin.
+    private LineView draftWithLineAndTwin(Caller owner, ReportKind kind) {
+        Long nextId = jdbcTemplate.queryForObject("SELECT MAX(IDENTITY_BASE) FROM INFORMATION_SCHEMA.COLUMNS"
+                + " WHERE TABLE_NAME IN ('EXPENSEREPORT', 'EARNINGREPORT', 'EXPENSE', 'EARNING')"
+                + " AND COLUMN_NAME = 'ID'", Long.class);
+        List.of("ExpenseReport", "EarningReport", "Expense", "Earning").forEach(table ->
+                jdbcTemplate.execute("ALTER TABLE " + table + " ALTER COLUMN Id RESTART WITH " + nextId));
+        LineView twin = draftWithLine(owner, otherKind(kind));
+        storeInvoice(otherKind(kind), twin.id(), TWIN_INVOICE);
+        LineView line = draftWithLine(owner, kind);
+        assertThat(line).extracting(LineView::reportId, LineView::id).containsExactly(twin.reportId(), twin.id());
+        return line;
+    }
+
+    private void storeInvoice(ReportKind kind, Long lineId, StoredInvoice stored) {
+        switch (kind) {
+            case EXPENSE -> invoiceExpenseRepository.save(filled(new InvoiceExpense(lineId), stored));
+            case EARNING -> invoiceEarningRepository.save(filled(new InvoiceEarning(lineId), stored));
+        }
+    }
+
+    private static <I extends InvoiceEntity> I filled(I invoice, StoredInvoice stored) {
+        invoice.setFilename(stored.filename());
+        invoice.setFiletype(stored.filetype());
+        invoice.setContent(stored.content());
+        invoice.setDatetime(stored.datetime());
+        return invoice;
+    }
+
+    // Content is lazy, so the invoice is read inside a transaction.
+    private Optional<StoredInvoice> storedInvoice(ReportKind kind, Long lineId) {
+        return new TransactionTemplate(transactionManager).execute(tx -> invoicesOf(kind).findById(lineId)
+                .map(invoice -> new StoredInvoice(invoice.getFilename(), invoice.getFiletype(), invoice.getContent(),
+                        invoice.getDatetime())));
+    }
+
+    private void assertTwinUnchanged(ReportKind kind, LineView line) {
+        assertThat(reportsOf(kind).findById(line.reportId())).get()
+                .extracting(ReportEntity::getTitle, ReportEntity::getStatusId)
+                .containsExactly("London Trip", ReferenceIds.STATUS_DRAFT);
+        assertThat(linesOf(kind).findById(line.id())).get()
+                .extracting(LineEntity::getReportId, LineEntity::getTitle)
+                .containsExactly(line.reportId(), "Flight tickets");
+        assertThat(invoicesOf(kind).count()).isEqualTo(1);
+        assertThat(storedInvoice(kind, line.id())).get().usingRecursiveComparison().isEqualTo(TWIN_INVOICE);
+    }
+
+    private record StoredInvoice(String filename, String filetype, byte[] content, LocalDateTime datetime) {
     }
 
     private static Caller newCaller(AppUserRepository users, Role role) {
@@ -1239,11 +1641,16 @@ class BusinessRulesTest {
         return value == null ? null : new BigDecimal(value);
     }
 
+    // Errors without field violations only; validation failures go through assertFieldError.
     private static void assertApiError(ThrowingCallable call, int status, String code, String message) {
+        if (ApiException.VALIDATION_FAILED.equals(code)) {
+            throw new IllegalArgumentException("Assert VALIDATION_FAILED with assertFieldError");
+        }
         assertThatExceptionOfType(ApiException.class).isThrownBy(call).satisfies(error -> {
             assertThat(error.status()).isEqualTo(status);
             assertThat(error.code()).isEqualTo(code);
-            assertThat(messagesOf(error)).contains(message);
+            assertThat(error.getMessage()).isEqualTo(message);
+            assertThat(error.fieldErrors()).isEmpty();
         });
     }
 
@@ -1251,15 +1658,9 @@ class BusinessRulesTest {
         assertThatExceptionOfType(ApiException.class).isThrownBy(call).satisfies(error -> {
             assertThat(error.status()).isEqualTo(422);
             assertThat(error.code()).isEqualTo(ApiException.VALIDATION_FAILED);
+            assertThat(error.getMessage()).isEqualTo(message);
             assertThat(error.fieldErrors()).containsExactly(new FieldViolation(field, message));
         });
-    }
-
-    private static List<String> messagesOf(ApiException error) {
-        List<String> messages = new ArrayList<>();
-        messages.add(error.getMessage());
-        error.fieldErrors().stream().map(FieldViolation::message).forEach(messages::add);
-        return messages;
     }
 
     // Not a @Configuration, so @SpringBootTest still uses the application's configuration.

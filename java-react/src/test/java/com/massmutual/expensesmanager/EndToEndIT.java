@@ -13,6 +13,7 @@ import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
@@ -28,12 +29,10 @@ import com.massmutual.expensesmanager.service.LegacyMessages;
 import com.massmutual.expensesmanager.support.ApiClient;
 import com.massmutual.expensesmanager.support.MutableClock;
 import com.massmutual.expensesmanager.support.TestDatabase;
+import com.zaxxer.hikari.HikariDataSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
-import org.junit.jupiter.api.MethodOrderer;
-import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.TestMethodOrder;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -63,7 +62,6 @@ import org.springframework.web.servlet.mvc.method.annotation.RequestResponseBody
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @Import(MutableClock.Beans.class)
 @DirtiesContext
-@TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 class EndToEndIT {
 
     private static final String USER = "em_user1";
@@ -79,19 +77,11 @@ class EndToEndIT {
     @TempDir
     static Path dir;
 
-    private static Long carRentalId;
-
     @LocalServerPort
     private int port;
 
     @Autowired
     private MutableClock mutableClock;
-
-    @Autowired
-    private ExpenseReportRepository expenseReports;
-
-    @Autowired
-    private EarningReportRepository earningReports;
 
     @Autowired
     private ApplicationContext context;
@@ -107,7 +97,6 @@ class EndToEndIT {
     }
 
     @Test
-    @Order(1)
     @DisplayName("the built SPA is served at the root and at a deep link")
     void servesSpaAtRootAndDeepLink() throws IOException {
         byte[] indexHtml = classpathIndexHtml();
@@ -120,85 +109,36 @@ class EndToEndIT {
     }
 
     @Test
-    @Order(2)
-    @DisplayName("a user creates a report, adds a line with an invoice and submits it")
-    void userCreatesFillsAndSubmitsReport() {
-        try (ApiClient user = ApiClient.loggedIn(port, USER, PASSWORD)) {
-            JsonNode report = expectStatus(user.postJson("/api/reports", newReport("Car Rental")), 201).json();
-            assertThat(report.path("code").asText()).isEqualTo("13/2024 EX");
-            assertThat(report.path("status").asText()).isEqualTo("Draft");
-            assertThat(report.path("id").asLong()).isPositive();
-            carRentalId = report.path("id").asLong();
+    @DisplayName("a report created, submitted and approved survives a restart that does not reseed")
+    void approvedReportSurvivesRestartWithoutReseed(@TempDir Path journeyDir) {
+        ConfigurableApplicationContext first = start(journeyDir, MutableClock.Beans.class);
+        HikariDataSource firstPool;
+        long reportsBefore;
+        try (first) {
+            first.getBean(MutableClock.class).set(JOURNEY_TIME);
+            firstPool = first.getBean(HikariDataSource.class);
+            int firstPort = localPort(first);
+            try (ApiClient admin = ApiClient.loggedIn(firstPort, ADMIN, PASSWORD);
+                    ApiClient user = ApiClient.loggedIn(firstPort, USER, PASSWORD)) {
+                assertAdminDashboard(admin, 17, 15, "5.88");
+                long carRentalId = createFillAndSubmitCarRental(user);
+                assertAdminDashboard(admin, 18, 16, "5.56");
 
-            ObjectNode line = ApiClient.object();
-            line.put("expenseTypeId", 2);
-            line.put("currencyId", 1);
-            line.put("amount", new BigDecimal("120.00"));
-            line.put("title", "Car rental");
-            line.put("description", "");
-            line.put("date", "2024-05-22");
-            JsonNode createdLine =
-                    expectStatus(user.postJson("/api/reports/expense/" + carRentalId + "/lines", line), 201).json();
-            assertThat(createdLine.path("amountInEuros").decimalValue()).isEqualByComparingTo("120.00");
+                ObjectNode decision = ApiClient.object();
+                decision.put("accept", true);
+                String decisionPath = "/api/reports/expense/" + carRentalId + "/decision";
+                JsonNode decided = expectStatus(admin.postJson(decisionPath, decision), 200).json();
+                assertThat(decided.path("status").asText()).isEqualTo("Approved");
 
-            byte[] receipt = Base64.getDecoder().decode(RECEIPT_PNG_BASE64);
-            String invoicePath = "/api/lines/expense/" + createdLine.path("id").asLong() + "/invoice";
-            expectStatus(user.putFile(invoicePath, "receipt.png", "image/png", receipt), 204);
-
-            ApiClient.Response download = expectStatus(user.get(invoicePath), 200);
-            assertThat(download.body()).isEqualTo(receipt);
-            assertThat(download.header("Content-Type")).isEqualTo("image/png");
-            assertThat(download.header("Content-Disposition")).startsWith("attachment").contains("receipt.png");
-
-            JsonNode submitted = expectStatus(user.post("/api/reports/expense/" + carRentalId + "/submit"), 200).json();
-            assertThat(submitted.path("status").asText()).isEqualTo("Submitted");
+                assertAdminDashboard(admin, 18, 15, "11.11");
+            }
+            reportsBefore = reportCount(first);
         }
-    }
+        assertThat(first.isActive()).as("first application closed before the restart").isFalse();
+        assertThat(firstPool.isClosed()).as("no pooled connection holds the H2 database open").isTrue();
 
-    @Test
-    @Order(3)
-    @DisplayName("an administrator approves the submitted report and the counters follow")
-    void adminApprovesSubmittedReport() {
-        long reportId = carRentalId();
-        try (ApiClient admin = ApiClient.loggedIn(port, ADMIN, PASSWORD)) {
-            assertAdminDashboard(admin, 18, 16, "5.56");
-
-            ObjectNode decision = ApiClient.object();
-            decision.put("accept", true);
-            String decisionPath = "/api/reports/expense/" + reportId + "/decision";
-            JsonNode decided = expectStatus(admin.postJson(decisionPath, decision), 200).json();
-            assertThat(decided.path("status").asText()).isEqualTo("Approved");
-
-            assertAdminDashboard(admin, 18, 15, "11.11");
-        }
-    }
-
-    @Test
-    @Order(4)
-    @DisplayName("one client keeps writing across login, logout and a second login")
-    void csrfTokenFollowsLoginAndLogout() {
-        try (ApiClient client = new ApiClient(port)) {
-            expectStatus(client.login(USER, PASSWORD), 200);
-            expectStatus(client.postJson("/api/reports", newReport("Taxi Rides")), 201);
-            expectStatus(client.logout(), 204);
-
-            expectStatus(client.login(USER, PASSWORD), 200);
-            expectStatus(client.postJson("/api/reports", newReport("Parking Fees")), 201);
-        }
-    }
-
-    @Test
-    @Order(5)
-    @DisplayName("restart keeps data and does not reseed")
-    void restartKeepsDataAndDoesNotReseed() {
-        long reportsBefore = expenseReports.count() + earningReports.count();
-
-        // Command-line arguments outrank application.properties; builder properties would only be defaults.
-        ConfigurableApplicationContext restarted = new SpringApplicationBuilder(ExpensesManagerApplication.class)
-                .run("--server.port=0", TestDatabase.argument(dir));
-        try {
-            int restartedPort = restarted.getEnvironment().getRequiredProperty("local.server.port", Integer.class);
-            try (ApiClient user = ApiClient.loggedIn(restartedPort, USER, PASSWORD)) {
+        try (ConfigurableApplicationContext restarted = start(journeyDir)) {
+            try (ApiClient user = ApiClient.loggedIn(localPort(restarted), USER, PASSWORD)) {
                 JsonNode rows = expectStatus(user.get("/api/reports?kind=expense"), 200).json();
                 List<String> carRentalCodes = StreamSupport.stream(rows.spliterator(), false)
                         .filter(row -> row.path("title").asText().equals("Car Rental"))
@@ -207,22 +147,50 @@ class EndToEndIT {
                 assertThat(carRentalCodes).containsExactly("13/2024 EX");
             }
 
-            ExpenseReportRepository restartedExpenses = restarted.getBean(ExpenseReportRepository.class);
-            EarningReportRepository restartedEarnings = restarted.getBean(EarningReportRepository.class);
             List<String> codes = Stream.concat(
-                            restartedExpenses.findAll().stream(), restartedEarnings.findAll().stream())
+                            restarted.getBean(ExpenseReportRepository.class).findAll().stream(),
+                            restarted.getBean(EarningReportRepository.class).findAll().stream())
                     .map(ReportEntity::getCode)
                     .toList();
             assertThat(codes).containsOnlyOnce(seededCodes());
             // A second seed run would add the demo reports again on top of the existing rows.
-            assertThat(restartedExpenses.count() + restartedEarnings.count()).isEqualTo(reportsBefore);
-        } finally {
-            restarted.close();
+            assertThat(reportCount(restarted)).isEqualTo(reportsBefore);
+        }
+    }
+
+    @Test
+    @DisplayName("one client's CSRF token is issued on 401, rotated at login, cleared at logout and checked on writes")
+    void csrfTokenFollowsLoginAndLogout() {
+        try (ApiClient client = new ApiClient(port)) {
+            expectStatus(client.me(), 401);
+            String anonymousToken = csrfCookie(client, "issued with the anonymous 401");
+
+            expectStatus(client.login(USER, PASSWORD), 200);
+            String firstLoginToken = csrfCookie(client, "after the first login");
+            assertThat(firstLoginToken).as("token rotated by the first login").isNotEqualTo(anonymousToken);
+            assertStaleAndMissingTokensRejected(client, anonymousToken);
+            expectStatus(client.postJson("/api/reports", newReport("Taxi Rides")), 201);
+
+            ApiClient.Response logout = expectStatus(client.logout(), 204);
+            assertThat(logout.headerValues("Set-Cookie")).as("Set-Cookie headers of the logout response")
+                    .anyMatch(cookie -> cookie.startsWith(ApiClient.CSRF_COOKIE + "=;")
+                            && cookie.contains("Max-Age=0"));
+            assertThat(client.cookie(ApiClient.CSRF_COOKIE)).as("CSRF cookie after logout").isEmpty();
+
+            expectStatus(client.me(), 401);
+            String refreshedToken = csrfCookie(client, "issued with the 401 after logout");
+            assertThat(refreshedToken).as("token issued after logout").isNotIn(firstLoginToken, anonymousToken);
+
+            expectStatus(client.login(USER, PASSWORD), 200);
+            String secondLoginToken = csrfCookie(client, "after the second login");
+            assertThat(secondLoginToken).as("token rotated by the second login")
+                    .isNotIn(refreshedToken, firstLoginToken, anonymousToken);
+            assertStaleAndMissingTokensRejected(client, firstLoginToken, refreshedToken);
+            expectStatus(client.postJson("/api/reports", newReport("Parking Fees")), 201);
         }
     }
 
     @ParameterizedTest
-    @Order(6)
     @ValueSource(strings = {"receipt.png", "reçu-€.png", "a\"b.png", "a\\b.png", "receipt\r\n.png", "receipt\t.png"})
     @DisplayName("an invoice downloads under the exact filename it was uploaded with")
     void invoiceDownloadKeepsUploadedFilename(String filename) {
@@ -254,7 +222,6 @@ class EndToEndIT {
     }
 
     @Test
-    @Order(7)
     @DisplayName("until the application is ready, API calls get 503 while the SPA is still served")
     void apiAnswers503UntilReady() throws IOException {
         byte[] indexHtml = classpathIndexHtml();
@@ -277,7 +244,6 @@ class EndToEndIT {
     }
 
     @Test
-    @Order(8)
     @ExtendWith(OutputCaptureExtension.class)
     @DisplayName("request bodies, the records that echo them and invoice bytes stay out of the TRACE log")
     void requestBodiesAndInvoiceBytesStayOutOfTraceLog(@Autowired LoggingSystem loggingSystem,
@@ -373,9 +339,74 @@ class EndToEndIT {
         assertThat(body.has("fieldErrors")).as("fieldErrors outside 422").isFalse();
     }
 
-    private static long carRentalId() {
-        assertThat(carRentalId).as("Car Rental report id from the user journey").isNotNull();
-        return carRentalId;
+    private static ConfigurableApplicationContext start(Path databaseDir, Class<?>... extraSources) {
+        // Command-line arguments outrank application.properties; builder properties would only be defaults.
+        return new SpringApplicationBuilder(ExpensesManagerApplication.class)
+                .sources(extraSources)
+                .run("--server.port=0", TestDatabase.argument(databaseDir));
+    }
+
+    private static int localPort(ApplicationContext application) {
+        return application.getEnvironment().getRequiredProperty("local.server.port", Integer.class);
+    }
+
+    private static long reportCount(ApplicationContext application) {
+        return application.getBean(ExpenseReportRepository.class).count()
+                + application.getBean(EarningReportRepository.class).count();
+    }
+
+    private static long createFillAndSubmitCarRental(ApiClient user) {
+        JsonNode report = expectStatus(user.postJson("/api/reports", newReport("Car Rental")), 201).json();
+        assertThat(report.path("code").asText()).isEqualTo("13/2024 EX");
+        assertThat(report.path("status").asText()).isEqualTo("Draft");
+        assertThat(report.path("id").asLong()).isPositive();
+        long reportId = report.path("id").asLong();
+
+        ObjectNode line = ApiClient.object();
+        line.put("expenseTypeId", 2);
+        line.put("currencyId", 1);
+        line.put("amount", new BigDecimal("120.00"));
+        line.put("title", "Car rental");
+        line.put("description", "");
+        line.put("date", "2024-05-22");
+        JsonNode createdLine =
+                expectStatus(user.postJson("/api/reports/expense/" + reportId + "/lines", line), 201).json();
+        assertThat(createdLine.path("amountInEuros").decimalValue()).isEqualByComparingTo("120.00");
+
+        byte[] receipt = Base64.getDecoder().decode(RECEIPT_PNG_BASE64);
+        String invoicePath = "/api/lines/expense/" + createdLine.path("id").asLong() + "/invoice";
+        expectStatus(user.putFile(invoicePath, "receipt.png", "image/png", receipt), 204);
+
+        ApiClient.Response download = expectStatus(user.get(invoicePath), 200);
+        assertThat(download.body()).isEqualTo(receipt);
+        assertThat(download.header("Content-Type")).isEqualTo("image/png");
+        assertThat(download.header("Content-Disposition")).startsWith("attachment").contains("receipt.png");
+
+        JsonNode submitted = expectStatus(user.post("/api/reports/expense/" + reportId + "/submit"), 200).json();
+        assertThat(submitted.path("status").asText()).isEqualTo("Submitted");
+        return reportId;
+    }
+
+    private static String csrfCookie(ApiClient client, String moment) {
+        Optional<String> token = client.cookie(ApiClient.CSRF_COOKIE);
+        assertThat(token).as("CSRF cookie %s", moment).isPresent();
+        return token.orElseThrow();
+    }
+
+    private static void assertStaleAndMissingTokensRejected(ApiClient client, String... staleTokens) {
+        String currentToken = csrfCookie(client, "before the rejected writes");
+        for (String staleToken : staleTokens) {
+            assertForbidden(client.sendWithoutCsrf("POST", "/api/reports", newReport("Stale token"),
+                    Map.of(ApiClient.CSRF_HEADER, staleToken)));
+        }
+        assertForbidden(client.sendWithoutCsrf("POST", "/api/reports", newReport("Missing token")));
+        assertThat(client.cookie(ApiClient.CSRF_COOKIE)).as("CSRF cookie after the rejected writes")
+                .hasValue(currentToken);
+    }
+
+    private static void assertForbidden(ApiClient.Response response) {
+        expectStatus(response, 403);
+        assertThat(response.json().path("code").asText()).isEqualTo(ApiException.FORBIDDEN);
     }
 
     private static ApiClient.Response expectStatus(ApiClient.Response response, int status) {
