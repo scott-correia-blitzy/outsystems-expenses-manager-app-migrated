@@ -185,6 +185,7 @@ Enforcement: `frontend/src/test/noHardCodedColours.test.ts` fails on any hex, `r
 - Adding a line shows "Expense was added" or "Earning was added"; the legacy add popup showed no message. Edits keep the legacy "Your expense detail was successfully edited" and "Your earning detail was successfully edited".
 - Dashboard charts with no data show "No expenses or earnings in the last 30 days", "No expenses to show" or "No earnings to show" where the legacy widgets showed an empty area. A dashboard whose figures fail to load keeps the error on the page with a "Retry" button, in addition to the error toast.
 - The presentation is re-architected with MUI rather than ported widget by widget: no logo or icon font is embedded, "Expenses & Earnings per date" and "Earnings trends" are drawn with bars and progress rows rather than the legacy chart widgets, and "Filter by date range" is two date fields.
+- Search fields are capped: "Search by title" on the report lists at 50 characters, the longest code or title, and the blog search at 500. Uncapped, a pasted query could exceed the server's 8 KB request-header limit, which the server answers with 401, signing the user out.
 
 ### Kept as is
 

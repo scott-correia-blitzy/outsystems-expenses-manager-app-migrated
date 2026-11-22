@@ -87,6 +87,8 @@ type Column = {
 
 const DEFAULT_FROM = '2023-01-01T00:00:00';
 const FILTER_DEBOUNCE_MS = 300;
+// Codes and titles are at most 50 characters, so a longer search can match nothing.
+const SEARCH_MAX_LENGTH = 50;
 const WHOLE_DATE = /^[1-9]\d{3}-\d{2}-\d{2}$/;
 
 const ROWS_PER_PAGE: Record<Mode, number> = { user: 10, admin: 5 };
@@ -554,7 +556,7 @@ export function ReportList({ mode, kind, onDecided }: ReportListProps) {
   }, []);
 
   const changeSearch = useCallback((event: ChangeEvent<HTMLInputElement>) => {
-    setSearchText(event.target.value);
+    setSearchText(event.target.value.slice(0, SEARCH_MAX_LENGTH));
   }, []);
 
   const toggleSort = useCallback((column: ReportSortColumn) => {
@@ -693,7 +695,7 @@ export function ReportList({ mode, kind, onDecided }: ReportListProps) {
           inputRef={searchInput}
           sx={{ flexGrow: 1, minInlineSize: (theme) => ({ md: theme.spacing(30) }) }}
           slotProps={{
-            htmlInput: { 'aria-label': 'Search by title' },
+            htmlInput: { 'aria-label': 'Search by title', maxLength: SEARCH_MAX_LENGTH },
             input: {
               startAdornment: (
                 <InputAdornment position="start">

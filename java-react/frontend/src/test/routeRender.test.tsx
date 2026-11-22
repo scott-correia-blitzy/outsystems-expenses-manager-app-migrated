@@ -33,7 +33,6 @@ import { expectLocation, renderRoute } from './renderRoute';
 
 vi.mock('../api/api');
 
-// Each case starts from fresh mocks, so its call assertions and overrides are its own.
 beforeEach(() => {
   vi.resetAllMocks();
 });
@@ -585,6 +584,55 @@ describe('blog search', () => {
       await waitFor(() => expect(vi.mocked(api.listBlogPosts)).toHaveBeenLastCalledWith('Mileage'), {
         timeout: FIND_TIMEOUT,
       });
+    },
+    TEST_TIMEOUT,
+  );
+});
+
+type SearchCapCase = {
+  path: string;
+  category: SessionCategory;
+  label: string;
+  cap: number;
+  sentQueries: () => (string | undefined)[];
+};
+
+const SEARCH_CAP_CASES: SearchCapCase[] = [
+  {
+    path: '/reports',
+    category: 'user',
+    label: 'Search by title',
+    cap: 50,
+    sentQueries: () => vi.mocked(api.listReports).mock.calls.map(([query]) => query.q),
+  },
+  {
+    path: '/admin',
+    category: 'administrator',
+    label: 'Search by title',
+    cap: 50,
+    sentQueries: () => vi.mocked(api.listReports).mock.calls.map(([query]) => query.q),
+  },
+  {
+    path: '/blog',
+    category: 'user',
+    label: 'Search',
+    cap: 500,
+    sentQueries: () => vi.mocked(api.listBlogPosts).mock.calls.map(([q]) => q),
+  },
+];
+
+describe('search length caps', () => {
+  it.each(SEARCH_CAP_CASES)(
+    '$path cuts an over-long search to $cap characters',
+    async ({ path, category, label, cap, sentQueries }) => {
+      renderRoute(path, category);
+      const field = await screen.findByLabelText(label, {}, { timeout: FIND_TIMEOUT });
+      expect(field).toHaveAttribute('maxlength', String(cap));
+
+      fireEvent.change(field, { target: { value: 'A'.repeat(9000) } });
+      expect(field).toHaveValue('A'.repeat(cap));
+      await waitFor(() => expect(sentQueries().at(-1)).toBe('A'.repeat(cap)), { timeout: FIND_TIMEOUT });
+      expect(sentQueries().filter((q) => (q ?? '').length > cap)).toEqual([]);
     },
     TEST_TIMEOUT,
   );
@@ -2393,6 +2441,18 @@ describe('previews and tool forms', () => {
     },
     TEST_TIMEOUT,
   );
+
+  it.each(['/blog/posts/1%27%20OR%201%3D1', '/blog/posts/abc', '/blog/posts/0'])(
+    'reports %s as not found and returns to the blog',
+    async (path) => {
+      renderRoute(path, 'administrator');
+
+      expect(await toast(MESSAGES.NOT_FOUND)).toBeInTheDocument();
+      await arriveAt('/blog', 'Blog');
+      expect(api.getBlogPost).not.toHaveBeenCalled();
+    },
+    TEST_TIMEOUT,
+  );
 });
 
 describe('new report dialog', () => {
@@ -2416,7 +2476,6 @@ describe('new report dialog', () => {
       await fillField('Report Title', 'Double Create');
       fireEvent.click(screen.getByRole('button', { name: 'Expense' }));
       const submit = screen.getByRole('button', { name: 'Submit' });
-      // One act scope keeps React from re-rendering between the clicks, as two clicks in one browser task do.
       act(() => {
         submit.click();
         submit.click();

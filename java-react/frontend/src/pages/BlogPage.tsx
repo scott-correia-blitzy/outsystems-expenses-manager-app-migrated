@@ -22,6 +22,8 @@ import { blogPostPath } from '../routes';
 
 const BREADCRUMBS = [{ label: 'Home', to: '/' }, { label: 'Blog' }];
 const SEARCH_DEBOUNCE_MS = 300;
+// Keeps the encoded query well under the server's 8 KB request-header limit.
+const SEARCH_MAX_LENGTH = 500;
 const MS_PER_DAY = 86_400_000;
 const ISO_DATE = /^(\d{4})-(\d{2})-(\d{2})/;
 
@@ -180,11 +182,11 @@ export function BlogPage() {
           size="small"
           placeholder="Search"
           value={search}
-          onChange={(event) => setSearch(event.target.value)}
+          onChange={(event) => setSearch(event.target.value.slice(0, SEARCH_MAX_LENGTH))}
           fullWidth
           sx={{ maxWidth: 'sm', '& input::-webkit-search-cancel-button': { display: 'none' } }}
           slotProps={{
-            htmlInput: { 'aria-label': 'Search' },
+            htmlInput: { 'aria-label': 'Search', maxLength: SEARCH_MAX_LENGTH },
             input: {
               startAdornment: (
                 <InputAdornment position="start">

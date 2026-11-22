@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
 import { Box, Button, Card, CardContent, CircularProgress, Stack, TextField } from '@mui/material';
-import { Link as RouterLink, Navigate, useNavigate, useParams } from 'react-router';
+import { Link as RouterLink, useNavigate, useParams } from 'react-router';
 import { createBlogPost, getBlogPost, updateBlogPost } from '../api/api';
 import { ApiError, MESSAGES, type BlogPostBody, type FieldError } from '../api/types';
 import { useFeedback } from '../components/Feedback';
@@ -99,6 +99,11 @@ export function BlogPostDetailPage() {
   useEffect(() => {
     setErrors(NO_ERRORS);
     if (postId === null) {
+      if (!isNew) {
+        feedback.warning(MESSAGES.NOT_FOUND);
+        navigate(PATHS.blog, { replace: true });
+        return;
+      }
       setTitle('');
       setDescription('');
       setLoading(false);
@@ -123,10 +128,10 @@ export function BlogPostDetailPage() {
     return () => {
       active = false;
     };
-  }, [postId, feedback, navigate]);
+  }, [postId, isNew, feedback, navigate]);
 
   if (!isNew && postId === null) {
-    return <Navigate to={PATHS.blog} replace />;
+    return null;
   }
 
   const heading = isNew ? 'New Blog Post' : 'Edit Blog Post';
