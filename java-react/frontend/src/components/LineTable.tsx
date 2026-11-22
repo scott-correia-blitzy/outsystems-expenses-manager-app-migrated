@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ChangeEvent, type ReactNode } from 'react';
+import { memo, useEffect, useMemo, useState, type ChangeEvent, type ReactNode } from 'react';
 import {
   Grid,
   IconButton,
@@ -186,7 +186,7 @@ type LineRowsProps = {
   onDelete?: (line: LineView) => void;
 };
 
-export function LineRows({
+export const LineRows = memo(function LineRows({
   kind,
   label,
   lines,
@@ -202,7 +202,7 @@ export function LineRows({
   onDelete,
 }: LineRowsProps) {
   const stacked = useStackedLines();
-  const columns = columnsFor(kind, typeLabel);
+  const columns = useMemo(() => columnsFor(kind, typeLabel), [kind, typeLabel]);
   const actionsSpacingWidth = onEdit || onDelete ? 19 : 12;
 
   const lineActions = (line: LineView, justifyContent: 'center' | 'flex-end') => (
@@ -336,7 +336,7 @@ export function LineRows({
       </Table>
     </TableContainer>
   );
-}
+});
 
 export function LineTable({
   kind,

@@ -1031,6 +1031,7 @@ const DEFAULT_LIST_QUERY = {
   from: '2023-01-01T00:00:00',
   to: expect.stringMatching(LOCAL_DATE_TIME),
 };
+const ANY_SIGNAL = expect.any(AbortSignal);
 const DRAFT_BANNER = 'You have reports with Draft status, this reports are not considered for statistics';
 
 type Deferred<T> = { promise: Promise<T>; resolve: (value: T) => void };
@@ -1656,7 +1657,7 @@ describe('report actions', () => {
       expect(within(kpiCard('Approved Report Rate')).getByText('11.76%')).toBeInTheDocument();
       expect(api.adminDashboard).toHaveBeenCalledTimes(2);
       expect(api.listReports).toHaveBeenCalledTimes(2);
-      expect(api.listReports).toHaveBeenLastCalledWith(DEFAULT_LIST_QUERY);
+      expect(api.listReports).toHaveBeenLastCalledWith(DEFAULT_LIST_QUERY, ANY_SIGNAL);
     },
     TEST_TIMEOUT,
   );
@@ -1791,10 +1792,34 @@ const LIST_FILTER_CASES: ListFilterCase[] = [
     },
     answer: createdBetween,
     query: { from: '2024-04-01T00:00:00', to: '2024-04-30T00:00:00' },
-    calls: 3,
+    calls: 2,
     codes: ['11/2024 EX', '10/2024 EX', '9/2024 EX'],
   },
 ];
+
+type TypingCase = { typing: string; label: string; keystrokes: string[]; query: Record<string, string> | null };
+
+// A browser date field reports the year as typed, digit by digit.
+const TYPING_CASES: TypingCase[] = [
+  {
+    typing: 'a title one key at a time',
+    label: 'Search by title',
+    keystrokes: ['M', 'Ma', 'Man', 'Many'],
+    query: { q: 'Many' },
+  },
+  {
+    typing: 'the From year one digit at a time',
+    label: 'From',
+    keystrokes: ['0002-03-05', '0020-03-05', '0202-03-05', '2024-03-05'],
+    query: { from: '2024-03-05T00:00:00' },
+  },
+  { typing: 'an incomplete From date', label: 'From', keystrokes: ['0002-03-05'], query: null },
+];
+
+// Longer than the list's typing pause, so any request the typing causes has been sent.
+const PAST_TYPING_PAUSE_MS = 600;
+// Shorter than the list's typing pause, while two of them are longer.
+const BETWEEN_KEYS_MS = 200;
 
 function byTitle(sort: string | undefined): ReportSummary[] {
   const rows = [...EXPENSE_ROWS];
@@ -1838,7 +1863,7 @@ describe('browsing reports and lines', () => {
       renderRoute('/reports', 'user');
       expect(await screen.findByText('1 to 8 of 8 items', {}, { timeout: FIND_TIMEOUT })).toBeInTheDocument();
       expect(shownCodes()).toEqual(ALL_EXPENSE_CODES);
-      expect(api.listReports).toHaveBeenCalledExactlyOnceWith(DEFAULT_LIST_QUERY);
+      expect(api.listReports).toHaveBeenCalledExactlyOnceWith(DEFAULT_LIST_QUERY, ANY_SIGNAL);
       const [[query]] = vi.mocked(api.listReports).mock.calls;
       expect(Math.abs(new Date(query.to ?? '').getTime() - Date.now())).toBeLessThan(60_000);
     },
@@ -1858,7 +1883,86 @@ describe('browsing reports and lines', () => {
       await waitFor(() => expect(shownCodes()).toEqual(codes), { timeout: FIND_TIMEOUT });
       expect(screen.getByText(`1 to ${codes.length} of ${codes.length} items`)).toBeInTheDocument();
       expect(api.listReports).toHaveBeenCalledTimes(calls);
-      expect(api.listReports).toHaveBeenLastCalledWith({ ...DEFAULT_LIST_QUERY, ...query });
+      expect(api.listReports).toHaveBeenLastCalledWith({ ...DEFAULT_LIST_QUERY, ...query }, ANY_SIGNAL);
+    },
+    TEST_TIMEOUT,
+  );
+
+  it.each(TYPING_CASES)(
+    'typing $typing sends at most one list request, for the last whole value',
+    async ({ label, keystrokes, query }) => {
+      renderRoute('/reports', 'user');
+      expect(await screen.findByText('1 to 8 of 8 items', {}, { timeout: FIND_TIMEOUT })).toBeInTheDocument();
+      const field = screen.getByLabelText(label);
+      for (const value of keystrokes) {
+        fireEvent.change(field, { target: { value } });
+      }
+      await act(() => new Promise((resolve) => setTimeout(resolve, PAST_TYPING_PAUSE_MS)));
+
+      expect(field).toHaveValue(keystrokes.at(-1));
+      if (query === null) {
+        expect(api.listReports).toHaveBeenCalledTimes(1);
+        expect(shownCodes()).toEqual(ALL_EXPENSE_CODES);
+      } else {
+        expect(api.listReports).toHaveBeenCalledTimes(2);
+        expect(api.listReports).toHaveBeenLastCalledWith({ ...DEFAULT_LIST_QUERY, ...query }, ANY_SIGNAL);
+      }
+    },
+    TEST_TIMEOUT,
+  );
+
+  it(
+    'waits out the typing pause after every keystroke, including one that leaves the date incomplete',
+    async () => {
+      renderRoute('/reports', 'user');
+      expect(await screen.findByText('1 to 8 of 8 items', {}, { timeout: FIND_TIMEOUT })).toBeInTheDocument();
+      const field = screen.getByLabelText('From');
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      try {
+        const typeThenWait = async (value: string, pauseMs: number) => {
+          fireEvent.change(field, { target: { value } });
+          await act(async () => {
+            vi.advanceTimersByTime(pauseMs);
+          });
+        };
+
+        await typeThenWait('2023-03-01', BETWEEN_KEYS_MS);
+        await typeThenWait('0002-03-05', BETWEEN_KEYS_MS);
+        expect(api.listReports).toHaveBeenCalledTimes(1);
+
+        await typeThenWait('2024-03-05', PAST_TYPING_PAUSE_MS);
+        expect(api.listReports).toHaveBeenCalledTimes(2);
+        expect(api.listReports).toHaveBeenLastCalledWith(
+          { ...DEFAULT_LIST_QUERY, from: '2024-03-05T00:00:00' },
+          ANY_SIGNAL,
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+    TEST_TIMEOUT,
+  );
+
+  it(
+    'aborts a superseded list request and keeps the rows of the newest',
+    async () => {
+      renderRoute('/reports', 'user');
+      const superseded = deferred<ReportSummary[]>();
+      vi.mocked(api.listReports).mockReturnValueOnce(superseded.promise);
+      expect(await heading('Reports')).toBeInTheDocument();
+      await waitFor(() => expect(api.listReports).toHaveBeenCalledTimes(1), { timeout: FIND_TIMEOUT });
+      await clickControl('Submited');
+
+      await waitFor(() => expect(shownCodes()).toEqual(['3/2024 EX', '2/2024 EX', '1/2024 EX']), {
+        timeout: FIND_TIMEOUT,
+      });
+      const [[, abandoned], [, newest]] = vi.mocked(api.listReports).mock.calls;
+      expect(abandoned?.aborted).toBe(true);
+      expect(newest?.aborted).toBe(false);
+
+      await act(async () => superseded.resolve(EXPENSE_ROWS));
+      expect(shownCodes()).toEqual(['3/2024 EX', '2/2024 EX', '1/2024 EX']);
+      expect(api.listReports).toHaveBeenCalledTimes(2);
     },
     TEST_TIMEOUT,
   );
@@ -1875,11 +1979,11 @@ describe('browsing reports and lines', () => {
         timeout: FIND_TIMEOUT,
       });
       expect(shownCodes()[0]).toBe('2/2024 EX');
-      expect(api.listReports).toHaveBeenLastCalledWith({ ...DEFAULT_LIST_QUERY, sort: 'title,asc' });
+      expect(api.listReports).toHaveBeenLastCalledWith({ ...DEFAULT_LIST_QUERY, sort: 'title,asc' }, ANY_SIGNAL);
 
       await sortBy('descending');
       await waitFor(() => expect(shownCodes()[0]).toBe('3/2024 EX'), { timeout: FIND_TIMEOUT });
-      expect(api.listReports).toHaveBeenLastCalledWith({ ...DEFAULT_LIST_QUERY, sort: 'title,desc' });
+      expect(api.listReports).toHaveBeenLastCalledWith({ ...DEFAULT_LIST_QUERY, sort: 'title,desc' }, ANY_SIGNAL);
       expect(api.listReports).toHaveBeenCalledTimes(3);
     },
     TEST_TIMEOUT,
@@ -1899,7 +2003,7 @@ describe('browsing reports and lines', () => {
       await clickControl('Submited');
       expect(await screen.findByText('1 to 5 of 7 items', {}, { timeout: FIND_TIMEOUT })).toBeInTheDocument();
       expect(shownCodes()).toEqual(['7/2024 EX', '6/2024 EX', '5/2024 EX', '4/2024 EX', '3/2024 EX']);
-      expect(api.listReports).toHaveBeenLastCalledWith({ ...DEFAULT_LIST_QUERY, status: 'Submitted' });
+      expect(api.listReports).toHaveBeenLastCalledWith({ ...DEFAULT_LIST_QUERY, status: 'Submitted' }, ANY_SIGNAL);
     },
     TEST_TIMEOUT,
   );

@@ -7,6 +7,7 @@ const CSRF_COOKIE = 'XSRF-TOKEN';
 const CSRF_HEADER = 'X-XSRF-TOKEN';
 const SESSION_URL = '/api/auth/me';
 const NETWORK_ERROR = 'NETWORK_ERROR';
+const ABORTED = 'ABORTED';
 const UNEXPECTED_RESPONSE = 'UNEXPECTED_RESPONSE';
 
 type Unchecked<T> = { [K in keyof T]?: unknown };
@@ -76,11 +77,11 @@ async function send(url: string, init: RequestInit): Promise<{ response: Respons
     const response = await fetch(url, init);
     return { response, text: await response.text() };
   } catch {
-    throw new ApiError(0, NETWORK_ERROR, MESSAGES.GENERIC_ERROR);
+    throw new ApiError(0, init.signal?.aborted ? ABORTED : NETWORK_ERROR, MESSAGES.GENERIC_ERROR);
   }
 }
 
-export async function request<T>(method: HttpMethod, url: string, body?: unknown): Promise<T> {
+export async function request<T>(method: HttpMethod, url: string, body?: unknown, signal?: AbortSignal): Promise<T> {
   const headers: Record<string, string> = { Accept: 'application/json' };
   let payload: BodyInit | undefined;
   if (body instanceof FormData) {
@@ -98,7 +99,7 @@ export async function request<T>(method: HttpMethod, url: string, body?: unknown
     }
   }
 
-  const { response, text } = await send(url, { method, credentials: 'same-origin', headers, body: payload });
+  const { response, text } = await send(url, { method, credentials: 'same-origin', headers, body: payload, signal });
   if (!response.ok) {
     throw toApiError(response.status, text);
   }

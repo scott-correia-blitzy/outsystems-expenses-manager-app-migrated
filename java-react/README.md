@@ -110,7 +110,7 @@ What the suites prove:
 - `RoleMatrixIT`: every endpoint for anonymous, User, Approver and Administrator callers. Mixed-role callers get targeted checks: User plus Administrator cannot write another user's Draft but can read it and decide a Submitted report, and User plus Administrator and User plus Approver list the reports their combined roles allow.
 - `EndToEndIT`: create, add a line, upload and download an invoice, submit, approve, log out and in again, and restart on the same data.
 - `ResponseTimeIT`: start with seeding under 30 s, and a 95th percentile under 300 ms for the list and dashboard calls.
-- Vitest: formatters, all 14 routes rendered and guarded per role, the report, line, decision, browsing, dashboard, preview, tool and blog workflows against a mocked API, and a scan that rejects colour literals outside `frontend/src/theme/theme.ts`.
+- Vitest: formatters, all 14 routes rendered and guarded per role, the report, line, decision, browsing, dashboard, preview, tool and blog workflows against a mocked API, the real API client loading reference data once per session and rejecting a cancelled list request without ending the session, and a scan that rejects colour literals outside `frontend/src/theme/theme.ts`.
 
 The integration tests start the app on a random port with a private H2 file in a temporary directory; none needs a running server.
 

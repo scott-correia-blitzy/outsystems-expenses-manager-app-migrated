@@ -69,9 +69,9 @@ function notify(listeners: Set<SessionListener>): void {
   }
 }
 
-function signedInRequest<T>(method: HttpMethod, url: string, body?: unknown): Promise<T> {
+function signedInRequest<T>(method: HttpMethod, url: string, body?: unknown, signal?: AbortSignal): Promise<T> {
   const startedIn = sessionEpoch;
-  return request<T>(method, url, body).catch((err: unknown) => {
+  return request<T>(method, url, body, signal).catch((err: unknown) => {
     if (err instanceof ApiError && startedIn === sessionEpoch) {
       if (err.status === 401) {
         sessionEpoch += 1;
@@ -100,11 +100,23 @@ export function logout(): Promise<void> {
   return request<void>('POST', '/api/auth/logout');
 }
 
+// Reference rows and rates are fixed for a session, so every caller shares one load and only a failure is retried.
+let referenceLoad: { epoch: number; data: Promise<ReferenceData> } | null = null;
+
 export function reference(): Promise<ReferenceData> {
-  return signedInRequest<ReferenceData>('GET', '/api/reference');
+  if (referenceLoad === null || referenceLoad.epoch !== sessionEpoch) {
+    const load = { epoch: sessionEpoch, data: signedInRequest<ReferenceData>('GET', '/api/reference') };
+    referenceLoad = load;
+    load.data.catch(() => {
+      if (referenceLoad === load) {
+        referenceLoad = null;
+      }
+    });
+  }
+  return referenceLoad.data;
 }
 
-export function listReports(query: ReportListQuery): Promise<ReportSummary[]> {
+export function listReports(query: ReportListQuery, signal?: AbortSignal): Promise<ReportSummary[]> {
   const url = withQuery('/api/reports', {
     kind: query.kind,
     status: query.status,
@@ -113,7 +125,7 @@ export function listReports(query: ReportListQuery): Promise<ReportSummary[]> {
     from: query.from,
     to: query.to,
   });
-  return signedInRequest<ReportSummary[]>('GET', url);
+  return signedInRequest<ReportSummary[]>('GET', url, undefined, signal);
 }
 
 export function createReport(body: CreateReportBody): Promise<ReportSummary> {

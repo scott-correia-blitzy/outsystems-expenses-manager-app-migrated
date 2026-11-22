@@ -1,4 +1,17 @@
-import { useEffect, useId, useMemo, useRef, useState, type ChangeEvent, type MouseEvent, type ReactNode } from 'react';
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useId,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type MouseEvent,
+  type ReactNode,
+  type Ref,
+} from 'react';
 import { useNavigate } from 'react-router';
 import {
   Accordion,
@@ -61,6 +74,10 @@ type SortState = { column: ReportSortColumn; dir: SortDir } | null;
 
 type DecisionFocus = { rowId: number; trigger: HTMLElement | null; succeeded: boolean; loadsBefore: number };
 
+type DateField = { text: string; bound: string };
+
+type ListFilters = { q: string; from: string; to: string };
+
 type Column = {
   key: ReportSortColumn;
   label: string;
@@ -69,6 +86,8 @@ type Column = {
 };
 
 const DEFAULT_FROM = '2023-01-01T00:00:00';
+const FILTER_DEBOUNCE_MS = 300;
+const WHOLE_DATE = /^[1-9]\d{3}-\d{2}-\d{2}$/;
 
 const ROWS_PER_PAGE: Record<Mode, number> = { user: 10, admin: 5 };
 
@@ -102,8 +121,19 @@ function localDateTime(date: Date): string {
   return `${day}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
 
-function dateBound(pickedDate: string): string {
-  return pickedDate ? `${pickedDate}T00:00:00` : '';
+function dateField(bound: string): DateField {
+  return { text: bound.slice(0, 10), bound };
+}
+
+// Mid-typing, a date field reports years such as 0002 or an empty bad input; both keep the last bound.
+function typedDate(current: DateField, text: string, badInput: boolean): DateField {
+  if (WHOLE_DATE.test(text)) {
+    return { text, bound: `${text}T00:00:00` };
+  }
+  if (text === '' && !badInput) {
+    return { text, bound: '' };
+  }
+  return { ...current, text };
 }
 
 function cellText(value: string | null | undefined): ReactNode {
@@ -187,7 +217,7 @@ type ReportRowProps = {
   onViewLine: (line: LineView) => void;
 };
 
-function ReportRow({
+const ReportRow = memo(function ReportRow({
   mode,
   kind,
   row,
@@ -302,6 +332,48 @@ function ReportRow({
       </AccordionDetails>
     </Accordion>
   );
+});
+
+type LineViewerHandle = { show: (line: LineView) => void };
+
+type ReportLineViewerProps = { kind: Kind; ref: Ref<LineViewerHandle> };
+
+// Owns the dialog's state, so opening or closing it re-renders neither the rows nor the filters.
+function ReportLineViewer({ kind, ref }: ReportLineViewerProps) {
+  const feedback = useFeedback();
+  const [reference, setReference] = useState<ReferenceData | null>(null);
+  const [viewer, setViewer] = useState<{ line: LineView; open: boolean } | null>(null);
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      show: (line) => {
+        const pending = { line, open: true };
+        setViewer(pending);
+        if (reference) {
+          return;
+        }
+        loadReference().then(setReference, (err: unknown) => {
+          feedback.error(err);
+          setViewer((current) => (current === pending ? null : current));
+        });
+      },
+    }),
+    [reference, feedback],
+  );
+
+  if (!viewer || !reference) {
+    return null;
+  }
+  return (
+    <LineViewDialog
+      open={viewer.open}
+      kind={kind}
+      line={viewer.line}
+      vatRate={reference.vatRate}
+      onClose={() => setViewer((current) => current && { ...current, open: false })}
+    />
+  );
 }
 
 export function ReportList({ mode, kind, onDecided }: ReportListProps) {
@@ -311,9 +383,10 @@ export function ReportList({ mode, kind, onDecided }: ReportListProps) {
   const rangeLabelId = `${idBase}-range`;
 
   const [status, setStatus] = useState<StatusFilter>('All');
-  const [from, setFrom] = useState(DEFAULT_FROM);
-  const [to, setTo] = useState(() => localDateTime(new Date()));
-  const [q, setQ] = useState('');
+  const [searchText, setSearchText] = useState('');
+  const [fromField, setFromField] = useState(() => dateField(DEFAULT_FROM));
+  const [toField, setToField] = useState(() => dateField(localDateTime(new Date())));
+  const [filters, setFilters] = useState<ListFilters>(() => ({ q: '', from: fromField.bound, to: toField.bound }));
   const [sort, setSort] = useState<SortState>(null);
   const [rows, setRows] = useState<ReportSummary[]>([]);
   const [loading, setLoading] = useState(true);
@@ -328,8 +401,7 @@ export function ReportList({ mode, kind, onDecided }: ReportListProps) {
   const [deciding, setDeciding] = useState(false);
   const [decisionFocus, setDecisionFocus] = useState<DecisionFocus | null>(null);
   const searchInput = useRef<HTMLInputElement>(null);
-  const [reference, setReference] = useState<ReferenceData | null>(null);
-  const [viewer, setViewer] = useState<{ kind: Kind; line: LineView; open: boolean } | null>(null);
+  const lineViewer = useRef<LineViewerHandle>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const [heldBlockSize, setHeldBlockSize] = useState<number | null>(null);
 
@@ -342,7 +414,6 @@ export function ReportList({ mode, kind, onDecided }: ReportListProps) {
     setExpandedId(null);
     setDetails({});
     setPage(0);
-    setViewer(null);
     setDecisionFocus(null);
     // The DOM still holds the previous kind's list; keeping its height stops the page shrinking and losing its scroll.
     setHeldBlockSize(bodyRef.current?.getBoundingClientRect().height ?? null);
@@ -353,21 +424,37 @@ export function ReportList({ mode, kind, onDecided }: ReportListProps) {
     shownKind.current = kind;
   }, [kind]);
 
+  const typedQ = searchText.trim();
+  const typedFrom = fromField.bound;
+  const typedTo = toField.bound;
+  // The shown texts restart the wait too, since a keystroke into an incomplete date leaves its bound as it was.
+  useEffect(() => {
+    if (typedQ === filters.q && typedFrom === filters.from && typedTo === filters.to) {
+      return undefined;
+    }
+    const timer = setTimeout(() => {
+      setFilters({ q: typedQ, from: typedFrom, to: typedTo });
+      setPage(0);
+    }, FILTER_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [searchText, fromField.text, toField.text, typedQ, typedFrom, typedTo, filters]);
+
   useEffect(() => {
     let cancelled = false;
+    const controller = new AbortController();
     startedLoads.current += 1;
     const loadId = startedLoads.current;
     const query: ReportListQuery = {
       kind,
       status: status === 'All' ? undefined : status,
-      q: q.trim() || undefined,
+      q: filters.q || undefined,
       sort: sort ? `${sort.column},${sort.dir}` : undefined,
-      from: from || undefined,
-      to: to || undefined,
+      from: filters.from || undefined,
+      to: filters.to || undefined,
     };
     setLoading(true);
     setLoadFailed(false);
-    listReports(query)
+    listReports(query, controller.signal)
       .then((result) => {
         if (!cancelled) {
           setRows(result);
@@ -391,8 +478,9 @@ export function ReportList({ mode, kind, onDecided }: ReportListProps) {
       });
     return () => {
       cancelled = true;
+      controller.abort();
     };
-  }, [kind, status, q, sort, from, to, reloadKey, feedback]);
+  }, [kind, status, filters, sort, reloadKey, feedback]);
 
   // A pending decision disables its focused button, which drops focus to the body. A failure returns it to that
   // button; a success waits for its reload, which may remove the row's buttons or the row itself.
@@ -448,232 +536,246 @@ export function ReportList({ mode, kind, onDecided }: ReportListProps) {
     [rows, currentPage, rowsPerPage],
   );
 
-  const changeStatus = (_event: MouseEvent<HTMLElement>, next: StatusFilter | null) => {
+  const changeStatus = useCallback((_event: MouseEvent<HTMLElement>, next: StatusFilter | null) => {
     if (next !== null) {
       setStatus(next);
       setPage(0);
     }
-  };
+  }, []);
 
-  const changeFrom = (event: ChangeEvent<HTMLInputElement>) => {
-    setFrom(dateBound(event.target.value));
-    setPage(0);
-  };
+  const changeFrom = useCallback((event: ChangeEvent<HTMLInputElement>) => {
+    const { value, validity } = event.target;
+    setFromField((current) => typedDate(current, value, validity.badInput));
+  }, []);
 
-  const changeTo = (event: ChangeEvent<HTMLInputElement>) => {
-    setTo(dateBound(event.target.value));
-    setPage(0);
-  };
+  const changeTo = useCallback((event: ChangeEvent<HTMLInputElement>) => {
+    const { value, validity } = event.target;
+    setToField((current) => typedDate(current, value, validity.badInput));
+  }, []);
 
-  const changeSearch = (event: ChangeEvent<HTMLInputElement>) => {
-    setQ(event.target.value);
-    setPage(0);
-  };
+  const changeSearch = useCallback((event: ChangeEvent<HTMLInputElement>) => {
+    setSearchText(event.target.value);
+  }, []);
 
-  const toggleSort = (column: ReportSortColumn) => {
+  const toggleSort = useCallback((column: ReportSortColumn) => {
     setSort((current) =>
       current?.column === column && current.dir === 'asc' ? { column, dir: 'desc' } : { column, dir: 'asc' },
     );
     setPage(0);
-  };
+  }, []);
 
-  const selectSort = (event: ChangeEvent<HTMLInputElement>) => {
-    const [key, dir] = event.target.value.split(',');
-    const column = columns.find((candidate) => candidate.key === key);
-    setSort(column && (dir === 'asc' || dir === 'desc') ? { column: column.key, dir } : null);
-    setPage(0);
-  };
+  const selectSort = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => {
+      const [key, dir] = event.target.value.split(',');
+      const column = columns.find((candidate) => candidate.key === key);
+      setSort(column && (dir === 'asc' || dir === 'desc') ? { column: column.key, dir } : null);
+      setPage(0);
+    },
+    [columns],
+  );
 
-  const toggleRow = (id: number, isExpanded: boolean) => {
+  const toggleRow = useCallback((id: number, isExpanded: boolean) => {
     setExpandedId(isExpanded ? id : null);
-  };
+  }, []);
 
-  const openReport = (row: ReportSummary) => {
-    navigate(mode === 'admin' ? adminReportPath(kind, row.id) : reportPath(kind, row.id));
-  };
+  const openReport = useCallback(
+    (row: ReportSummary) => {
+      navigate(mode === 'admin' ? adminReportPath(kind, row.id) : reportPath(kind, row.id));
+    },
+    [navigate, mode, kind],
+  );
 
-  const decide = async (row: ReportSummary, accept: boolean) => {
-    if (decisionPending.current) {
-      return;
-    }
-    decisionPending.current = true;
-    const focused = document.activeElement;
-    const trigger = focused instanceof HTMLElement && focused !== document.body ? focused : null;
-    setDeciding(true);
-    try {
-      await decideReport(kind, row.id, accept);
-      feedback.success(
-        `${kind === 'expense' ? 'Expense' : 'Earning'} report was ${accept ? 'approved' : 'declined'}`,
-      );
-      // Expense and earning ids overlap, so a detail cached after a kind switch is not this report's.
-      if (shownKind.current === kind) {
-        setDetails((current) => {
-          const next = { ...current };
-          delete next[row.id];
-          return next;
-        });
+  const decide = useCallback(
+    async (row: ReportSummary, accept: boolean) => {
+      if (decisionPending.current) {
+        return;
       }
-      setReloadKey((key) => key + 1);
-      onDecided?.();
-      // Loads started before now, even one that settles meanwhile, are not this decision's reload.
-      setDecisionFocus({ rowId: row.id, trigger, succeeded: true, loadsBefore: startedLoads.current });
-    } catch (err) {
-      feedback.error(err);
-      setDecisionFocus({ rowId: row.id, trigger, succeeded: false, loadsBefore: startedLoads.current });
-    } finally {
-      decisionPending.current = false;
-      setDeciding(false);
-    }
-  };
+      decisionPending.current = true;
+      const focused = document.activeElement;
+      const trigger = focused instanceof HTMLElement && focused !== document.body ? focused : null;
+      setDeciding(true);
+      try {
+        await decideReport(kind, row.id, accept);
+        feedback.success(
+          `${kind === 'expense' ? 'Expense' : 'Earning'} report was ${accept ? 'approved' : 'declined'}`,
+        );
+        // Expense and earning ids overlap, so a detail cached after a kind switch is not this report's.
+        if (shownKind.current === kind) {
+          setDetails((current) => {
+            const next = { ...current };
+            delete next[row.id];
+            return next;
+          });
+        }
+        setReloadKey((key) => key + 1);
+        onDecided?.();
+        // Loads started before now, even one that settles meanwhile, are not this decision's reload.
+        setDecisionFocus({ rowId: row.id, trigger, succeeded: true, loadsBefore: startedLoads.current });
+      } catch (err) {
+        feedback.error(err);
+        setDecisionFocus({ rowId: row.id, trigger, succeeded: false, loadsBefore: startedLoads.current });
+      } finally {
+        decisionPending.current = false;
+        setDeciding(false);
+      }
+    },
+    [kind, feedback, onDecided],
+  );
 
-  const viewReportLine = async (line: LineView) => {
-    // Set before the reference loads; a kind switch clears it, so a late reply opens nothing.
-    const pending = { kind, line, open: true };
-    setViewer(pending);
-    if (reference) {
-      return;
-    }
-    try {
-      setReference(await loadReference());
-    } catch (err) {
-      feedback.error(err);
-      setViewer((current) => (current === pending ? null : current));
-    }
-  };
+  const viewReportLine = useCallback((line: LineView) => {
+    lineViewer.current?.show(line);
+  }, []);
 
   const statusVertical = useMediaQuery((theme: Theme) => theme.breakpoints.down('sm'), { noSsr: true });
   const statusFullWidth = useMediaQuery((theme: Theme) => theme.breakpoints.down('md'), { noSsr: true });
 
-  const filterBar = (
-    <Stack
-      direction={{ xs: 'column', md: 'row' }}
-      spacing={2}
-      useFlexGap
-      alignItems={{ xs: 'stretch', md: 'flex-end' }}
-      sx={{ flexWrap: { md: 'wrap' } }}
-    >
-      <ToggleButtonGroup
-        exclusive
-        size="small"
-        color="primary"
-        orientation={statusVertical ? 'vertical' : 'horizontal'}
-        fullWidth={statusFullWidth}
-        value={status}
-        onChange={changeStatus}
-        aria-label="Filter by status"
-      >
-        {STATUS_FILTERS[mode].map((option) => (
-          <ToggleButton key={option.value} value={option.value}>
-            {option.label}
-          </ToggleButton>
-        ))}
-      </ToggleButtonGroup>
+  const filterBar = useMemo(
+    () => (
       <Stack
-        role="group"
-        aria-labelledby={rangeLabelId}
-        spacing={1}
+        direction={{ xs: 'column', md: 'row' }}
+        spacing={2}
         useFlexGap
-        sx={{ flexGrow: 1, minInlineSize: (theme) => ({ md: theme.spacing(36) }) }}
+        alignItems={{ xs: 'stretch', md: 'flex-end' }}
+        sx={{ flexWrap: { md: 'wrap' } }}
       >
-        <Typography id={rangeLabelId} variant="caption" color="text.secondary">
-          Filter by date range
-        </Typography>
-        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} useFlexGap>
-          <TextField
-            type="date"
-            size="small"
-            label="From"
-            value={from.slice(0, 10)}
-            onChange={changeFrom}
-            slotProps={{ inputLabel: { shrink: true } }}
-            sx={{ flexGrow: 1 }}
-          />
-          <TextField
-            type="date"
-            size="small"
-            label="To"
-            value={to.slice(0, 10)}
-            onChange={changeTo}
-            slotProps={{ inputLabel: { shrink: true } }}
-            sx={{ flexGrow: 1 }}
-          />
+        <ToggleButtonGroup
+          exclusive
+          size="small"
+          color="primary"
+          orientation={statusVertical ? 'vertical' : 'horizontal'}
+          fullWidth={statusFullWidth}
+          value={status}
+          onChange={changeStatus}
+          aria-label="Filter by status"
+        >
+          {STATUS_FILTERS[mode].map((option) => (
+            <ToggleButton key={option.value} value={option.value}>
+              {option.label}
+            </ToggleButton>
+          ))}
+        </ToggleButtonGroup>
+        <Stack
+          role="group"
+          aria-labelledby={rangeLabelId}
+          spacing={1}
+          useFlexGap
+          sx={{ flexGrow: 1, minInlineSize: (theme) => ({ md: theme.spacing(36) }) }}
+        >
+          <Typography id={rangeLabelId} variant="caption" color="text.secondary">
+            Filter by date range
+          </Typography>
+          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} useFlexGap>
+            <TextField
+              type="date"
+              size="small"
+              label="From"
+              value={fromField.text}
+              onChange={changeFrom}
+              slotProps={{ inputLabel: { shrink: true } }}
+              sx={{ flexGrow: 1 }}
+            />
+            <TextField
+              type="date"
+              size="small"
+              label="To"
+              value={toField.text}
+              onChange={changeTo}
+              slotProps={{ inputLabel: { shrink: true } }}
+              sx={{ flexGrow: 1 }}
+            />
+          </Stack>
         </Stack>
+        <TextField
+          size="small"
+          placeholder="Search by title"
+          value={searchText}
+          onChange={changeSearch}
+          inputRef={searchInput}
+          sx={{ flexGrow: 1, minInlineSize: (theme) => ({ md: theme.spacing(30) }) }}
+          slotProps={{
+            htmlInput: { 'aria-label': 'Search by title' },
+            input: {
+              startAdornment: (
+                <InputAdornment position="start">
+                  <ViewIcon fontSize="small" color="action" />
+                </InputAdornment>
+              ),
+            },
+          }}
+        />
       </Stack>
-      <TextField
-        size="small"
-        placeholder="Search by title"
-        value={q}
-        onChange={changeSearch}
-        inputRef={searchInput}
-        sx={{ flexGrow: 1, minInlineSize: (theme) => ({ md: theme.spacing(30) }) }}
-        slotProps={{
-          htmlInput: { 'aria-label': 'Search by title' },
-          input: {
-            startAdornment: (
-              <InputAdornment position="start">
-                <ViewIcon fontSize="small" color="action" />
-              </InputAdornment>
-            ),
-          },
-        }}
-      />
-    </Stack>
+    ),
+    [
+      mode,
+      status,
+      changeStatus,
+      statusVertical,
+      statusFullWidth,
+      rangeLabelId,
+      fromField.text,
+      changeFrom,
+      toField.text,
+      changeTo,
+      searchText,
+      changeSearch,
+    ],
   );
 
-  const expandIconSpacer = <Box aria-hidden sx={{ inlineSize: (theme) => theme.spacing(3), flexShrink: 0 }} />;
-
-  const header = (
-    <Box>
-      <TextField
-        select
-        fullWidth
-        size="small"
-        name="sort"
-        label="Sort by"
-        value={sort ? `${sort.column},${sort.dir}` : ''}
-        onChange={selectSort}
-        slots={{ inputLabel: SelectLabel }}
-        slotProps={{ select: { displayEmpty: true }, inputLabel: { shrink: true } }}
-        sx={{ display: { md: 'none' } }}
-      >
-        <MenuItem value="">Default</MenuItem>
-        {columns.flatMap((column) =>
-          (['asc', 'desc'] as const).map((dir) => (
-            <MenuItem key={`${column.key},${dir}`} value={`${column.key},${dir}`}>
-              {`${column.label}, ${dir === 'asc' ? 'ascending' : 'descending'}`}
-            </MenuItem>
-          )),
-        )}
-      </TextField>
-      <Paper variant="outlined" sx={{ display: { xs: 'none', md: 'block' } }}>
-        <Stack direction="row" alignItems="center" sx={{ paddingInline: 2, paddingBlock: 2 }}>
-          <Grid container columns={gridColumns} columnSpacing={2} sx={{ flexGrow: 1 }}>
-            {columns.map((column) => {
-              const active = sort?.column === column.key;
-              const direction = active ? sort.dir : 'asc';
-              return (
-                <Grid key={column.key} size={column.size}>
-                  <TableSortLabel
-                    active={active}
-                    direction={direction}
-                    onClick={() => toggleSort(column.key)}
-                    aria-label={
-                      active
-                        ? `${column.label}, sorted ${direction === 'asc' ? 'ascending' : 'descending'}`
-                        : undefined
-                    }
-                    sx={SORT_LABEL_FOCUS_SX}
-                  >
-                    {column.label}
-                  </TableSortLabel>
-                </Grid>
-              );
-            })}
-          </Grid>
-          {expandIconSpacer}
-        </Stack>
-      </Paper>
-    </Box>
+  const header = useMemo(
+    () => (
+      <Box>
+        <TextField
+          select
+          fullWidth
+          size="small"
+          name="sort"
+          label="Sort by"
+          value={sort ? `${sort.column},${sort.dir}` : ''}
+          onChange={selectSort}
+          slots={{ inputLabel: SelectLabel }}
+          slotProps={{ select: { displayEmpty: true }, inputLabel: { shrink: true } }}
+          sx={{ display: { md: 'none' } }}
+        >
+          <MenuItem value="">Default</MenuItem>
+          {columns.flatMap((column) =>
+            (['asc', 'desc'] as const).map((dir) => (
+              <MenuItem key={`${column.key},${dir}`} value={`${column.key},${dir}`}>
+                {`${column.label}, ${dir === 'asc' ? 'ascending' : 'descending'}`}
+              </MenuItem>
+            )),
+          )}
+        </TextField>
+        <Paper variant="outlined" sx={{ display: { xs: 'none', md: 'block' } }}>
+          <Stack direction="row" alignItems="center" sx={{ paddingInline: 2, paddingBlock: 2 }}>
+            <Grid container columns={gridColumns} columnSpacing={2} sx={{ flexGrow: 1 }}>
+              {columns.map((column) => {
+                const active = sort?.column === column.key;
+                const direction = active ? sort.dir : 'asc';
+                return (
+                  <Grid key={column.key} size={column.size}>
+                    <TableSortLabel
+                      active={active}
+                      direction={direction}
+                      onClick={() => toggleSort(column.key)}
+                      aria-label={
+                        active
+                          ? `${column.label}, sorted ${direction === 'asc' ? 'ascending' : 'descending'}`
+                          : undefined
+                      }
+                      sx={SORT_LABEL_FOCUS_SX}
+                    >
+                      {column.label}
+                    </TableSortLabel>
+                  </Grid>
+                );
+              })}
+            </Grid>
+            <Box aria-hidden sx={{ inlineSize: (theme) => theme.spacing(3), flexShrink: 0 }} />
+          </Stack>
+        </Paper>
+      </Box>
+    ),
+    [columns, gridColumns, sort, selectSort, toggleSort],
   );
 
   let body: ReactNode;
@@ -754,15 +856,8 @@ export function ReportList({ mode, kind, onDecided }: ReportListProps) {
         message={statusMessage}
       />
       <Box ref={bodyRef}>{body}</Box>
-      {viewer && reference && (
-        <LineViewDialog
-          open={viewer.open}
-          kind={viewer.kind}
-          line={viewer.line}
-          vatRate={reference.vatRate}
-          onClose={() => setViewer((current) => current && { ...current, open: false })}
-        />
-      )}
+      {/* Remounted per kind, so a line opened before a kind switch never shows after it. */}
+      <ReportLineViewer key={kind} kind={kind} ref={lineViewer} />
     </Stack>
   );
 }
