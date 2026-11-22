@@ -709,6 +709,66 @@ class RoleMatrixIT {
         assertThat(response.header("Allow")).as(call.endpoint()).isNull();
     }
 
+    static Stream<Arguments> refusedCrossOriginCases() {
+        String foreign = "https://evil.example";
+        return MATRIX_CALLERS.stream().flatMap(account -> {
+            int mappedApi = account.signedIn() ? 403 : 401;
+            int unmappedApi = account.signedIn() ? 404 : 401;
+            return Stream.of(
+                    Arguments.of(account, preflight("/api/reports", "POST", foreign), mappedApi),
+                    Arguments.of(account, preflight("/api/reports", "PATCH", foreign), unmappedApi),
+                    Arguments.of(account, preflight("/api/nope", "GET", foreign), unmappedApi),
+                    Arguments.of(account, fromOrigin("/api/nope", "http://a:b"), unmappedApi),
+                    Arguments.of(account, preflight("/reports", "GET", foreign), 403));
+        });
+    }
+
+    @ParameterizedTest(name = "{0} sends {1}")
+    @MethodSource("refusedCrossOriginCases")
+    @DisplayName("A cross-origin preflight, or an unparsable Origin on an unmapped API path, gets the JSON error body")
+    void refusedCrossOriginRequest(Account account, Call call, int status) {
+        Response response = expect(account, call, status);
+        assertThat(response.header("Content-Type")).as(call.endpoint()).startsWith(MediaType.APPLICATION_JSON_VALUE);
+        assertThat(response.as(ErrorResponse.class)).as(call.endpoint()).isEqualTo(ErrorResponse.forStatus(status));
+        assertThat(response.header("X-Content-Type-Options")).as(call.endpoint()).isEqualTo("nosniff");
+        assertThat(response.header("Cache-Control")).as(call.endpoint()).contains("no-store");
+        assertNoCrossOriginGrant(call.endpoint(), response);
+    }
+
+    static Stream<Arguments> spaOriginCases() {
+        List<String> origins =
+                List.of("https://evil.example", "http://localhost:" + port + ".evil.example", "http://a:b");
+        return MATRIX_CALLERS.stream().flatMap(account -> Stream.of("/", "/reports")
+                .flatMap(path -> origins.stream().map(origin -> Arguments.of(account, path, origin))));
+    }
+
+    @ParameterizedTest(name = "{0} opens {1} from {2}")
+    @MethodSource("spaOriginCases")
+    @DisplayName("An SPA path loads index.html whatever Origin the request carries")
+    void spaPathIgnoresOrigin(Account account, String path, String origin) throws IOException {
+        Call call = fromOrigin(path, origin);
+        Response response = expect(account, call, 200);
+        assertThat(response.header("Content-Type")).as(call.endpoint()).startsWith("text/html");
+        assertThat(response.body()).as(call.endpoint()).isEqualTo(classpathIndexHtml());
+        assertNoCrossOriginGrant(call.endpoint(), response);
+    }
+
+    private static Call preflight(String path, String requestedMethod, String origin) {
+        return new Call("OPTIONS " + path + " for " + requestedMethod + " from " + origin,
+                c -> c.sendWithoutCsrf("OPTIONS", path, null,
+                        Map.of("Origin", origin, "Access-Control-Request-Method", requestedMethod)));
+    }
+
+    private static Call fromOrigin(String path, String origin) {
+        return new Call("GET " + path + " from " + origin,
+                c -> c.sendWithoutCsrf("GET", path, null, Map.of("Origin", origin)));
+    }
+
+    private static void assertNoCrossOriginGrant(String endpoint, Response response) {
+        assertThat(response.headers().map().keySet()).as(endpoint)
+                .noneMatch(name -> name.toLowerCase(Locale.ROOT).startsWith("access-control-"));
+    }
+
     static Stream<Arguments> rejectedSpaPathCases() {
         return Arrays.stream(Account.values()).flatMap(account ->
                 Stream.of(get(REJECTED_SPA_PATH), trace("/reports")).map(call -> Arguments.of(account, call)));
@@ -861,6 +921,58 @@ class RoleMatrixIT {
             assertThat(response.status()).as(response.toString()).isEqualTo(500);
             assertThat(response.header("Content-Type")).startsWith(MediaType.APPLICATION_JSON_VALUE);
             assertThat(response.as(ErrorResponse.class)).isEqualTo(INTERNAL_ERROR_BODY);
+            Response after = fresh.get(statePath);
+            assertThat(after.status()).as("GET " + statePath).isEqualTo(before.status());
+            assertThat(after.json()).as("GET " + statePath).isEqualTo(before.json());
+        }
+    }
+
+    // Jackson builds a record once every field is read, so keys repeat both after that point and before it.
+    static Stream<Arguments> duplicateKeyWrites() {
+        long owner = userIds.get(Account.EM_USER1);
+        String renameTarget = reportPath(EXPENSE, expenseReport(owner, ReferenceIds.STATUS_DRAFT, "Duplicate rename"));
+        String linesTarget = reportPath(EXPENSE, expenseReport(owner, ReferenceIds.STATUS_DRAFT, "Duplicate lines"));
+        long decisionReport = expenseReport(owner, ReferenceIds.STATUS_SUBMITTED, "Duplicate decision");
+        expenseLine(decisionReport, owner);
+        String decisionTarget = reportPath(EXPENSE, decisionReport);
+        String line = ("{\"expenseTypeId\":%d,\"earningTypeId\":null,\"currencyId\":%d,\"amount\":10,"
+                + "\"kilometers\":null,\"title\":\"Taxi\",\"description\":\"\",\"date\":\"%s\",\"title\":\"Repeated\"}")
+                .formatted(ReferenceIds.EXPENSE_TYPE_TRAVEL, ReferenceIds.CURRENCY_EURO, LINE_DATE);
+        String trailingLogin = ("{\"username\":\"no.such.user\",\"password\":\"%s\",\"rememberMe\":false,"
+                + "\"username\":\"%s\"}").formatted(DEMO_PASSWORD, Account.EM_USER1.username);
+        String leadingLogin = ("{\"username\":\"no.such.user\",\"username\":\"%s\",\"password\":\"%s\","
+                + "\"rememberMe\":false}").formatted(Account.EM_USER1.username, DEMO_PASSWORD);
+        return Stream.of(
+                Arguments.of(Account.EM_USER1, "POST", "/api/reports",
+                        "{\"kind\":\"expense\",\"title\":\"Duplicate one\",\"title\":\"Duplicate two\"}",
+                        "/api/reports?kind=" + EXPENSE),
+                Arguments.of(Account.EM_USER1, "PUT", renameTarget,
+                        "{\"title\":\"Renamed once\",\"title\":\"Renamed twice\"}", renameTarget),
+                Arguments.of(Account.EM_ADMIN, "POST", decisionTarget + "/decision",
+                        "{\"accept\":false,\"accept\":true}", decisionTarget),
+                Arguments.of(Account.EM_USER1, "POST", linesTarget + "/lines", line, linesTarget),
+                Arguments.of(Account.EM_ADMIN, "POST", "/api/blog",
+                        "{\"title\":\"Duplicate one\",\"description\":\"Body\",\"title\":\"Duplicate two\"}",
+                        "/api/blog"),
+                Arguments.of(Account.ANONYMOUS, "POST", "/api/auth/login", trailingLogin, "/api/auth/me"),
+                Arguments.of(Account.ANONYMOUS, "POST", "/api/auth/login", leadingLogin, "/api/auth/me"));
+    }
+
+    @ParameterizedTest(name = "{0} {1} {2} {3}")
+    @MethodSource("duplicateKeyWrites")
+    @ExtendWith(OutputCaptureExtension.class)
+    @DisplayName("A JSON body repeating a key answers 422, changes nothing and logs no unhandled error")
+    void duplicateJsonKeyIsRejected(Account caller, String method, String path, String body, String statePath,
+            CapturedOutput output) {
+        try (ApiClient fresh = freshClient(caller)) {
+            Response before = fresh.get(statePath);
+            int logStart = output.getAll().length();
+
+            Response response = assertStatus(caller, method + " " + path, fresh.send(method, path, body), 422);
+
+            assertThat(response.as(ErrorResponse.class)).as(method + " " + path)
+                    .isEqualTo(ErrorResponse.validation(LegacyMessages.INVALID_VALUE, List.of()));
+            assertThat(output.getAll().substring(logStart)).doesNotContain("Unhandled error");
             Response after = fresh.get(statePath);
             assertThat(after.status()).as("GET " + statePath).isEqualTo(before.status());
             assertThat(after.json()).as("GET " + statePath).isEqualTo(before.json());

@@ -1,5 +1,6 @@
 package com.massmutual.expensesmanager.web;
 
+import com.fasterxml.jackson.core.JsonParser;
 import com.massmutual.expensesmanager.domain.ReportKind;
 import com.massmutual.expensesmanager.service.ApiException;
 import com.massmutual.expensesmanager.service.LegacyMessages;
@@ -7,6 +8,9 @@ import jakarta.servlet.RequestDispatcher;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.config.BeanPostProcessor;
+import org.springframework.boot.autoconfigure.jackson.Jackson2ObjectMapperBuilderCustomizer;
 import org.springframework.boot.web.server.Compression;
 import org.springframework.boot.web.server.WebServerFactoryCustomizer;
 import org.springframework.boot.web.servlet.error.ErrorController;
@@ -19,13 +23,20 @@ import org.springframework.core.io.Resource;
 import org.springframework.format.FormatterRegistry;
 import org.springframework.http.CacheControl;
 import org.springframework.http.HttpHeaders;
+import org.springframework.stereotype.Component;
 import org.springframework.stereotype.Controller;
 import org.springframework.web.bind.WebDataBinder;
 import org.springframework.web.bind.annotation.ControllerAdvice;
 import org.springframework.web.bind.annotation.InitBinder;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.cors.CorsConfiguration;
+import org.springframework.web.cors.CorsProcessor;
+import org.springframework.web.cors.CorsUtils;
+import org.springframework.web.method.HandlerMethod;
+import org.springframework.web.servlet.HandlerMapping;
 import org.springframework.web.servlet.config.annotation.ResourceHandlerRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
+import org.springframework.web.servlet.handler.AbstractHandlerMapping;
 import org.springframework.web.servlet.resource.HttpResource;
 import org.springframework.web.servlet.resource.PathResourceResolver;
 
@@ -71,6 +82,54 @@ public class SpaWebConfig implements WebMvcConfigurer {
             compression.setEnabled(true);
             factory.setCompression(compression);
         };
+    }
+
+    // Without it a repeated key is silently read last-wins, or fails as a 500 once a request record is complete.
+    @Bean
+    public Jackson2ObjectMapperBuilderCustomizer strictDuplicateDetection() {
+        return builder -> builder.featuresToEnable(JsonParser.Feature.STRICT_DUPLICATE_DETECTION);
+    }
+
+    // The SPA shares its API's origin, so nothing is granted cross-origin and a preflight gets the error body.
+    @Component
+    static class SameOriginCors implements BeanPostProcessor, CorsProcessor {
+
+        private final ObjectProvider<JsonSecurityHandlers> jsonSecurityHandlers;
+
+        SameOriginCors(ObjectProvider<JsonSecurityHandlers> jsonSecurityHandlers) {
+            this.jsonSecurityHandlers = jsonSecurityHandlers;
+        }
+
+        @Override
+        public Object postProcessBeforeInitialization(Object bean, String beanName) {
+            if (bean instanceof AbstractHandlerMapping mapping) {
+                mapping.setCorsProcessor(this);
+            }
+            return bean;
+        }
+
+        @Override
+        public boolean processRequest(CorsConfiguration config, HttpServletRequest request,
+                HttpServletResponse response) throws IOException {
+            // A plain request is granted nothing either way, so an Origin that does not parse must not block it.
+            if (!CorsUtils.isPreFlightRequest(request) || isSameOrigin(request)) {
+                return true;
+            }
+            // A preflight names the method it asks for, so an API path no controller maps for it answers as unmapped.
+            boolean unmappedApiPath = JsonSecurityHandlers.isApiPath(request)
+                    && !(request.getAttribute(HandlerMapping.BEST_MATCHING_HANDLER_ATTRIBUTE) instanceof HandlerMethod);
+            jsonSecurityHandlers.getObject().write(response, ErrorResponse.forStatus(
+                    unmappedApiPath ? HttpServletResponse.SC_NOT_FOUND : HttpServletResponse.SC_FORBIDDEN));
+            return false;
+        }
+
+        private static boolean isSameOrigin(HttpServletRequest request) {
+            try {
+                return !CorsUtils.isCorsRequest(request);
+            } catch (IllegalArgumentException unparsableOrigin) {
+                return false;
+            }
+        }
     }
 
     // After a converter rejects a value, Spring retries enums by constant name, so "EXPENSE" would slip through.

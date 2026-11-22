@@ -10,6 +10,7 @@ import java.math.BigDecimal;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.security.SecureRandom;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.Base64;
@@ -18,6 +19,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.function.UnaryOperator;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.IntStream;
@@ -40,6 +42,7 @@ import com.massmutual.expensesmanager.web.SpaWebConfig;
 import com.zaxxer.hikari.HikariDataSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Named;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
@@ -269,6 +272,40 @@ class EndToEndIT {
                     .isNotIn(refreshedToken, firstLoginToken, anonymousToken);
             assertStaleAndMissingTokensRejected(client, firstLoginToken, refreshedToken);
             expectStatus(client.postJson("/api/reports", newReport("Parking Fees")), 201);
+        }
+    }
+
+    static Stream<Arguments> csrfFormParameterIsNotAccepted() {
+        return Stream.of(
+                arguments(Named.<UnaryOperator<String>>named("XOR-masked token", EndToEndIT::xorMasked)),
+                arguments(Named.<UnaryOperator<String>>named("raw token", UnaryOperator.identity())));
+    }
+
+    @ParameterizedTest
+    @MethodSource
+    @DisplayName("a form post carrying the CSRF token as _csrf instead of the header neither submits nor logs out")
+    void csrfFormParameterIsNotAccepted(UnaryOperator<String> formToken) {
+        try (ApiClient user = ApiClient.loggedIn(port, USER, PASSWORD)) {
+            String reportPath = "/api/reports/expense/" + expectStatus(
+                    user.postJson("/api/reports", newReport("Form token")), 201).json().path("id").asLong();
+            ObjectNode line = ApiClient.object();
+            line.put("expenseTypeId", 2);
+            line.put("currencyId", 1);
+            line.put("amount", new BigDecimal("10.00"));
+            line.put("title", "Valid line");
+            line.put("description", "");
+            line.put("date", "2024-05-22");
+            expectStatus(user.postJson(reportPath + "/lines", line), 201);
+
+            String form = "_csrf=" + ApiClient.encode(formToken.apply(csrfCookie(user, "before the form posts")));
+            Map<String, String> formContentType = Map.of("Content-Type", "application/x-www-form-urlencoded");
+            assertForbidden(user.sendWithoutCsrf("POST", reportPath + "/submit", form, formContentType));
+            assertThat(expectStatus(user.get(reportPath), 200).json().path("status").asText()).isEqualTo("Draft");
+            assertForbidden(user.sendWithoutCsrf("POST", "/api/auth/logout", form, formContentType));
+            expectStatus(user.me(), 200);
+
+            JsonNode submitted = expectStatus(user.post(reportPath + "/submit"), 200).json();
+            assertThat(submitted.path("status").asText()).isEqualTo("Submitted");
         }
     }
 
@@ -571,6 +608,19 @@ class EndToEndIT {
         Optional<String> token = client.cookie(ApiClient.CSRF_COOKIE);
         assertThat(token).as("CSRF cookie %s", moment).isPresent();
         return token.orElseThrow();
+    }
+
+    // The form encoding XorCsrfTokenRequestAttributeHandler decodes: base64url(random || random XOR token).
+    private static String xorMasked(String token) {
+        byte[] tokenBytes = token.getBytes(StandardCharsets.UTF_8);
+        byte[] random = new byte[tokenBytes.length];
+        new SecureRandom().nextBytes(random);
+        byte[] masked = new byte[2 * tokenBytes.length];
+        for (int i = 0; i < tokenBytes.length; i++) {
+            masked[i] = random[i];
+            masked[tokenBytes.length + i] = (byte) (random[i] ^ tokenBytes[i]);
+        }
+        return Base64.getUrlEncoder().encodeToString(masked);
     }
 
     private static void assertStaleAndMissingTokensRejected(ApiClient client, String... staleTokens) {

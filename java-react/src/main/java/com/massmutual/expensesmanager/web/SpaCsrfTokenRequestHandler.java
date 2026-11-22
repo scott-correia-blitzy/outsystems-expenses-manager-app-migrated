@@ -4,14 +4,12 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.util.function.Supplier;
 import org.springframework.security.web.csrf.CsrfToken;
-import org.springframework.security.web.csrf.CsrfTokenRequestAttributeHandler;
 import org.springframework.security.web.csrf.CsrfTokenRequestHandler;
 import org.springframework.security.web.csrf.XorCsrfTokenRequestAttributeHandler;
 import org.springframework.util.StringUtils;
 
 final class SpaCsrfTokenRequestHandler implements CsrfTokenRequestHandler {
 
-    private final CsrfTokenRequestHandler plain = new CsrfTokenRequestAttributeHandler();
     private final CsrfTokenRequestHandler xor = new XorCsrfTokenRequestAttributeHandler();
 
     @Override
@@ -23,9 +21,8 @@ final class SpaCsrfTokenRequestHandler implements CsrfTokenRequestHandler {
 
     @Override
     public String resolveCsrfTokenValue(HttpServletRequest request, CsrfToken csrfToken) {
+        // Only same-origin script can set this header; any page can post a form carrying a _csrf parameter.
         String headerValue = request.getHeader(csrfToken.getHeaderName());
-        // The SPA echoes the cookie value unmasked in the header; only rendered forms send the masked token.
-        CsrfTokenRequestHandler resolver = StringUtils.hasText(headerValue) ? this.plain : this.xor;
-        return resolver.resolveCsrfTokenValue(request, csrfToken);
+        return StringUtils.hasText(headerValue) ? headerValue : null;
     }
 }
