@@ -269,24 +269,24 @@ Sign in as each demo user and compare each screen with its file in `legacy/scree
 
 | Screenshot | Figure | Legacy shows | App shows |
 |---|---|---|---|
-| `User_View_Dashboard.png` | Total Balance | € 3.412,95, "Your balance is ok" | Not run yet |
-| `User_View_Dashboard.png` | Total Spent (current month) | € 0,00, "is 100.00% less of last month" | Not run yet |
-| `User_View_Dashboard.png` | Total Spent (last month) | € 500,00, "April 01 - April 30" | Not run yet |
-| `User_View_Dashboard.png` | Earnings (current month) | € 0,00, "May 01 - May 31" | Not run yet |
-| `User_View_Dashboard.png` | Expenses per type | Travel 69.93% € 900,00 Count: 3; Restaurant 25.64% € 330,00 Count: 3; Other 3.88% € 50,00 Count: 2 | Not run yet |
-| `User_View_Dashboard.png` | Report Status Summary | Approved 1, Declined 1 | Not run yet |
-| `User_View_Dashboard.png` | Draft banner | "You have reports with Draft status, this reports are not considered for statistics" | Not run yet |
-| `User_View_New_Report.png` | Expense rows of `em_user1` | `12/2024 EX` London Trip, `11/2024 EX` Hotel, `10/2024 EX` Home Office (Draft); `9/2024 EX` Approved; `8/2024 EX` Declined; `3/2024 EX` Transportation Expenses € 50,00, `2/2024 EX` Business Travel Expenses € 600,00, `1/2024 EX` Client Meetings Expenses € 137,05 (Submitted); "1 to 8 of 8 items" | Not run yet |
-| `User_View_Report_List.png` | Earning rows of `em_user1` | `10/2024 EA` Sales Commission 5.04.2024 € 1.000,00 Submitted down to `1/2024 EA` Salary Payments 1.03.2024 € 3.000,00 Submitted; "1 to 6 of 6 items" | Not run yet |
-| `User_View_Report_List.png` | Expanded `9/2024 EA` row | 28 Mar 2024, Consulting Service for Client A, Fee earned for providing consulting services to Client A., € 500,00, Service | Not run yet |
-| `Admin_View_Report_List.png` | Counters | Total Reports 17, Reports Waiting Verification 15, Approved Report Rate 5.88% | Not run yet |
-| `Admin_View_Report_List.png` | Expense rows | `9/2024 EX` John Smith Business Trip Expenses 1.04.2024 € 500,00 Approved; `8/2024 EX` John Smith Office Supplies Purchase 28.03.2024 € 80,00 Declined; `7/2024 EX` Michael Davis Household Expenses 1.04.2024 € 250,00 Submitted; `6/2024 EX` Sarah Lee Educational Expenses 23.03.2024 € 200,00 Submitted | Not run yet |
-| `Admin_View_Report_List.png` | Expanded `9/2024 EX` lines | 2 Apr 2024 Dining Expenses € 200,00 Restaurant; 2 Apr 2024 Hotel Accommodation € 300,00 Travel | Not run yet |
-| `Admin_View_Report_Details.png` | Dining Expenses dialog | Date 2024-04-02, Expense Type Restaurant, Total € 200,00, "VAT (23%): € 46,00", "No invoice available" | Not run yet |
-| `User_View_New_Expense_Detail.png` | Report header | "12/2024 EX: London Trip", Draft, "Created by John Smith at 23 May 2024 15:18:38" | Not run yet |
-| `User_View_New_Expense_Detail.png` | Line form for Flight tickets | Total € 42,00, "VAT (23%): € 9,66" | Not run yet |
-| `User_View_Report_Details.png` | Total Expenses | € 42,00 | Not run yet |
-| `User_View_Report_Details.png` | Line row | 21 May 2024, Flight tickets, Tickets for flight to London, $42.00, Travel (the app uses € 42,00, AN-16) | Not run yet |
+| `User_View_Dashboard.png` | Total Balance | € 3.412,95, "Your balance is ok" | € 3.412,95, "Your balance is ok" |
+| `User_View_Dashboard.png` | Total Spent (current month) | € 0,00, "is 100.00% less of last month" | € 0,00, "is 100.00% less of last month" |
+| `User_View_Dashboard.png` | Total Spent (last month) | € 500,00, "April 01 - April 30" | € 500,00, "April 01 - April 30" |
+| `User_View_Dashboard.png` | Earnings (current month) | € 0,00, "May 01 - May 31" | € 0,00, "May 01 - May 31" |
+| `User_View_Dashboard.png` | Expenses per type | Travel 69.93% € 900,00 Count: 3; Restaurant 25.64% € 330,00 Count: 3; Other 3.88% € 50,00 Count: 2 | Travel 69.93% € 900,00 Count: 3; Restaurant 25.64% € 330,00 Count: 3; Other 3.88% € 50,00 Count: 2; Kilometers 0.55% € 7,05 Count: 1 (the fourth row is scrolled out of view in the screenshot) |
+| `User_View_Dashboard.png` | Report Status Summary | Approved 1, Declined 1 | Approved 1, Declined 1, Submitted 7, Draft 5 (Submitted and Draft are scrolled out of view in the screenshot) |
+| `User_View_Dashboard.png` | Draft banner | "You have reports with Draft status, this reports are not considered for statistics" | "You have reports with Draft status, this reports are not considered for statistics" |
+| `User_View_New_Report.png` | Expense rows of `em_user1` | `12/2024 EX` London Trip, `11/2024 EX` Hotel, `10/2024 EX` Home Office (Draft); `9/2024 EX` Approved; `8/2024 EX` Declined; `3/2024 EX` Transportation Expenses € 50,00, `2/2024 EX` Business Travel Expenses € 600,00, `1/2024 EX` Client Meetings Expenses € 137,05 (Submitted); "1 to 8 of 8 items" | `12/2024 EX` London Trip 23.05.2024 € 42,00, `11/2024 EX` Hotel 15.04.2024 € 0,00, `10/2024 EX` Home Office 10.04.2024 € 0,00 (Draft); `9/2024 EX` Business Trip Expenses 1.04.2024 € 500,00 Approved; `8/2024 EX` Office Supplies Purchase 28.03.2024 € 80,00 Declined; `3/2024 EX` Transportation Expenses 9.03.2024 € 50,00, `2/2024 EX` Business Travel Expenses 5.03.2024 € 600,00, `1/2024 EX` Client Meetings Expenses 2.03.2024 € 137,05 (Submitted); "1 to 8 of 8 items" (the totals the New Report dialog covers in the screenshot, and the two titles it truncates, are shown in full) |
+| `User_View_Report_List.png` | Earning rows of `em_user1` | `10/2024 EA` Sales Commission 5.04.2024 € 1.000,00 Submitted down to `1/2024 EA` Salary Payments 1.03.2024 € 3.000,00 Submitted; "1 to 6 of 6 items" | `10/2024 EA` Sales Commission 5.04.2024 € 1.000,00 Submitted; `9/2024 EA` Consulting Fees 1.04.2024 € 500,00 Submitted; `4/2024 EA` Miscellaneous Income 9.03.2024 € 900,00 Draft; `3/2024 EA` Service Income 5.03.2024 € 0,00 Draft; `2/2024 EA` Investment Income 3.03.2024 € 200,00 Submitted; `1/2024 EA` Salary Payments 1.03.2024 € 3.000,00 Submitted; "1 to 6 of 6 items" |
+| `User_View_Report_List.png` | Expanded `9/2024 EA` row | 28 Mar 2024, Consulting Service for Client A, Fee earned for providing consulting services to Client A., € 500,00, Service | 28 Mar 2024, Consulting Service for Client A, Fee earned for providing consulting services to Client A., € 500,00, Service |
+| `Admin_View_Report_List.png` | Counters | Total Reports 17, Reports Waiting Verification 15, Approved Report Rate 5.88% | Total Reports 17, Reports Waiting Verification 15, Approved Report Rate 5.88% |
+| `Admin_View_Report_List.png` | Expense rows | `9/2024 EX` John Smith Business Trip Expenses 1.04.2024 € 500,00 Approved; `8/2024 EX` John Smith Office Supplies Purchase 28.03.2024 € 80,00 Declined; `7/2024 EX` Michael Davis Household Expenses 1.04.2024 € 250,00 Submitted; `6/2024 EX` Sarah Lee Educational Expenses 23.03.2024 € 200,00 Submitted | `9/2024 EX` John Smith Business Trip Expenses 1.04.2024 € 500,00 Approved; `8/2024 EX` John Smith Office Supplies Purchase 28.03.2024 € 80,00 Declined; `7/2024 EX` Michael Davis Household Expenses 1.04.2024 € 250,00 Submitted; `6/2024 EX` Sarah Lee Educational Expenses 23.03.2024 € 200,00 Submitted; then `5/2024 EX` Sarah Lee Training Materials 16.03.2024 € 75,00 Submitted; "1 to 5 of 9 items" (Expenses, All filter, page 1; the fifth row and the footer lie below the screenshot's edge) |
+| `Admin_View_Report_List.png` | Expanded `9/2024 EX` lines | 2 Apr 2024 Dining Expenses € 200,00 Restaurant; 2 Apr 2024 Hotel Accommodation € 300,00 Travel | 2 Apr 2024 Dining Expenses € 200,00 Restaurant; 2 Apr 2024 Hotel Accommodation € 300,00 Travel |
+| `Admin_View_Report_Details.png` | Dining Expenses dialog | Date 2024-04-02, Expense Type Restaurant, Total € 200,00, "VAT (23%): € 46,00", "No invoice available" | Date 2024-04-02, Expense Type Restaurant, Total € 200,00, "VAT (23%): € 46,00", "No invoice available" |
+| `User_View_New_Expense_Detail.png` | Report header | "12/2024 EX: London Trip", Draft, "Created by John Smith at 23 May 2024 15:18:38" | "12/2024 EX: London Trip", Draft, "Created by John Smith at 23 May 2024 15:18:38" |
+| `User_View_New_Expense_Detail.png` | Line form for Flight tickets | Total € 42,00, "VAT (23%): € 9,66" | Total € 42,00, "VAT (23%): € 9,66" (the line's edit form, closed with Cancel) |
+| `User_View_Report_Details.png` | Total Expenses | € 42,00 | € 42,00 |
+| `User_View_Report_Details.png` | Line row | 21 May 2024, Flight tickets, Tickets for flight to London, $42.00, Travel (the app uses € 42,00, AN-16) | 21 May 2024, Flight tickets, Tickets for flight to London, € 42,00, Travel (€ 42,00 where the screenshot shows $42.00, AN-16) |
 
 ### Manual checks
 
@@ -294,12 +294,14 @@ From a clean checkout, in `java-react/`:
 
 | # | Check | Expected | Result |
 |---|---|---|---|
-| 1 | `./start.sh`, then open `http://localhost:8080` and sign in as `em_user1` | Builds, serves the app, lands on `/dashboard` | Not run yet |
-| 2 | `./start.sh` in a second terminal while the app runs | Prints "Run ./stop.sh first." and exits 1 | Not run yet |
-| 3 | `./stop.sh` | Prints "Stopped." and frees port 8080 | Not run yet |
-| 4 | `./stop.sh` again | Prints "Nothing listening on port 8080." and exits 0 | Not run yet |
-| 5 | Create a report, stop, `./start.sh` again | The new report is still listed and the seeded reports are not duplicated | Not run yet |
-| 6 | Screenshot comparison above | Every "App shows" cell matches its legacy value, apart from the mismatches listed | Not run yet |
+| 1 | `./start.sh`, then open `http://localhost:8080` and sign in as `em_user1` | Builds, serves the app, lands on `/dashboard` | Passed. With no `target/`, `node/`, `frontend/node_modules/` or `data/`, it printed "Building...", built, printed the URL and both demo logins, and served the app 61 s after launch: `GET /` and `GET /dashboard` returned 200 with `index.html`, and the process on port 8080 was the script itself. The `em_user1` login returned `landingRoute` `/dashboard`; in Chrome, against the same build on another port, it landed on `/dashboard` |
+| 2 | `./start.sh` in a second terminal while the app runs | Prints "Run ./stop.sh first." and exits 1 | Passed. Printed "Run ./stop.sh first." and exited 1 |
+| 3 | `./stop.sh` | Prints "Stopped." and frees port 8080 | Passed. Printed "Stopped." and exited 0; nothing listened on port 8080 afterwards and the first `./start.sh` ended |
+| 4 | `./stop.sh` again | Prints "Nothing listening on port 8080." and exits 0 | Passed. Printed "Nothing listening on port 8080." and exited 0 |
+| 5 | Create a report, stop, `./start.sh` again | The new report is still listed and the seeded reports are not duplicated | Passed. Before check 3, `em_user1` created `1/2026 EX` "Manual check restart" (201), and the expense list held 9 reports. After the restart it still held `1/2026 EX` and the 8 seeded codes, each once, the earning list still held its 6, and the app did not seed again |
+| 6 | Screenshot comparison above | Every "App shows" cell matches its legacy value, apart from the mismatches listed | Passed. Every cell matches its legacy value apart from the listed mismatches: the line row shows € 42,00 (AN-16), and the app shows the values the screenshots hide (the fourth "Expenses per type" row, the Draft and Submitted counts, what the New Report dialog covers). The admin list also shows its fifth row and pager, which lie below the edge of `Admin_View_Report_List.png` |
+
+Checks 1 to 5 ran with JDK 25.0.5.1 on a Linux host, inside a private network namespace so that port 8080 was free, with `curl` as the client. The new report's code takes the year of the host clock. Check 6 used Chrome at 1440x900 against the same build on a fresh `data/`.
 
 ### Startup time
 
@@ -307,8 +309,8 @@ Build first (`./mvnw -q package`) and record the build time separately. Stop the
 
 | Measurement | Result |
 |---|---|
-| Seconds from jar launch to the 8 seeded rows | Not run yet |
-| Build time (`./mvnw -q package`) | 30 s from a clean checkout (no `target/`, `node/` or `frontend/node_modules/`) with the Maven and npm caches already filled; exit 0, no compiler or type-check errors |
+| Seconds from jar launch to the 8 seeded rows | 6.8 s, the median of three launches on a fresh `data/` (7.1 s, 6.3 s and 6.8 s), polling every 0.2 s; on a shared 12-core Linux host with a 1-minute load average of 8.9 to 9.5; under the 30 s target |
+| Build time (`./mvnw -q package`) | 61 s from a clean checkout (no `target/`, `node/` or `frontend/node_modules/`) with the Maven and npm caches already filled, on the same host at a 1-minute load average of 10.4 to 10.8; exit 0 with `BusinessRulesTest` and Vitest passing, no compiler or type-check errors |
 
 `ResponseTimeIT` also asserts, on every `./mvnw verify`, a start with seeding under 30 s on a fresh H2 file, and a 95th percentile (the 48th of 50 sorted calls, after 5 warm-up calls) under 300 ms for `GET /api/reports?kind=expense` and `kind=earning` as `em_user1` and as `em_admin`, `GET /api/dashboard/user` and `GET /api/dashboard/admin`.
 
