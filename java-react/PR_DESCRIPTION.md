@@ -148,7 +148,7 @@ Every token lives in `frontend/src/theme/theme.ts`, mounted once through `ThemeP
 | `MuiButton` root `borderRadius` | `'9999rem'` (pill) | `:root { --bds-border-radius-full: 9999rem }`; `.btn{border-radius:9999rem}` |
 | `spacing` | `8` (px base) | `:root { --bds-space-xsmall: 0.8rem }` |
 
-The component overrides in `theme.ts` reuse these tokens: a 2px `primary.main` focus outline on buttons, toggles, menu items and accordion rows, `divider` row separators in tables, `grey.600` avatars with white initials, and white hover and disabled tints (from `nav.contrastText`) on the app bar controls.
+The component overrides in `theme.ts` reuse these tokens: a 2px `primary.main` focus outline on buttons, toggles, menu items, accordion rows, links and focused page headings, drawn in the alert's text colour on filled alerts; `text.secondary` placeholders at full opacity; `grey.500` resting outlines on outlined fields; a 44px (`spacing(5.5)`) minimum size for buttons, icon buttons, toggles, menu items, checkboxes and small fields; a `common.black` ripple behind the label of contained buttons, so focus and press darken the fill; `divider` row separators in tables, `grey.600` avatars with white initials, and white hover and disabled tints (from `nav.contrastText`) on the app bar controls.
 
 Enforcement: `frontend/src/test/noHardCodedColours.test.ts` fails on any hex, `rgb()`, `rgba()`, `hsl()` or `hsla()` literal in a `.ts` or `.tsx` file under `frontend/src` other than `theme.ts`, its own source included, and names each file and literal it finds.
 

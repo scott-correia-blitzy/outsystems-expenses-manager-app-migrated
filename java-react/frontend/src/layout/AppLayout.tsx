@@ -308,6 +308,8 @@ export function AppLayout({ children }: { children: ReactNode }) {
               noWrap
               sx={{
                 ...barFocusRing,
+                minHeight: (theme) => theme.spacing(5.5),
+                alignContent: 'center',
                 textDecoration: 'none',
                 fontWeight: 'fontWeightBold',
                 ...(compact && { flexGrow: 1, minWidth: 0 }),

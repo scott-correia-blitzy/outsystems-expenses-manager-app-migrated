@@ -40,6 +40,8 @@ export function PageHeader({ title, subtitle, breadcrumbs, actions }: PageHeader
                     underline="hover"
                     color="primary"
                     variant="body2"
+                    // As an inline box around the flex target, the link would paint its focus ring on empty fragments.
+                    sx={{ display: 'block' }}
                   >
                     <Box
                       component="span"
@@ -84,15 +86,22 @@ export function PageHeader({ title, subtitle, breadcrumbs, actions }: PageHeader
         <Box
           sx={{
             minWidth: 0,
+            maxWidth: '100%',
             // The actions move to their own row rather than squeeze the title below this width.
             flex: (theme) => ({ sm: `1 1 ${theme.spacing(40)}` }),
           }}
         >
-          <Typography variant="h4" component="h1" tabIndex={-1} sx={{ overflowWrap: 'break-word' }}>
+          <Typography
+            variant="h4"
+            component="h1"
+            tabIndex={-1}
+            // Shrinks to the title so the focus ring wraps the text rather than the whole row.
+            sx={{ width: 'fit-content', maxWidth: '100%', overflowWrap: 'break-word' }}
+          >
             {title}
           </Typography>
           {isPresent(subtitle) && (
-            <Typography variant="body2" color="text.secondary">
+            <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
               {subtitle}
             </Typography>
           )}

@@ -256,10 +256,10 @@ export const LineRows = memo(function LineRows({
 }: LineRowsProps) {
   const stacked = useStackedLines();
   const columns = useMemo(() => columnsFor(kind, typeLabel), [kind, typeLabel]);
-  const actionsSpacingWidth = onEdit || onDelete ? 19 : 12;
+  const actionsSpacingWidth = onEdit || onDelete ? 19.5 : 12;
 
   const lineActions = (line: LineView, justifyContent: 'center' | 'flex-end') => (
-    <Stack direction="row" spacing={1} useFlexGap justifyContent={justifyContent}>
+    <Stack direction="row" spacing={0.5} useFlexGap justifyContent={justifyContent}>
       <IconButton aria-label="View" color="primary" disabled={viewDisabled} onClick={() => onView(line)}>
         <ViewIcon />
       </IconButton>
