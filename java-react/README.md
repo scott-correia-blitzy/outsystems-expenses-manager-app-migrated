@@ -67,6 +67,8 @@ After login an Administrator lands on `/admin`, a User on `/dashboard`, and anyo
 
 `@testing-library/jest-dom` is pinned to 6.9.1 rather than 6.10.0: 6.10.0, the newest 6.x, is deprecated by its publisher as a minor release with breaking changes, and the publisher names 6.9.1 as the 6.x release to use.
 
+`tinypool`, Vitest 3.2.7's worker pool, is forced to 2.1.2 through `overrides` in `frontend/package.json`, because Vitest 3.2.7 would otherwise resolve 1.1.1, which is affected by CVE-2026-104848 and CVE-2026-104849; 2.1.2 is the first patched release and needs no Vitest change.
+
 ## Data
 
 The database is the H2 file `java-react/data/expenses.mv.db` (`jdbc:h2:file:./data/expenses`, relative to the working directory, which `start.sh` sets to `java-react/`). It is created and seeded on first start. A restart keeps the data and does not seed again: seeding runs only while both report tables are empty. `schema.sql` (`CREATE ... IF NOT EXISTS`) and `data.sql` (the 14 Static Entity rows, as `MERGE`) run on every start and are safe to repeat. The H2 console is disabled and the database has no credentials.

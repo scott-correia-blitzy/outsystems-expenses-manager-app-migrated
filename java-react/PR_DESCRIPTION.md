@@ -103,6 +103,8 @@ Every runtime, library and build plugin is on the requested list except these fo
 
 `@testing-library/jest-dom` is pinned to 6.9.1: 6.10.0, the newest 6.x, is deprecated by its publisher as a minor release with breaking changes, and the publisher names 6.9.1 as the 6.x release to use.
 
+`tinypool`, Vitest 3.2.7's worker pool, is forced to 2.1.2 through `overrides` in `frontend/package.json`, because Vitest 3.2.7 would otherwise resolve 1.1.1, which is affected by CVE-2026-104848 and CVE-2026-104849; 2.1.2 is the first patched release and needs no Vitest change.
+
 Versions: Spring Boot 3.5.16 (Spring Security 6.5.11, Hibernate 6.6.53.Final, H2 2.3.232 from its BOM), `maven.compiler.release` 25, Maven 3.9.16 through the Maven Wrapper 3.3.4 (only-script), `frontend-maven-plugin` 1.15.4 installing Node v24.22.3 with its bundled npm 11.19.1 into `java-react/node/`. Frontend pins are exact in `frontend/package.json` (React 19.3.1, `@mui/material` 7.3.11, `@emotion/react` 11.14.0, `@emotion/styled` 11.14.1, `react-router` 7.18.6, TypeScript 5.9.3, Vite 7.3.8, `@vitejs/plugin-react` 5.2.0, Vitest 3.2.7, `@testing-library/react` 16.3.3, jsdom 31.0.1) and resolved by the committed `frontend/package-lock.json`.
 
 ### Schema
