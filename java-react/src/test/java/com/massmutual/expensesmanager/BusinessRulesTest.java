@@ -54,6 +54,7 @@ import com.massmutual.expensesmanager.service.ReportService;
 import com.massmutual.expensesmanager.service.SeedDataLoader;
 import com.massmutual.expensesmanager.service.ToolsService;
 import com.massmutual.expensesmanager.service.model.BlogPostView;
+import com.massmutual.expensesmanager.service.model.DatedAmount;
 import com.massmutual.expensesmanager.service.model.FieldViolation;
 import com.massmutual.expensesmanager.service.model.InvoiceFile;
 import com.massmutual.expensesmanager.service.model.LineView;
@@ -368,6 +369,33 @@ class BusinessRulesTest {
                     assertThat(stats.currentMonth()).isEqualTo(new Period(currentFrom, currentTo));
                     assertThat(stats.lastMonth()).isEqualTo(new Period(lastFrom, lastTo));
                 });
+    }
+
+    @Test
+    void perDateSumsEachKindPerDayBeforeRoundingAndKeepsOnlyTheThirtyDayWindow() {
+        Caller owner = newCaller(appUserRepository, Role.User);
+        LocalDate windowStart = LocalDate.of(2024, 4, 23);
+        Long tripId = reportService.create(owner, ReportKind.EXPENSE, "Dashboard trip").id();
+        List<Long> dollarLineIds = Stream.of(ReferenceIds.EXPENSE_TYPE_TRAVEL, ReferenceIds.EXPENSE_TYPE_RESTAURANT)
+                .map(typeId -> lineService.create(owner, ReportKind.EXPENSE, tripId, line(typeId,
+                        ReferenceIds.CURRENCY_DOLLAR, new BigDecimal("1.05"), null, "Dollars", "", LINE_DATE)).id())
+                .toList();
+        lineService.create(owner, ReportKind.EXPENSE, tripId, line(ReferenceIds.EXPENSE_TYPE_TRAVEL,
+                ReferenceIds.CURRENCY_EURO, new BigDecimal("10.00"), null, "First day", "", windowStart));
+        lineService.create(owner, ReportKind.EXPENSE, tripId, line(ReferenceIds.EXPENSE_TYPE_TRAVEL,
+                ReferenceIds.CURRENCY_EURO, new BigDecimal("99.00"), null, "Day before", "", windowStart.minusDays(1)));
+        Long payId = reportService.create(owner, ReportKind.EARNING, "Dashboard pay").id();
+        lineService.create(owner, ReportKind.EARNING, payId, line(ReferenceIds.EARNING_TYPE_SALARY,
+                ReferenceIds.CURRENCY_EURO, new BigDecimal("300.00"), null, "Salary", "", LINE_DATE));
+        reportService.submit(owner, ReportKind.EARNING, payId);
+
+        // Rounding each stored 0.9765 before adding would give 1.96.
+        assertThat(dollarLineIds).allSatisfy(id -> assertThat(
+                expenseRepository.findById(id).orElseThrow().getAmountInEuros()).isEqualByComparingTo("0.9765"));
+        assertThat(dashboardService.user(owner).perDate()).containsExactly(
+                new DatedAmount("expense", windowStart, new BigDecimal("10.00")),
+                new DatedAmount("earning", LINE_DATE, new BigDecimal("300.00")),
+                new DatedAmount("expense", LINE_DATE, new BigDecimal("1.95")));
     }
 
     static Stream<Arguments> converterRejectsAMissingOrNonPositiveAmountOrRate() {

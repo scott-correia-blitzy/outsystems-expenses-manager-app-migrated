@@ -23,6 +23,7 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -130,14 +131,21 @@ public class DashboardService {
 
     private List<DatedAmount> perDate(Long userId, LocalDate since) {
         return Arrays.stream(ReportKind.values())
-                .flatMap(kind -> kindRepositories.lines(kind).findForCreatorSince(userId, since).stream()
-                        .map(row -> datedAmount(kind, row)))
+                .flatMap(kind -> totalsByDate(kindRepositories.lines(kind).findForCreatorSince(userId, since))
+                        .entrySet().stream()
+                        .map(total -> datedAmount(kind, total.getKey(), total.getValue())))
                 .sorted(BY_DATE_THEN_KIND)
                 .toList();
     }
 
-    private DatedAmount datedAmount(ReportKind kind, DatedAmountRow row) {
-        return new DatedAmount(kind.pathValue(), row.date(), calculator.money(row.amountInEuros()));
+    private static Map<LocalDate, BigDecimal> totalsByDate(List<DatedAmountRow> rows) {
+        return rows.stream().collect(Collectors.groupingBy(
+                DatedAmountRow::date,
+                Collectors.reducing(BigDecimal.ZERO, row -> orZero(row.amountInEuros()), BigDecimal::add)));
+    }
+
+    private DatedAmount datedAmount(ReportKind kind, LocalDate date, BigDecimal total) {
+        return new DatedAmount(kind.pathValue(), date, calculator.money(total));
     }
 
     private StatusCounts statusCounts(Long userId) {
