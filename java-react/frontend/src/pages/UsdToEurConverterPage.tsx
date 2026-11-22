@@ -13,7 +13,7 @@ import {
 } from '@mui/material';
 import { reference, usdToEur } from '../api/api';
 import { ApiError, MESSAGES, type FieldError, type UsdToEurResult } from '../api/types';
-import { useFeedback } from '../components/Feedback';
+import { unplacedError, useFeedback } from '../components/Feedback';
 import { PageHeader } from '../layout/PageHeader';
 
 type ConverterField = 'amount' | 'rate';
@@ -149,7 +149,7 @@ export function UsdToEurConverterPage() {
           }
         }
         if (otherErrors.length > 0) {
-          unplaced = new ApiError(err.status, err.code, err.message, otherErrors);
+          unplaced = unplacedError(err, otherErrors);
         }
       }
       if (focusFirstInvalid(serverErrors)) {

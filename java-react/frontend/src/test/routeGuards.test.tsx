@@ -10,6 +10,7 @@ import {
   expireSession,
   holdNextAnswer,
   installApiMocks,
+  REFERENCE,
   SESSION_CATEGORIES,
   SESSIONS,
   switchSession,
@@ -287,7 +288,7 @@ function FrameProbe({ frames }: { frames: Frame[] }) {
 
 describe('expired session', () => {
   it(
-    'shows Login after a protected call is rejected, then returns to the requested page',
+    'shows Login and the expiry message after a protected call is rejected, then returns to the requested page',
     async () => {
       renderRoute('/reports', 'user');
       expect(await screen.findByRole('heading', { name: 'Reports' }, { timeout: 3000 })).toBeInTheDocument();
@@ -297,6 +298,7 @@ describe('expired session', () => {
 
       await expectLocation('/login');
       expect(await screen.findByRole('heading', { name: 'Login' }, { timeout: 3000 })).toBeInTheDocument();
+      expect(await screen.findByText(MESSAGES.UNAUTHENTICATED, {}, { timeout: 3000 })).toBeInTheDocument();
 
       fireEvent.change(screen.getByLabelText(/Username/), { target: { value: SESSIONS.user.username } });
       fireEvent.change(screen.getByLabelText(/Password/), { target: { value: '123456' } });
@@ -650,6 +652,20 @@ describe('logout', () => {
     expect(await screen.findByRole('heading', { name: 'Reports' }, { timeout: 3000 })).toBeInTheDocument();
   }
 
+  // The server ends the session at once, while the logout's answer stays in flight until released.
+  function holdLogoutAnswer(): () => Promise<void> {
+    const endSession = vi.mocked(api.logout).getMockImplementation();
+    if (endSession === undefined) {
+      throw new Error('installApiMocks set no logout');
+    }
+    const answer = held<void>();
+    vi.mocked(api.logout).mockImplementationOnce(() => {
+      void endSession();
+      return answer.promise;
+    });
+    return () => release(() => answer.resolve());
+  }
+
   it.each([
     { outcome: 'a double click', clicks: 2, answer: () => Promise.resolve() },
     {
@@ -749,6 +765,56 @@ describe('logout', () => {
       expect(screen.getByTestId('location').textContent).toBe(SESSIONS.user.landingRoute);
       expect(screen.getByRole('heading', { name: 'Dashboard' })).toBeInTheDocument();
       expect(screen.getByRole('button', { name: 'Logout' })).toBeEnabled();
+    },
+    15000,
+  );
+
+  it.each([
+    { made: 'during', answered: 'during' },
+    { made: 'before', answered: 'during' },
+    { made: 'before', answered: 'after' },
+    { made: 'during', answered: 'after' },
+  ] as const)(
+    'ends the logout quietly when a tool call made $made it is answered 401 $answered it',
+    async ({ made, answered }) => {
+      renderRoute('/tools/usd-to-eur', 'user');
+      fireEvent.change(await screen.findByLabelText('USD Amount', {}, { timeout: 3000 }), { target: { value: '100' } });
+      await waitFor(() =>
+        expect(screen.getByLabelText('Exchange Rate USD/EUR')).toHaveValue(REFERENCE.dollarsToEuros),
+      );
+      const answerLogout = holdLogoutAnswer();
+      const logOut = () => fireEvent.click(screen.getByRole('button', { name: 'Logout' }));
+      const convert = () => {
+        const answer = holdNextAnswer();
+        fireEvent.click(screen.getByRole('button', { name: 'Convert' }));
+        return () => release(answer);
+      };
+
+      let answerCall: () => Promise<void>;
+      if (made === 'before') {
+        // Fixtures decide an answer when its call starts, so the server has to lose the session first.
+        expireSession();
+        answerCall = convert();
+        logOut();
+      } else {
+        logOut();
+        answerCall = convert();
+      }
+      const [first, second] = answered === 'during' ? [answerCall, answerLogout] : [answerLogout, answerCall];
+      await first();
+      expect(screen.queryByText(MESSAGES.UNAUTHENTICATED)).not.toBeInTheDocument();
+      await second();
+
+      expect(vi.mocked(api.usdToEur).mock.settledResults).toEqual([
+        { type: 'rejected', value: expect.objectContaining({ status: 401, code: 'UNAUTHENTICATED' }) },
+      ]);
+      await expectLocation('/login');
+      expect(screen.getByRole('heading', { name: 'Login' })).toBeInTheDocument();
+      expect(screen.queryByText(MESSAGES.UNAUTHENTICATED)).not.toBeInTheDocument();
+
+      await signInAgain();
+      await expectLocation(SESSIONS.user.landingRoute);
+      expect(screen.queryByText(MESSAGES.UNAUTHENTICATED)).not.toBeInTheDocument();
     },
     15000,
   );

@@ -28,6 +28,8 @@ export interface AuthContextValue {
   login(credentials: LoginRequest): Promise<SessionUser>;
   // False when a newer login replaced the session before the logout call settled.
   logout(): Promise<boolean>;
+  // True from the start of this session's logout until the next session, even before that logout has rendered.
+  sessionEndedByLogout(): boolean;
 }
 
 export const AuthContext = createContext<AuthContextValue | null>(null);
@@ -46,6 +48,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const shownUser = useRef<SessionUser | null>(null);
   const sessionGeneration = useRef(0);
   const pendingLogout = useRef<{ generation: number; ended: Promise<boolean> } | null>(null);
+  const loggedOutGeneration = useRef<number | null>(null);
+
+  const sessionEndedByLogout = useCallback(
+    (): boolean =>
+      pendingLogout.current?.generation === sessionGeneration.current ||
+      loggedOutGeneration.current === sessionGeneration.current,
+    [],
+  );
 
   useEffect(() => {
     shownUser.current = state.user;
@@ -72,15 +82,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(
     () =>
       api.onSessionExpired(() => {
-        // An expiry during this session's logout ends it as that logout, so the page it leaves is no return path.
-        if (pendingLogout.current?.generation === sessionGeneration.current) {
+        // An expiry during or after this session's logout ends it as that logout, leaving no return path.
+        if (sessionEndedByLogout()) {
           setState(LOGGED_OUT);
           return;
         }
         sessionGeneration.current += 1;
         setState(ANONYMOUS);
       }),
-    [],
+    [sessionEndedByLogout],
   );
 
   useEffect(() => {
@@ -149,6 +159,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const ownsSession = sessionGeneration.current === generation;
       if (ownsSession) {
         sessionGeneration.current += 1;
+        loggedOutGeneration.current = sessionGeneration.current;
         setState(LOGGED_OUT);
       }
       // Logout deletes the XSRF-TOKEN cookie; any answer to this call, a 401 included, sets a fresh one.
@@ -170,8 +181,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 
   const value = useMemo<AuthContextValue>(
-    () => ({ status: state.status, user: state.user, loggedOut: state.loggedOut, hasRole, login, logout }),
-    [state, hasRole, login, logout],
+    () => ({
+      status: state.status,
+      user: state.user,
+      loggedOut: state.loggedOut,
+      hasRole,
+      login,
+      logout,
+      sessionEndedByLogout,
+    }),
+    [state, hasRole, login, logout, sessionEndedByLogout],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

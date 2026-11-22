@@ -1,5 +1,5 @@
 import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
-import { afterAll, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import * as api from '../api/api';
 import {
   ApiError,
@@ -307,6 +307,90 @@ describe('in-app navigation', () => {
       await waitFor(() => expect(liveRegion().textContent).toBe('Login'));
       expect(screen.getByRole('textbox', { name: /Username/ })).toHaveFocus();
       expect(document.title).toBe(`Login - ${APP_NAME}`);
+    },
+    TEST_TIMEOUT,
+  );
+});
+
+type MenuLayout = { layout: 'desktop' | 'compact'; opener: string };
+
+const MENU_LAYOUTS: MenuLayout[] = [
+  { layout: 'desktop', opener: 'Tools' },
+  { layout: 'compact', opener: 'Menu' },
+];
+
+// jsdom has no matchMedia, so the layout stays desktop unless the md query is stubbed to match.
+function stubLayout(layout: MenuLayout['layout']): void {
+  if (layout === 'desktop') return;
+  const narrowQuery = theme.breakpoints.down('md').replace(/^@media ?/, '');
+  vi.stubGlobal('matchMedia', (query: string) => ({
+    matches: query === narrowQuery,
+    media: query,
+    onchange: null,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    addListener: () => {},
+    removeListener: () => {},
+    dispatchEvent: () => false,
+  }));
+}
+
+async function openNavMenu(opener: string): Promise<HTMLElement> {
+  fireEvent.click(await screen.findByRole('button', { name: opener }, { timeout: FIND_TIMEOUT }));
+  return screen.findByRole('menu', {}, { timeout: FIND_TIMEOUT });
+}
+
+const CURRENT_TOOL_CASES = [
+  {
+    path: '/tools/usd-to-eur',
+    name: 'USD/EUR Currency Converter',
+    current: 'USD to EUR Converter',
+    other: 'Reimbursement Calculator',
+  },
+  {
+    path: '/tools/mileage',
+    name: 'Mileage Reimbursement',
+    current: 'Reimbursement Calculator',
+    other: 'USD to EUR Converter',
+  },
+].flatMap((tool) => MENU_LAYOUTS.map((menu) => ({ ...tool, ...menu })));
+
+describe('navigation menus', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it.each(CURRENT_TOOL_CASES)(
+    'the $layout menu marks $current as the current page on $path',
+    async ({ path, name, current, other, layout, opener }) => {
+      stubLayout(layout);
+      renderRoute(path, 'user');
+      expect(await heading(name)).toBeInTheDocument();
+      const menu = await openNavMenu(opener);
+      expect(within(menu).getByRole('menuitem', { name: current })).toHaveAttribute('aria-current', 'page');
+      expect(within(menu).getByRole('menuitem', { name: other })).not.toHaveAttribute('aria-current');
+    },
+    TEST_TIMEOUT,
+  );
+
+  it.each(MENU_LAYOUTS)(
+    'opening the $layout menu keeps an already visible toast and its Close button exposed',
+    async ({ layout, opener }) => {
+      stubLayout(layout);
+      renderRoute('/tools/usd-to-eur', 'user');
+      expect(await heading('USD/EUR Currency Converter')).toBeInTheDocument();
+      vi.mocked(api.usdToEur).mockRejectedValueOnce(new ApiError(500, 'INTERNAL_ERROR', MESSAGES.GENERIC_ERROR));
+      await defaultRateLoaded();
+      await fillField('USD Amount', '100');
+      fireEvent.click(submitButton('Convert'));
+      const alert = await toast(MESSAGES.GENERIC_ERROR);
+
+      await openNavMenu(opener);
+      // The open menu hides the page behind it, but not the toast drawn above it.
+      expect(screen.queryByRole('heading', { name: 'USD/EUR Currency Converter' })).toBeNull();
+      await waitFor(() => expect(alert.closest('[aria-hidden="true"]')).toBeNull(), { timeout: FIND_TIMEOUT });
+      expect(screen.getByRole('alert')).toBe(alert);
+      expect(within(alert).getByRole('button', { name: 'Close' })).toBeInTheDocument();
     },
     TEST_TIMEOUT,
   );
@@ -651,6 +735,7 @@ type ServerErrorCase = {
   fill: () => Promise<void>;
   submit: string;
   endpoint:
+    | typeof api.login
     | typeof api.createBlogPost
     | typeof api.usdToEur
     | typeof api.mileage
@@ -660,9 +745,29 @@ type ServerErrorCase = {
   field: string;
   messages: [string, string];
   unknown: FieldError;
+  second?: { label: string | RegExp; error: FieldError };
+  // The envelope message, for a form that shows it in an alert of its own.
+  formAlert?: string;
 };
 
 const SERVER_ERROR_CASES: ServerErrorCase[] = [
+  {
+    path: '/login',
+    category: 'anonymous',
+    name: 'Login',
+    fill: async () => {
+      await fillField(/^Username/, 'em user1');
+      await fillField(/^Password/, 'secret');
+    },
+    submit: 'Login',
+    endpoint: api.login,
+    label: /^Username/,
+    field: 'username',
+    messages: ['Username must not contain spaces.', 'Username is too long (max 50).'],
+    unknown: { field: 'captcha', message: 'Captcha answer is wrong.' },
+    second: { label: /^Password/, error: { field: 'password', message: 'Password is required by policy X.' } },
+    formAlert: 'Please correct the highlighted fields.',
+  },
   {
     path: '/blog/posts/new',
     category: 'administrator',
@@ -744,28 +849,36 @@ const SERVER_ERROR_CASES: ServerErrorCase[] = [
 describe('server field errors', () => {
   it.each(SERVER_ERROR_CASES)(
     '$path shows every server field error',
-    async ({ path, category, name, fill, submit, endpoint, label, field, messages, unknown }) => {
+    async ({ path, category, name, fill, submit, endpoint, label, field, messages, unknown, second, formAlert }) => {
       renderRoute(path, category);
       expect(await heading(name)).toBeInTheDocument();
       vi.mocked(endpoint).mockRejectedValueOnce(
-        new ApiError(422, 'VALIDATION_FAILED', messages[0], [
+        new ApiError(422, 'VALIDATION_FAILED', formAlert ?? messages[0], [
           { field, message: messages[0] },
           { field, message: messages[1] },
+          ...(second ? [second.error] : []),
           unknown,
         ]),
       );
       await fill();
       await clickControl(submit);
 
-      const toast = await screen.findByRole('alert', {}, { timeout: FIND_TIMEOUT });
-      const details = within(toast).getAllByRole('listitem').map((item) => item.textContent);
-      expect(details).toEqual([unknown.message]);
-      expect(toast).not.toHaveTextContent(`${unknown.field}:`);
-      expect(toast).not.toHaveTextContent(messages[1]);
-      const helperId = screen.getByLabelText(label).getAttribute('aria-describedby') ?? '';
-      const helper = document.getElementById(helperId);
-      expect(helper?.textContent).toBe(messages.join('\n'));
-      expect(helper && getComputedStyle(helper).whiteSpace).toBe('pre-line');
+      const alerts = await screen.findAllByRole('alert', {}, { timeout: FIND_TIMEOUT });
+      const inForm = alerts.filter((alert) => alert.closest('form') !== null);
+      const toasts = alerts.filter((alert) => alert.closest('form') === null);
+      expect(inForm.map((alert) => alert.textContent)).toEqual(formAlert ? [formAlert] : []);
+      expect(toasts).toHaveLength(1);
+      expect(toasts[0].textContent).toBe(unknown.message);
+      expect(within(toasts[0]).queryAllByRole('listitem')).toHaveLength(0);
+      const placed = [
+        { control: label, text: messages.join('\n') },
+        ...(second ? [{ control: second.label, text: second.error.message }] : []),
+      ];
+      for (const { control, text } of placed) {
+        const helper = document.getElementById(screen.getByLabelText(control).getAttribute('aria-describedby') ?? '');
+        expect(helper?.textContent).toBe(text);
+        expect(helper && getComputedStyle(helper).whiteSpace).toBe('pre-line');
+      }
       expect(screen.getByLabelText(label)).toHaveFocus();
     },
     TEST_TIMEOUT,

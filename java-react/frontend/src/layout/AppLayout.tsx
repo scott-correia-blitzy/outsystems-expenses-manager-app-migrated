@@ -106,19 +106,24 @@ function NavDropdown({ label, items, pathname }: { label: string; items: readonl
         onClose={close}
         slotProps={{ list: { 'aria-labelledby': buttonId } }}
       >
-        {items.map((child) =>
-          child.path === undefined ? null : (
+        {items.map((child) => {
+          if (child.path === undefined) {
+            return null;
+          }
+          const childActive = isActive(pathname, child.path);
+          return (
             <MuiMenuItem
               key={child.path}
               component={RouterLink}
               to={child.path}
-              selected={isActive(pathname, child.path)}
+              selected={childActive}
+              aria-current={childActive ? 'page' : undefined}
               onClick={close}
             >
               {child.label}
             </MuiMenuItem>
-          ),
-        )}
+          );
+        })}
       </Menu>
     </>
   );

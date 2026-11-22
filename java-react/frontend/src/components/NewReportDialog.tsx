@@ -25,7 +25,7 @@ import {
 } from '../api/types';
 import { reportPath } from '../routes';
 import { useDialogFocus } from './ConfirmDialog';
-import { useFeedback } from './Feedback';
+import { unplacedError, useFeedback } from './Feedback';
 
 export type NewReportDialogProps = {
   open: boolean;
@@ -131,10 +131,11 @@ export function NewReportDialog({ open, onClose }: NewReportDialogProps) {
     if (Object.keys(placed).length === 0) {
       setFailedSaves((count) => count + 1);
     }
+    const toastError = err instanceof ApiError && unplaced.length > 0 ? unplacedError(err, unplaced) : null;
     if (fieldErrors.length === 0) {
       feedback.error(err);
-    } else if (err instanceof ApiError && unplaced.length > 0) {
-      feedback.error(new ApiError(err.status, err.code, err.message, unplaced));
+    } else if (toastError) {
+      feedback.error(toastError);
     }
   };
 

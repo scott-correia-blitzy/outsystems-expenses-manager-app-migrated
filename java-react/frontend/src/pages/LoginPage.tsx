@@ -14,6 +14,7 @@ import {
 } from '@mui/material';
 import { ApiError, MESSAGES, type FieldError } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
+import { unplacedError, useFeedback } from '../components/Feedback';
 import { PageHeader } from '../layout/PageHeader';
 import { safeRedirectTarget } from '../routes';
 
@@ -26,18 +27,23 @@ function isLoginField(field: string): field is LoginField {
   return field === 'username' || field === 'password';
 }
 
-function serverFieldErrors(fieldErrors: readonly FieldError[]): FieldErrors {
-  const errors: FieldErrors = { ...NO_ERRORS };
+function serverFieldErrors(fieldErrors: readonly FieldError[]): { fields: FieldErrors; unplaced: FieldError[] } {
+  const fields: FieldErrors = { ...NO_ERRORS };
+  const unplaced: FieldError[] = [];
   for (const fieldError of fieldErrors) {
-    if (isLoginField(fieldError.field) && errors[fieldError.field] === '') {
-      errors[fieldError.field] = fieldError.message;
+    if (isLoginField(fieldError.field)) {
+      const current = fields[fieldError.field];
+      fields[fieldError.field] = current === '' ? fieldError.message : `${current}\n${fieldError.message}`;
+    } else {
+      unplaced.push(fieldError);
     }
   }
-  return errors;
+  return { fields, unplaced };
 }
 
 export function LoginPage() {
   const { login } = useAuth();
+  const feedback = useFeedback();
   const navigate = useNavigate();
   const location = useLocation();
   const [username, setUsername] = useState('');
@@ -87,11 +93,15 @@ export function LoginPage() {
     } catch (err) {
       let focusTarget = passwordInput;
       if (err instanceof ApiError) {
-        const fieldErrors = serverFieldErrors(err.fieldErrors);
+        const { fields, unplaced } = serverFieldErrors(err.fieldErrors ?? []);
         setFormError(err.message);
-        setErrors(fieldErrors);
-        if (fieldErrors.username !== '') {
+        setErrors(fields);
+        if (fields.username !== '') {
           focusTarget = usernameInput;
+        }
+        const toastError = unplaced.length > 0 ? unplacedError(err, unplaced, true) : null;
+        if (toastError) {
+          feedback.error(toastError);
         }
       } else {
         setFormError(MESSAGES.GENERIC_ERROR);
@@ -121,6 +131,7 @@ export function LoginPage() {
                 fullWidth
                 error={errors.username !== ''}
                 helperText={errors.username || undefined}
+                slotProps={{ formHelperText: { sx: { whiteSpace: 'pre-line' } } }}
               />
               <TextField
                 label="Password"
@@ -134,6 +145,7 @@ export function LoginPage() {
                 fullWidth
                 error={errors.password !== ''}
                 helperText={errors.password || undefined}
+                slotProps={{ formHelperText: { sx: { whiteSpace: 'pre-line' } } }}
               />
               <FormControlLabel
                 control={

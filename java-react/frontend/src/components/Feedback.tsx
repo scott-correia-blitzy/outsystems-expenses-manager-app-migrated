@@ -18,7 +18,8 @@ import {
   Snackbar,
   type SnackbarCloseReason,
 } from '@mui/material';
-import { ApiError, MESSAGES } from '../api/types';
+import { ApiError, MESSAGES, type FieldError } from '../api/types';
+import { useAuth } from '../auth/AuthContext';
 
 type Severity = 'success' | 'info' | 'warning' | 'error';
 
@@ -38,6 +39,18 @@ export type FeedbackApi = {
 
 const FeedbackContext = createContext<FeedbackApi | null>(null);
 
+// Modals opened after the toast aria-hide every other body child, though the toast stays visible and clickable.
+function keepToastExposed(root: HTMLDivElement | null) {
+  if (root === null) return;
+  const observer = new MutationObserver(() => {
+    if (root.getAttribute('aria-hidden') === 'true') {
+      root.removeAttribute('aria-hidden');
+    }
+  });
+  observer.observe(root, { attributes: true, attributeFilter: ['aria-hidden'] });
+  return () => observer.disconnect();
+}
+
 export function FeedbackProvider({ children }: { children: ReactNode }) {
   const [message, setMessage] = useState<FeedbackMessage | null>(null);
   const [open, setOpen] = useState(false);
@@ -49,6 +62,7 @@ export function FeedbackProvider({ children }: { children: ReactNode }) {
     setOpen(true);
   }, []);
 
+  const { sessionEndedByLogout } = useAuth();
   const api = useMemo<FeedbackApi>(
     () => ({
       success: (msg) => show('success', msg),
@@ -56,6 +70,10 @@ export function FeedbackProvider({ children }: { children: ReactNode }) {
       warning: (msg) => show('warning', msg),
       error: (err) => {
         if (err instanceof ApiError) {
+          // A logout the user chose already leads to Login, so the 401s it causes need no message.
+          if (err.status === 401 && sessionEndedByLogout()) {
+            return;
+          }
           // A JSON null survives the constructor default, so fieldErrors may still be missing at run time.
           const details = new Set(err.fieldErrors?.map((f) => f.message) ?? []);
           details.delete(err.message);
@@ -65,7 +83,7 @@ export function FeedbackProvider({ children }: { children: ReactNode }) {
         }
       },
     }),
-    [show],
+    [show, sessionEndedByLogout],
   );
 
   const handleSnackbarClose = (_event: SyntheticEvent | Event, reason: SnackbarCloseReason) => {
@@ -83,6 +101,7 @@ export function FeedbackProvider({ children }: { children: ReactNode }) {
         <Portal>
           <Snackbar
             key={message.key}
+            ref={keepToastExposed}
             open={open}
             autoHideDuration={6000}
             anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
@@ -118,6 +137,25 @@ export function useFeedback(): FeedbackApi {
     throw new Error('useFeedback must be used inside FeedbackProvider');
   }
   return feedback;
+}
+
+// The server's message usually repeats the first field error, so the toast leaves out what the form already shows.
+export function unplacedError(
+  err: ApiError,
+  unplaced: readonly FieldError[],
+  messageShown = false,
+): ApiError | null {
+  const isUnplaced = (fieldError: FieldError) =>
+    unplaced.some((other) => other.field === fieldError.field && other.message === fieldError.message);
+  const messagePlaced = (err.fieldErrors ?? []).some(
+    (fieldError) => fieldError.message === err.message && !isUnplaced(fieldError),
+  );
+  const pending = messageShown ? unplaced.filter((fieldError) => fieldError.message !== err.message) : [...unplaced];
+  if (pending.length === 0) {
+    return null;
+  }
+  const headline = messageShown || messagePlaced ? pending[0].message : err.message;
+  return new ApiError(err.status, err.code, headline, pending);
 }
 
 // The zero inset keeps the box inside its containing block, so it never adds scrollable overflow.

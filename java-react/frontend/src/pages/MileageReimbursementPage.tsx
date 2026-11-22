@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from 'r
 import { Box, Button, Card, CardContent, InputAdornment, Stack, TextField } from '@mui/material';
 import { mileage } from '../api/api';
 import { ApiError, MESSAGES, type MileageResult } from '../api/types';
-import { LiveStatus, useFeedback } from '../components/Feedback';
+import { LiveStatus, unplacedError, useFeedback } from '../components/Feedback';
 import { formatEuro } from '../format/format';
 import { PageHeader } from '../layout/PageHeader';
 
@@ -77,8 +77,9 @@ export function MileageReimbursementPage() {
         } else {
           setError(kmError);
           kmInput.current?.focus();
-          if (err instanceof ApiError && unplaced.length > 0) {
-            feedback.error(new ApiError(err.status, err.code, err.message, unplaced));
+          const toastError = err instanceof ApiError && unplaced.length > 0 ? unplacedError(err, unplaced) : null;
+          if (toastError) {
+            feedback.error(toastError);
           }
         }
       }

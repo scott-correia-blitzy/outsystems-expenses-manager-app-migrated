@@ -3,7 +3,7 @@ import { Box, Button, Card, CardContent, CircularProgress, Stack, TextField } fr
 import { Link as RouterLink, useNavigate, useParams } from 'react-router';
 import { createBlogPost, getBlogPost, updateBlogPost } from '../api/api';
 import { ApiError, MESSAGES, type BlogPostBody, type FieldError } from '../api/types';
-import { useFeedback } from '../components/Feedback';
+import { unplacedError, useFeedback } from '../components/Feedback';
 import { PageHeader } from '../layout/PageHeader';
 import { PATHS } from '../routes';
 
@@ -65,7 +65,7 @@ function serverFieldErrors(err: unknown): ServerFieldErrors | null {
   }
   return {
     fields,
-    unplaced: unplaced.length > 0 ? new ApiError(err.status, err.code, err.message, unplaced) : null,
+    unplaced: unplaced.length > 0 ? unplacedError(err, unplaced) : null,
   };
 }
 

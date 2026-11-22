@@ -44,7 +44,7 @@ import {
 } from '../api/types';
 import { formatEuro } from '../format/format';
 import { useDialogFocus } from './ConfirmDialog';
-import { useFeedback } from './Feedback';
+import { unplacedError, useFeedback } from './Feedback';
 import { SelectLabel } from './LineTable';
 import { vatLabel } from './LineViewDialog';
 
@@ -465,8 +465,9 @@ export function LineFormDialog({
     }
     const { placed, unplaced } = placeFieldErrors(fieldErrors, hiddenFields);
     setErrors(placed);
-    if (err instanceof ApiError && unplaced.length > 0) {
-      feedback.error(new ApiError(err.status, err.code, err.message, unplaced));
+    const toastError = err instanceof ApiError && unplaced.length > 0 ? unplacedError(err, unplaced) : null;
+    if (toastError) {
+      feedback.error(toastError);
     }
   };
 
