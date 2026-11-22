@@ -236,7 +236,6 @@ class EndToEndIT {
                     .map(ReportEntity::getCode)
                     .toList();
             assertThat(codes).containsOnlyOnce(seededCodes());
-            // A second seed run would add the demo reports again on top of the existing rows.
             assertThat(reportCount(restarted)).isEqualTo(reportsBefore);
         }
     }

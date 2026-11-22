@@ -1942,7 +1942,6 @@ class BusinessRulesTest {
         return value == null ? null : new BigDecimal(value);
     }
 
-    // Errors without field violations only; validation failures go through assertFieldError.
     private static void assertApiError(ThrowingCallable call, int status, String code, String message) {
         if (ApiException.VALIDATION_FAILED.equals(code)) {
             throw new IllegalArgumentException("Assert VALIDATION_FAILED with assertFieldError");
