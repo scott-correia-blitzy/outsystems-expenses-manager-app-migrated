@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { Box, Breadcrumbs, Link, Stack, Typography } from '@mui/material';
+import { Box, Breadcrumbs, breadcrumbsClasses, Link, Stack, Typography } from '@mui/material';
 import { Link as RouterLink } from 'react-router';
 
 export type PageHeaderProps = {
@@ -18,7 +18,14 @@ export function PageHeader({ title, subtitle, breadcrumbs, actions }: PageHeader
   return (
     <Stack spacing={2} useFlexGap sx={{ mb: 3 }}>
       {crumbs.length > 0 && (
-        <Breadcrumbs aria-label="breadcrumb" separator="›">
+        <Breadcrumbs
+          aria-label="breadcrumb"
+          separator="›"
+          sx={{
+            // Keeps wrapped lines clear of the links' overhanging touch targets.
+            [`& .${breadcrumbsClasses.ol}`]: { rowGap: 2.5 },
+          }}
+        >
           {crumbs.map((item, index) => {
             const key = `${index}-${item.label}`;
             const isLast = index === crumbs.length - 1;
@@ -31,6 +38,17 @@ export function PageHeader({ title, subtitle, breadcrumbs, actions }: PageHeader
                   underline="hover"
                   color="primary"
                   variant="body2"
+                  sx={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    minHeight: (theme) => theme.spacing(5.5),
+                    minWidth: (theme) => theme.spacing(5.5),
+                    // Negative margins let the 44px target overhang the text so the breadcrumb row keeps its size.
+                    marginBlock: -1.25,
+                    marginInline: -0.5,
+                    paddingInline: 0.5,
+                  }}
                 >
                   {item.label}
                 </Link>
@@ -55,8 +73,15 @@ export function PageHeader({ title, subtitle, breadcrumbs, actions }: PageHeader
         useFlexGap
         justifyContent="space-between"
         alignItems={{ xs: 'flex-start', sm: 'center' }}
+        flexWrap={{ sm: 'wrap' }}
       >
-        <Box sx={{ minWidth: 0 }}>
+        <Box
+          sx={{
+            minWidth: 0,
+            // The actions move to their own row rather than squeeze the title below this width.
+            flex: (theme) => ({ sm: `1 1 ${theme.spacing(40)}` }),
+          }}
+        >
           <Typography variant="h4" component="h1" tabIndex={-1} sx={{ overflowWrap: 'break-word' }}>
             {title}
           </Typography>
@@ -67,7 +92,23 @@ export function PageHeader({ title, subtitle, breadcrumbs, actions }: PageHeader
           )}
         </Box>
         {isPresent(actions) && (
-          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+          <Stack
+            direction="row"
+            spacing={1}
+            alignItems="center"
+            justifyContent={{ xs: 'flex-start', sm: 'flex-end' }}
+            flexWrap="wrap"
+            useFlexGap
+            sx={{
+              flexShrink: 0,
+              maxWidth: '100%',
+              marginLeft: { sm: 'auto' },
+              '& > *': {
+                minHeight: (theme) => theme.spacing(5.5),
+                minWidth: (theme) => theme.spacing(5.5),
+              },
+            }}
+          >
             {actions}
           </Stack>
         )}

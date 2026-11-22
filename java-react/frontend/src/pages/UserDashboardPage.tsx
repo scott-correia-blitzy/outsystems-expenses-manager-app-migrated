@@ -44,7 +44,7 @@ import { PATHS } from '../routes';
 
 type EarningShare = UserDashboard['earningTypeShares'][number];
 
-const KPI_SIZE = { xs: 12, sm: 6, md: 3 } as const;
+const KPI_SIZE = { xs: 12, sm: 6, lg: 3 } as const;
 const WIDE_SIZE = { xs: 12, md: 8 } as const;
 const NARROW_SIZE = { xs: 12, md: 4 } as const;
 

@@ -23,7 +23,11 @@ export function KpiCard({ label, value, caption, progress }: KpiCardProps) {
           <Typography id={labelId} variant="subtitle1" component="p">
             {label}
           </Typography>
-          <Typography variant="h5" component="p" sx={{ fontWeight: 'fontWeightBold' }}>
+          <Typography
+            variant="h5"
+            component="p"
+            sx={{ fontWeight: 'fontWeightBold', lineBreak: 'anywhere' }}
+          >
             {value}
           </Typography>
           {progressValue !== undefined && (

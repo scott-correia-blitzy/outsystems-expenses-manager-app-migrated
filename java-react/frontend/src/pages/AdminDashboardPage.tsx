@@ -19,8 +19,8 @@ import { ReportList } from '../components/ReportList';
 import { formatPercent } from '../format/format';
 import { PageHeader } from '../layout/PageHeader';
 
-const COUNTER_SIZE = { xs: 12, sm: 6, md: 3 } as const;
-const RATE_SIZE = { xs: 12, md: 6 } as const;
+const COUNTER_SIZE = { xs: 12, sm: 6, lg: 3 } as const;
+const RATE_SIZE = { xs: 12, lg: 6 } as const;
 
 const KIND_OPTIONS: readonly { value: Kind; label: string }[] = [
   { value: 'expense', label: 'Expenses' },
