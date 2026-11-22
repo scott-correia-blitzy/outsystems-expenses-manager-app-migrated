@@ -35,7 +35,6 @@ export function MileageReimbursementPage() {
       return;
     }
     restoreFocus.current = false;
-    // A loading button is disabled and loses focus to body; restore it unless the user has moved on.
     if (document.activeElement === null || document.activeElement === document.body) {
       convertButton.current?.focus();
     }

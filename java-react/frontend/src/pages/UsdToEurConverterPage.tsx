@@ -55,7 +55,6 @@ export function UsdToEurConverterPage() {
       return;
     }
     restoreFocus.current = false;
-    // A loading button is disabled and loses focus to body; restore it unless the user has moved on.
     if (document.activeElement === null || document.activeElement === document.body) {
       convertButton.current?.focus();
     }
@@ -95,7 +94,6 @@ export function UsdToEurConverterPage() {
     setErrors((prev) => ({ ...prev, rate: '' }));
   };
 
-  // Unparsable text reads as '' (so MUI drops the label and React skips onChange); the input event still reports it.
   const trackBadInput = (field: ConverterField) => (event: FormEvent<HTMLInputElement>) => {
     const bad = event.currentTarget.validity.badInput;
     setBadInput((prev) => (prev[field] === bad ? prev : { ...prev, [field]: bad }));

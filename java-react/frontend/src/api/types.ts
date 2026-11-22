@@ -244,7 +244,7 @@ export class ApiError extends Error {
   }
 }
 
-// Mirrors service/LegacyMessages.java verbatim, legacy spelling kept; INVALID_REPORT exists only in the SPA.
+// Legacy message wording and spelling are part of the API contract.
 export const MESSAGES = {
   REPORT_CANT_BE_DELETED: 'This report cant be deleted',
   DETAIL_CANT_BE_DELETED: 'This detail cant be deleted',

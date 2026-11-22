@@ -407,7 +407,6 @@ export function UserDashboardPage() {
   const [dashboard, setDashboard] = useState<UserDashboard | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
-  // Only the newest request may update state; bumping it on unmount drops every pending one.
   const latestRequest = useRef(0);
 
   const loadDashboard = useCallback(() => {
