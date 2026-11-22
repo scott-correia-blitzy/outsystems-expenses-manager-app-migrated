@@ -1080,21 +1080,27 @@ class BusinessRulesTest {
         assertThat(blogPostRepository.findById(post.id()).orElseThrow().getDescription()).isEqualTo(description);
     }
 
-    static Stream<Arguments> blogRejectsTitleOrDescriptionOverTheLimit() {
+    static Stream<Arguments> blogRejectsABlankOrOverLongTitleAndAnOverLongDescription() {
         return Stream.of(
+                arguments("\u0000", "Description", "title", LegacyMessages.FIELD_REQUIRED),
+                arguments("\u0000\u2003", "Description", "title", LegacyMessages.FIELD_REQUIRED),
+                arguments("\u2003", "Description", "title", LegacyMessages.FIELD_REQUIRED),
+                arguments(" \t ", "Description", "title", LegacyMessages.FIELD_REQUIRED),
                 arguments("B".repeat(51), "Description", "title", LegacyMessages.MAX_LENGTH_50),
                 arguments("Title", "d".repeat(10_001), "description", LegacyMessages.MAX_LENGTH_10000));
     }
 
-    @ParameterizedTest(name = "{2} rejected with \"{3}\"")
+    @ParameterizedTest(name = "#{index} {2} rejected with \"{3}\"")
     @MethodSource
-    void blogRejectsTitleOrDescriptionOverTheLimit(String title, String description, String field, String message) {
+    void blogRejectsABlankOrOverLongTitleAndAnOverLongDescription(String title, String description, String field,
+            String message) {
         Caller admin = newCaller(appUserRepository, Role.Administrator);
         BlogService.PostInput input = new BlogService.PostInput(title, description);
         Long existingId = blogService.create(admin, new BlogService.PostInput("Existing", "")).id();
 
         assertFieldError(() -> blogService.create(admin, input), field, message);
         assertFieldError(() -> blogService.update(admin, existingId, input), field, message);
+        assertThat(blogPostRepository.findById(existingId).orElseThrow().getTitle()).isEqualTo("Existing");
     }
 
     @Test

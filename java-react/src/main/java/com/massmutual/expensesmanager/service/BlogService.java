@@ -96,7 +96,7 @@ public class BlogService {
         String title = in == null ? null : in.title();
         String description = in == null ? null : in.description();
         List<FieldViolation> violations = new ArrayList<>();
-        if (title == null || title.isBlank()) {
+        if (title == null || ReportService.normalizeTitle(title).isEmpty()) {
             violations.add(new FieldViolation("title", LegacyMessages.FIELD_REQUIRED));
         } else if (title.length() > TITLE_MAX_LENGTH) {
             violations.add(new FieldViolation("title", LegacyMessages.MAX_LENGTH_50));
