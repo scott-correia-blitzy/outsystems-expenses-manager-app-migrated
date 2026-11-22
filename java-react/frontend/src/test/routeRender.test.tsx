@@ -976,6 +976,7 @@ describe('converter default rate', () => {
         new Promise<ReferenceData>((resolve, reject) => (settle = { resolve, reject })),
       );
       expect(await heading('USD/EUR Currency Converter')).toBeInTheDocument();
+      await waitFor(() => expect(api.reference).toHaveBeenCalled(), { timeout: FIND_TIMEOUT });
       const rateField = screen.getByLabelText('Exchange Rate USD/EUR');
       const loadingRate = { name: 'Loading exchange rate' };
       expect(screen.getByRole('progressbar', loadingRate)).toBeInTheDocument();

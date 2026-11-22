@@ -627,12 +627,13 @@ describe('logout', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Earnings' }));
       await expectLocation('/login');
       await signInAgain();
-      await expectLocation('/reports');
+      await expectLocation(SESSIONS.user.landingRoute);
+      expect(await screen.findByRole('heading', { name: 'Dashboard' }, { timeout: 3000 })).toBeInTheDocument();
 
       await release(() => logoutCall.resolve());
 
-      expect(screen.getByTestId('location').textContent).toBe('/reports');
-      expect(screen.getByRole('heading', { name: 'Reports' })).toBeInTheDocument();
+      expect(screen.getByTestId('location').textContent).toBe(SESSIONS.user.landingRoute);
+      expect(screen.getByRole('heading', { name: 'Dashboard' })).toBeInTheDocument();
       expect(screen.getByRole('button', { name: 'Logout' })).toBeEnabled();
     },
     15000,

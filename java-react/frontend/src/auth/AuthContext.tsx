@@ -16,7 +16,7 @@ export type AuthStatus = 'loading' | 'anonymous' | 'signedIn';
 export interface AuthState {
   status: AuthStatus;
   user: SessionUser | null;
-  // True after a deliberate logout until the next login; boot and session expiry leave it false.
+  // True after a logout, or an expiry during one, until the next login; boot and other expiries leave it false.
   loggedOut: boolean;
 }
 
@@ -26,7 +26,7 @@ export interface AuthContextValue {
   loggedOut: boolean;
   hasRole(role: Role): boolean;
   login(credentials: LoginRequest): Promise<SessionUser>;
-  // False when a newer login or an expiry replaced the session before the logout call settled.
+  // False when a newer login replaced the session before the logout call settled.
   logout(): Promise<boolean>;
 }
 
@@ -72,6 +72,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(
     () =>
       api.onSessionExpired(() => {
+        // An expiry during this session's logout ends it as that logout, so the page it leaves is no return path.
+        if (pendingLogout.current?.generation === sessionGeneration.current) {
+          setState(LOGGED_OUT);
+          return;
+        }
         sessionGeneration.current += 1;
         setState(ANONYMOUS);
       }),
