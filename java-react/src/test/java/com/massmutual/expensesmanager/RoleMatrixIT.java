@@ -103,7 +103,7 @@ import com.massmutual.expensesmanager.web.JsonSecurityHandlers;
 class RoleMatrixIT {
 
     private static final String DEMO_PASSWORD = "123456";
-    private static final String FIXTURE_PASSWORD = "matrix-fixture-pass";
+    private static final String FIXTURE_PASSWORD = UUID.randomUUID().toString();
     private static final String EXPENSE = "expense";
     private static final String EARNING = "earning";
     private static final List<String> KINDS = List.of(EXPENSE, EARNING);

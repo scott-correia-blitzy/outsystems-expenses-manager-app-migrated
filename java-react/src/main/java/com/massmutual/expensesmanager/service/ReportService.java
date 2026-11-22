@@ -306,7 +306,7 @@ public class ReportService {
         return Optional.empty();
     }
 
-    private static String normalizeTitle(String title) {
+    static String normalizeTitle(String title) {
         if (title == null) {
             return null;
         }

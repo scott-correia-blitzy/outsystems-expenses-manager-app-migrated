@@ -144,7 +144,7 @@ class BusinessRulesTest {
     private static final StoredInvoice TWIN_INVOICE = new StoredInvoice("twin.jpg", "image/jpeg",
             new byte[] {(byte) 0xFF, (byte) 0xD8, (byte) 0xFF}, LocalDateTime.of(2024, 5, 22, 8, 30));
     private static final ObjectMapper JSON = new ObjectMapper();
-    private static final String SEED_PASSWORD = "Seedcheck-Pass-7741";
+    private static final String SEED_PASSWORD = UUID.randomUUID().toString();
     private static final String SEED_TEMPLATE = """
             {
               "users": [
@@ -403,6 +403,14 @@ class BusinessRulesTest {
         Caller caller = newCaller(appUserRepository, Role.User);
 
         assertFieldError(() -> toolsService.mileage(caller, decimal(km)), "km", LegacyMessages.DISTANCE_POSITIVE);
+    }
+
+    @ParameterizedTest(name = "km {0}")
+    @ValueSource(strings = {"1e29", "100000000000000000000000000000", "1E-999999999"})
+    void mileageToolRejectsAnOutOfRangeDistanceOnTheKmField(String km) {
+        Caller caller = newCaller(appUserRepository, Role.User);
+
+        assertFieldError(() -> toolsService.mileage(caller, decimal(km)), "km", LegacyMessages.INVALID_VALUE);
     }
 
     static Stream<Arguments> nextCodeFollowsTheHighestNumberOfTheClockYear() {
@@ -1206,6 +1214,55 @@ class BusinessRulesTest {
         assertThat(LineService.textViolations(title, description)).containsExactly(expected);
         assertFieldError(() -> lineService.create(owner, ReportKind.EXPENSE, reportId, input),
                 expected.field(), expected.message());
+    }
+
+    static Stream<Arguments> lineTitleOfOnlyControlOrWhitespaceCharactersIsRequiredAndChangesNothing() {
+        return Arrays.stream(ReportKind.values()).flatMap(kind -> Stream.of("\u2003", "\u0000\u2003", " \t\u2003\u0000")
+                .map(title -> arguments(kind, title)));
+    }
+
+    @ParameterizedTest(name = "{0} padding-only title #{index}")
+    @MethodSource
+    void lineTitleOfOnlyControlOrWhitespaceCharactersIsRequiredAndChangesNothing(ReportKind kind, String title) {
+        Caller owner = newCaller(appUserRepository, Role.User);
+        LineView existing = draftWithLine(owner, kind);
+        Integer typeId = existing.typeId();
+        LineRequest request = new LineRequest(kind == ReportKind.EXPENSE ? typeId : null,
+                kind == ReportKind.EARNING ? typeId : null, ReferenceIds.CURRENCY_EURO, BigDecimal.TEN, null, title,
+                "", LINE_DATE);
+        LineService.LineInput input = line(typeId, ReferenceIds.CURRENCY_EURO, BigDecimal.TEN, null, title, "",
+                LINE_DATE);
+
+        assertThat(validator.validate(request))
+                .map(violation -> new FieldViolation(violation.getPropertyPath().toString(), violation.getMessage()))
+                .containsExactly(new FieldViolation("title", LegacyMessages.FIELD_REQUIRED));
+        assertFieldError(() -> lineService.create(owner, kind, existing.reportId(), input),
+                "title", LegacyMessages.FIELD_REQUIRED);
+        assertFieldError(() -> lineService.update(owner, kind, existing.id(), input),
+                "title", LegacyMessages.FIELD_REQUIRED);
+        assertTheDraftHoldsOnlyItsUnchangedLine(kind, existing);
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @EnumSource(ReportKind.class)
+    void lineCreateAndUpdateStoreTheTitleWithoutControlOrWhitespacePadding(ReportKind kind) {
+        Caller owner = newCaller(appUserRepository, Role.User);
+        LineView existing = draftWithLine(owner, kind);
+        Integer typeId = existing.typeId();
+        String title = "\u2003 Taxi \u0000";
+        LineRequest request = new LineRequest(kind == ReportKind.EXPENSE ? typeId : null,
+                kind == ReportKind.EARNING ? typeId : null, ReferenceIds.CURRENCY_EURO, BigDecimal.TEN, null, title,
+                "", LINE_DATE);
+        LineService.LineInput input = line(typeId, ReferenceIds.CURRENCY_EURO, BigDecimal.TEN, null, title, "",
+                LINE_DATE);
+
+        assertThat(validator.validate(request)).isEmpty();
+        LineView created = lineService.create(owner, kind, existing.reportId(), input);
+        LineView updated = lineService.update(owner, kind, existing.id(), input);
+
+        assertThat(List.of(created, updated)).extracting(LineView::title).containsExactly("Taxi", "Taxi");
+        assertThat(linesOf(kind).findAllById(List.of(created.id(), existing.id()))).hasSize(2)
+                .extracting(LineEntity::getTitle).containsOnly("Taxi");
     }
 
     @Test

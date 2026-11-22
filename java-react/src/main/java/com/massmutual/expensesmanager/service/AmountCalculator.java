@@ -42,12 +42,8 @@ public class AmountCalculator {
         return (value == null ? BigDecimal.ZERO : value).setScale(MONEY_SCALE, RoundingMode.HALF_UP);
     }
 
-    public BigDecimal mileage(BigDecimal kilometers) {
-        Objects.requireNonNull(kilometers, "kilometers");
-        if (!withinRange(kilometers, DISTANCE_INTEGER_DIGITS)) {
-            throw new ApiException(422, ApiException.VALIDATION_FAILED, LegacyMessages.INVALID_VALUE, List.of());
-        }
-        return stored(kilometers.multiply(properties.mileageReimbursement()));
+    public BigDecimal mileage(BigDecimal km) {
+        return mileage(km, "km");
     }
 
     public BigDecimal usdToEur(BigDecimal amount, BigDecimal rate) {
@@ -84,7 +80,7 @@ public class AmountCalculator {
             throw ApiException.validation(List.of(violation.get()));
         }
         if (isKilometersExpense(kind, typeId)) {
-            BigDecimal euros = mileage(storedKilometers);
+            BigDecimal euros = mileage(storedKilometers, "kilometers");
             // The stored amount is the computed euro value, so the line's currency is always Euro.
             return new LineAmounts(ReferenceIds.CURRENCY_EURO, euros, storedKilometers, euros);
         }
@@ -125,6 +121,14 @@ public class AmountCalculator {
         }
         BigDecimal stripped = kilometers.stripTrailingZeros();
         return stripped.scale() < 0 ? stripped.setScale(0) : stripped;
+    }
+
+    private BigDecimal mileage(BigDecimal kilometers, String field) {
+        Objects.requireNonNull(kilometers, field);
+        if (!withinRange(kilometers, DISTANCE_INTEGER_DIGITS)) {
+            throw ApiException.validation(field, LegacyMessages.INVALID_VALUE);
+        }
+        return stored(kilometers.multiply(properties.mileageReimbursement()));
     }
 
     private boolean kilometersFit(BigDecimal kilometers) {

@@ -148,7 +148,7 @@ public class LineService {
     // Public so LineRequest's bean validation reports exactly the text errors this service enforces.
     public static List<FieldViolation> textViolations(String title, String description) {
         List<FieldViolation> violations = new ArrayList<>();
-        if (title == null || title.trim().isEmpty()) {
+        if (title == null || ReportService.normalizeTitle(title).isEmpty()) {
             violations.add(new FieldViolation("title", LegacyMessages.FIELD_REQUIRED));
         } else if (title.length() > TITLE_MAX_LENGTH) {
             violations.add(new FieldViolation("title", LegacyMessages.MAX_LENGTH_50));
@@ -200,7 +200,7 @@ public class LineService {
     }
 
     private void apply(ReportKind kind, LineEntity line, LineInput in) {
-        line.setTitle(in.title().trim());
+        line.setTitle(ReportService.normalizeTitle(in.title()));
         line.setDescription(Objects.requireNonNullElse(in.description(), ""));
         line.setDate(in.date());
         line.setTypeId(in.typeId());
