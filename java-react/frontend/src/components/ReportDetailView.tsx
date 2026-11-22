@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { Alert, Box, Button, CircularProgress, Grid, IconButton, Stack } from '@mui/material';
 import { useNavigate } from 'react-router';
 import {
@@ -51,7 +51,7 @@ type LoadState =
 
 type ReferenceState =
   | { phase: 'loading' }
-  | { phase: 'error'; error: unknown }
+  | { phase: 'error'; error: unknown; focusedAtFailure: HTMLElement | null }
   | { phase: 'ready'; data: ReferenceData };
 
 type ReportDetailContentProps = ReportDetailViewProps & {
@@ -94,6 +94,11 @@ function isConflict(err: unknown): boolean {
   return err instanceof ApiError && err.status === 409;
 }
 
+function focusedEnabledElement(): HTMLElement | null {
+  const active = document.activeElement;
+  return active instanceof HTMLElement && active !== document.body && !active.matches(':disabled') ? active : null;
+}
+
 export function ReportDetailView({ kind, mode, id }: ReportDetailViewProps) {
   const [referenceState, setReferenceState] = useState<ReferenceState>({ phase: 'loading' });
   const latestReference = useRef(0);
@@ -109,7 +114,7 @@ export function ReportDetailView({ kind, mode, id }: ReportDetailViewProps) {
       },
       (error: unknown) => {
         if (requestId === latestReference.current) {
-          setReferenceState({ phase: 'error', error });
+          setReferenceState({ phase: 'error', error, focusedAtFailure: focusedEnabledElement() });
         }
       },
     );
@@ -158,6 +163,8 @@ function ReportDetailContent({
   const [lineView, setLineView] = useState<LineDialog>(CLOSED_DIALOG);
   const [lineToDelete, setLineToDelete] = useState<LineView | null>(null);
   const [reportDeleteOpen, setReportDeleteOpen] = useState(false);
+  // State rather than a ref, so an effect still pending from the render before the click cannot settle the retry.
+  const [retrying, setRetrying] = useState<'report' | 'reference' | null>(null);
   const latestLoad = useRef(0);
   const reportShown = useRef(false);
   const ownership = useRef<boolean | null>(null);
@@ -166,7 +173,6 @@ function ReportDetailContent({
   const actionInFlight = useRef(false);
   const header = useRef<HTMLDivElement>(null);
   const retryButton = useRef<HTMLButtonElement>(null);
-  const retrying = useRef<'report' | 'reference' | null>(null);
 
   useEffect(() => {
     alive.current = true;
@@ -232,13 +238,13 @@ function ReportDetailContent({
   }, [kind, reportId, feedback, rejectInvalidReport, resolveOwnership]);
 
   const retryLoad = () => {
-    retrying.current = 'report';
+    setRetrying('report');
     setLoadState({ phase: 'loading' });
     void load();
   };
 
   const retryReference = () => {
-    retrying.current = 'reference';
+    setRetrying('reference');
     onRetryReference();
   };
 
@@ -264,18 +270,34 @@ function ReportDetailContent({
     }
   }, [referenceFailed]);
 
-  // Runs once the retried state has rendered, so a failed retry hands its new Retry button to focus recovery.
-  useEffect(() => {
-    if (retrying.current === null) {
+  // A focused control this failure disables would drop focus to the body, so the Retry it shows takes focus.
+  useLayoutEffect(() => {
+    if (referenceState.phase !== 'error') {
       return;
     }
-    const retried = retrying.current === 'report' ? loadState : referenceState;
+    const { focusedAtFailure } = referenceState;
+    const active = document.activeElement;
+    if (
+      focusedAtFailure?.isConnected &&
+      focusedAtFailure.matches(':disabled') &&
+      (active === focusedAtFailure || active === document.body)
+    ) {
+      retryButton.current?.focus();
+    }
+  }, [referenceState]);
+
+  // Runs once the retried state has rendered, so a failed retry hands its new Retry button to focus recovery.
+  useEffect(() => {
+    if (retrying === null) {
+      return;
+    }
+    const retried = retrying === 'report' ? loadState : referenceState;
     if (retried.phase === 'loading') {
       return;
     }
-    retrying.current = null;
+    setRetrying(null);
     setSettledAction({ trigger: retryButton.current, succeeded: retried.phase === 'ready' });
-  }, [loadState, referenceState]);
+  }, [retrying, loadState, referenceState]);
 
   // A pending action disables its focused button, which drops focus to the body. A failure returns it to that
   // button; a success, or a reload that removed the button, moves it to the page heading.

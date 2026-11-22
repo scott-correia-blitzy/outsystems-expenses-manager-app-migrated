@@ -1889,6 +1889,28 @@ const NO_INVOICE_CASES: ViewCase[] = [
   },
 ];
 
+type EditFromViewCase = { finish: string; leave: (form: HTMLElement) => void; reportLoads: number };
+
+const EDIT_FROM_VIEW_CASES: EditFromViewCase[] = [
+  { finish: 'Escape', leave: (form) => fireEvent.keyDown(form, { key: 'Escape' }), reportLoads: 1 },
+  { finish: 'Cancel', leave: (form) => press(form, 'Cancel'), reportLoads: 1 },
+  { finish: 'Close', leave: (form) => press(form, 'Close'), reportLoads: 1 },
+  { finish: 'a successful Save', leave: (form) => press(form, 'Save'), reportLoads: 2 },
+];
+
+// jsdom does not focus a clicked button, so each control is focused first, as a keyboard user's would be.
+async function focusEditDetailsInView(): Promise<{ view: HTMLElement; editDetails: HTMLElement }> {
+  renderRoute('/reports/expense/12', 'user');
+  expect(await heading(LONDON_TRIP)).toBeInTheDocument();
+  const table = screen.getByRole('table', { name: 'Expenses' });
+  const view = within(lineRow(table, 'Flight tickets')).getByRole('button', { name: 'View' });
+  view.focus();
+  fireEvent.click(view);
+  const editDetails = within(await findDialog('Flight tickets')).getByRole('button', { name: 'Edit Details' });
+  editDetails.focus();
+  return { view, editDetails };
+}
+
 describe('line view', () => {
   it.each(NO_INVOICE_CASES)(
     'shows a line of $where with no invoice',
@@ -1937,6 +1959,44 @@ describe('line view', () => {
       await waitFor(() => expect(download).toBeEnabled(), { timeout: FIND_TIMEOUT });
       expect(screen.getByRole('dialog', { name: 'Flight tickets' })).toBe(dialog);
       expect(api.getReport).toHaveBeenCalledExactlyOnceWith('expense', 12);
+    },
+    TEST_TIMEOUT,
+  );
+
+  it.each(EDIT_FROM_VIEW_CASES)(
+    'after $finish on Edit Details opened from the view, focus returns to the row View button',
+    async ({ leave, reportLoads }) => {
+      const { view, editDetails } = await focusEditDetailsInView();
+      fireEvent.click(editDetails);
+      const form = await findDialog('Edit Details');
+      // A person closes the form only after the view dialog has finished closing.
+      await waitFor(() => expect(editDetails).not.toBeInTheDocument());
+      leave(form);
+
+      await dialogClosed();
+      await waitFor(() => expect(api.getReport).toHaveBeenCalledTimes(reportLoads));
+      await waitFor(() => expect(view).toHaveFocus());
+    },
+    TEST_TIMEOUT,
+  );
+
+  it(
+    'when Edit Details and the view it was opened from finish closing together, focus returns to the row View button',
+    async () => {
+      const { view, editDetails } = await focusEditDetailsInView();
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      try {
+        fireEvent.click(editDetails);
+        fireEvent.keyDown(screen.getByRole('dialog', { name: 'Edit Details' }), { key: 'Escape' });
+        await act(async () => {
+          vi.runOnlyPendingTimers();
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+
+      await dialogClosed();
+      expect(view).toHaveFocus();
     },
     TEST_TIMEOUT,
   );
@@ -3399,6 +3459,22 @@ const REPORT_HEADING = () => screen.getByRole('heading', { name: OWNER_HEADING }
 const SUBMIT_REPORT = () => screen.getByRole('button', { name: 'Submit Report' });
 const NEW_REPORT = () => screen.getByRole('button', { name: 'New Report' });
 
+// Clicks Retry in the mutation callback that first sees it, before the effects of the render that showed it run.
+function clickRetryOnSight(): { focusAfterClick: () => Element | null | undefined; stop: () => void } {
+  let focusAfterClick: Element | null | undefined;
+  const observer = new MutationObserver(() => {
+    const retry = screen.queryByRole('button', { name: 'Retry' });
+    if (retry !== null) {
+      observer.disconnect();
+      retry.focus();
+      fireEvent.click(retry);
+      focusAfterClick = document.activeElement;
+    }
+  });
+  observer.observe(document.body, { childList: true, subtree: true });
+  return { focusAfterClick: () => focusAfterClick, stop: () => observer.disconnect() };
+}
+
 const RETRY_FOCUS_CASES: RetryFocusCase[] = [
   { ...USER_DASHBOARD_RETRY, ...SECOND_FAILURE, focused: NEW_RETRY },
   { ...USER_DASHBOARD_RETRY, ...MOVED_MEANWHILE, meanwhile: VIEW_REPORTS, focused: VIEW_REPORTS },
@@ -3434,6 +3510,65 @@ describe('focus after a retry', () => {
       }
       await waitFor(() => expect(focused()).toHaveFocus());
       expect(endpoint).toHaveBeenCalledTimes(2);
+    },
+    TEST_TIMEOUT,
+  );
+
+  it.each([REPORT_RETRY, REFERENCE_RETRY])(
+    'when Retry for $surface is clicked as it shows and the retry succeeds, focus ends on the page heading',
+    async ({ path, category, endpoint }) => {
+      vi.mocked(endpoint).mockRejectedValueOnce(SERVER_FAILURE);
+      const retry = clickRetryOnSight();
+      try {
+        renderRoute(path, category);
+        await waitFor(() => expect(retry.focusAfterClick()).toBe(document.body), { timeout: FIND_TIMEOUT });
+      } finally {
+        retry.stop();
+      }
+
+      await waitFor(() => expect(REPORT_HEADING()).toHaveFocus());
+      expect(endpoint).toHaveBeenCalledTimes(2);
+    },
+    TEST_TIMEOUT,
+  );
+});
+
+type ReferenceFailureFocusCase = {
+  control: string;
+  focus: () => HTMLElement;
+  target: string;
+  focused: () => HTMLElement;
+};
+
+const ADD_EXPENSE = () => screen.getByRole('button', { name: 'Add Expense' });
+const LINE_SEARCH = () => screen.getByRole('textbox', { name: 'Search' });
+const lineAction = (name: string) => () =>
+  within(lineRow(screen.getByRole('table', { name: 'Expenses' }), 'Flight tickets')).getByRole('button', { name });
+
+const REFERENCE_FAILURE_FOCUS_CASES: ReferenceFailureFocusCase[] = [
+  { control: 'Add Expense', focus: ADD_EXPENSE, target: 'the reference Retry', focused: NEW_RETRY },
+  { control: 'a row View', focus: lineAction('View'), target: 'the reference Retry', focused: NEW_RETRY },
+  { control: 'a row Edit', focus: lineAction('Edit'), target: 'the reference Retry', focused: NEW_RETRY },
+  { control: 'Search', focus: LINE_SEARCH, target: 'Search', focused: LINE_SEARCH },
+  { control: 'nothing', focus: () => document.body, target: 'the body', focused: () => document.body },
+];
+
+describe('focus after a reference data failure', () => {
+  it.each(REFERENCE_FAILURE_FOCUS_CASES)(
+    'when the reference data fails while $control has focus, focus ends on $target',
+    async ({ focus, focused }) => {
+      let fail: (err: unknown) => void = () => undefined;
+      vi.mocked(api.reference).mockReturnValueOnce(new Promise<ReferenceData>((_, reject) => (fail = reject)));
+      renderRoute(OWNER_REPORT, 'user');
+      expect(await heading(OWNER_HEADING)).toBeInTheDocument();
+      const control = focus();
+      control.focus();
+      expect(control).toHaveFocus();
+
+      await act(async () => fail(SERVER_FAILURE));
+      expect(await button('Retry')).toBeInTheDocument();
+      expect(ADD_EXPENSE()).toBeDisabled();
+      expect(focused()).toHaveFocus();
     },
     TEST_TIMEOUT,
   );

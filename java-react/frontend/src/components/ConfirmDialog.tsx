@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
+import { type RefObject, useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import {
   Button,
   Dialog,
@@ -18,25 +18,51 @@ export type ConfirmDialogProps = {
   onClose: () => void;
 };
 
+type FocusReturn = {
+  dialog: RefObject<HTMLDivElement | null>;
+  open: RefObject<boolean>;
+  returnTargets: RefObject<HTMLElement[]>;
+};
+
+// A dialog opened from inside another may outlive it, so it also inherits that dialog's return targets.
+const mountedDialogs = new Set<FocusReturn>();
+
+function dialogHolding(element: HTMLElement): FocusReturn | undefined {
+  for (const entry of mountedDialogs) {
+    if (entry.dialog.current?.contains(element)) {
+      return entry;
+    }
+  }
+  return undefined;
+}
+
+// A control in a closing dialog disappears with it, so focus goes on to that dialog's own opener.
+function canTakeFocus(target: HTMLElement): boolean {
+  const holder = dialogHolding(target);
+  return target.isConnected && !target.matches(':disabled') && (holder === undefined || holder.open.current);
+}
+
 // MUI aria-hides the page while a dialog is open, so focus leaves the trigger first and returns once the page is shown.
 export function useDialogFocus(open: boolean) {
   const dialogRef = useRef<HTMLDivElement>(null);
-  const trigger = useRef<HTMLElement | null>(null);
+  const isOpen = useRef(open);
+  const returnTargets = useRef<HTMLElement[]>([]);
   const mounted = useRef(false);
 
   const restoreFocus = useCallback(() => {
-    const target = trigger.current;
-    trigger.current = null;
+    const targets = returnTargets.current;
+    returnTargets.current = [];
     const active = document.activeElement;
-    if (target?.isConnected && (active === null || active === document.body)) {
-      target.focus();
+    if (active === null || active === document.body) {
+      targets.find(canTakeFocus)?.focus();
     }
   }, []);
 
   useLayoutEffect(() => {
+    isOpen.current = open;
     const active = document.activeElement;
     if (open && active instanceof HTMLElement && active !== document.body) {
-      trigger.current = active;
+      returnTargets.current = [active, ...(dialogHolding(active)?.returnTargets.current ?? [])];
       active.blur();
     }
   }, [open]);
@@ -49,8 +75,11 @@ export function useDialogFocus(open: boolean) {
   }, [open]);
 
   useEffect(() => {
+    const entry: FocusReturn = { dialog: dialogRef, open: isOpen, returnTargets };
+    mountedDialogs.add(entry);
     mounted.current = true;
     return () => {
+      mountedDialogs.delete(entry);
       mounted.current = false;
       queueMicrotask(() => {
         if (!mounted.current) {
