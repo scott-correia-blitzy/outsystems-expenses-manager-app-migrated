@@ -30,6 +30,7 @@ import java.util.zip.GZIPInputStream;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.massmutual.expensesmanager.domain.ReportEntity;
+import com.massmutual.expensesmanager.repository.BlogPostRepository;
 import com.massmutual.expensesmanager.repository.EarningReportRepository;
 import com.massmutual.expensesmanager.repository.ExpenseReportRepository;
 import com.massmutual.expensesmanager.service.ApiException;
@@ -543,6 +544,45 @@ class EndToEndIT {
         }
     }
 
+    static Stream<Arguments> overLongWhitespaceTitleIsRequiredOnCreateAndUpdate() {
+        return Stream.of(
+                arguments(USER, "/api/reports", "/api/reports/expense/", "kind", "expense",
+                        LegacyMessages.INSERT_TITLE),
+                arguments(USER, "/api/reports", "/api/reports/earning/", "kind", "earning",
+                        LegacyMessages.INSERT_TITLE),
+                arguments(ADMIN, "/api/blog", "/api/blog/", "description", "valid",
+                        LegacyMessages.FIELD_REQUIRED));
+    }
+
+    @ParameterizedTest(name = "{2}")
+    @MethodSource
+    @DisplayName("a title of 51 EM SPACEs answers the required-title 422 on create and update and changes nothing")
+    void overLongWhitespaceTitleIsRequiredOnCreateAndUpdate(String username, String createPath, String itemPathPrefix,
+            String otherField, String otherValue, String requiredMessage) {
+        try (ApiClient client = ApiClient.loggedIn(port, username, PASSWORD)) {
+            ObjectNode body = ApiClient.object();
+            body.put(otherField, otherValue);
+            body.put("title", "Untouched");
+            String itemPath = itemPathPrefix
+                    + expectStatus(client.postJson(createPath, body), 201).json().path("id").asLong();
+            long rowsBefore = reportAndPostCount();
+
+            body.put("title", "\u2003".repeat(51));
+            for (ApiClient.Response response : List.of(client.postJson(createPath, body),
+                    client.putJson(itemPath, body))) {
+                JsonNode error = expectStatus(response, 422).json();
+                assertThat(error.path("code").asText()).isEqualTo(ApiException.VALIDATION_FAILED);
+                assertThat(error.path("message").asText()).isEqualTo(requiredMessage);
+                assertThat(StreamSupport.stream(error.path("fieldErrors").spliterator(), false)
+                        .map(field -> new FieldViolation(field.path("field").asText(), field.path("message").asText())))
+                        .containsExactly(new FieldViolation("title", requiredMessage));
+            }
+
+            assertThat(reportAndPostCount()).isEqualTo(rowsBefore);
+            assertThat(expectStatus(client.get(itemPath), 200).json().path("title").asText()).isEqualTo("Untouched");
+        }
+    }
+
     private static void assertStarting(ApiClient.Response response) {
         expectStatus(response, 503);
         assertThat(response.header("Retry-After")).isEqualTo("1");
@@ -570,6 +610,10 @@ class EndToEndIT {
     private static long reportCount(ApplicationContext application) {
         return application.getBean(ExpenseReportRepository.class).count()
                 + application.getBean(EarningReportRepository.class).count();
+    }
+
+    private long reportAndPostCount() {
+        return reportCount(context) + context.getBean(BlogPostRepository.class).count();
     }
 
     private static long createFillAndSubmitCarRental(ApiClient user) {

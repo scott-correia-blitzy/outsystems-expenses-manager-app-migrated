@@ -66,7 +66,10 @@ import com.massmutual.expensesmanager.service.model.ReportSummary;
 import com.massmutual.expensesmanager.service.model.UserDashboard;
 import com.massmutual.expensesmanager.support.MutableClock;
 import com.massmutual.expensesmanager.support.TestDatabase;
+import com.massmutual.expensesmanager.web.dto.BlogPostRequest;
+import com.massmutual.expensesmanager.web.dto.CreateReportRequest;
 import com.massmutual.expensesmanager.web.dto.LineRequest;
+import com.massmutual.expensesmanager.web.dto.RenameReportRequest;
 import jakarta.validation.Validator;
 import java.io.UncheckedIOException;
 import java.math.BigDecimal;
@@ -525,6 +528,62 @@ class BusinessRulesTest {
 
         reportService.rename(owner, ReportKind.EXPENSE, id, "\u2003 Car Rental \u0000");
         assertThat(expenseReportRepository.findById(id).orElseThrow().getTitle()).isEqualTo("Car Rental");
+    }
+
+    static Stream<String> overLongTitlesOfOnlyControlOrWhitespaceCharacters() {
+        return Stream.of("\u2003".repeat(51), " \t\u2003\u0000".repeat(13));
+    }
+
+    static Stream<Arguments> overLongReportTitleOfOnlyControlOrWhitespaceCharactersIsRequiredAndChangesNothing() {
+        return Arrays.stream(ReportKind.values()).flatMap(kind -> overLongTitlesOfOnlyControlOrWhitespaceCharacters()
+                .map(title -> arguments(kind, title)));
+    }
+
+    @ParameterizedTest(name = "{0} over-long padding-only title #{index}")
+    @MethodSource
+    void overLongReportTitleOfOnlyControlOrWhitespaceCharactersIsRequiredAndChangesNothing(ReportKind kind,
+            String title) {
+        Caller owner = newCaller(appUserRepository, Role.User);
+        Long draftId = reportService.create(owner, kind, "Draft").id();
+
+        assertThat(validator.validate(new CreateReportRequest(kind.pathValue(), title))).isEmpty();
+        assertThat(validator.validate(new RenameReportRequest(title))).isEmpty();
+        assertFieldError(() -> reportService.create(owner, kind, title), "title", LegacyMessages.INSERT_TITLE);
+        assertFieldError(() -> reportService.rename(owner, kind, draftId, title),
+                "title", LegacyMessages.INSERT_TITLE);
+        assertThat(reportsOf(kind).findAll()).extracting(ReportEntity::getTitle).containsExactly("Draft");
+    }
+
+    @ParameterizedTest(name = "over-long padding-only title #{index}")
+    @MethodSource("overLongTitlesOfOnlyControlOrWhitespaceCharacters")
+    void overLongBlogTitleOfOnlyControlOrWhitespaceCharactersIsRequiredAndChangesNothing(String title) {
+        Caller admin = newCaller(appUserRepository, Role.Administrator);
+        Long existingId = blogService.create(admin, new BlogService.PostInput("Existing", "")).id();
+        long posts = blogPostRepository.count();
+        BlogService.PostInput input = new BlogService.PostInput(title, "Description");
+
+        assertThat(validator.validate(new BlogPostRequest(title, "Description"))).isEmpty();
+        assertFieldError(() -> blogService.create(admin, input), "title", LegacyMessages.FIELD_REQUIRED);
+        assertFieldError(() -> blogService.update(admin, existingId, input), "title", LegacyMessages.FIELD_REQUIRED);
+        assertThat(blogPostRepository.count()).isEqualTo(posts);
+        assertThat(blogPostRepository.findById(existingId).orElseThrow().getTitle()).isEqualTo("Existing");
+    }
+
+    static Stream<String> titleRequestsRejectANonBlankTitleOverFiftyCharacters() {
+        return Stream.of("T".repeat(51), "\u2003" + "T".repeat(50));
+    }
+
+    @ParameterizedTest(name = "non-blank 51-character title #{index}")
+    @MethodSource
+    void titleRequestsRejectANonBlankTitleOverFiftyCharacters(String title) {
+        for (Object request : List.of(new CreateReportRequest("expense", title),
+                new CreateReportRequest("earning", title), new RenameReportRequest(title),
+                new BlogPostRequest(title, "Description"))) {
+            assertThat(validator.validate(request)).as("%s", request)
+                    .map(violation -> new FieldViolation(violation.getPropertyPath().toString(),
+                            violation.getMessage()))
+                    .containsExactly(new FieldViolation("title", LegacyMessages.MAX_LENGTH_50));
+        }
     }
 
     @ParameterizedTest(name = "{0} code {1} collides twice on {2}")

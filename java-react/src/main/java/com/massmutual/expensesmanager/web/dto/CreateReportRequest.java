@@ -3,6 +3,7 @@ package com.massmutual.expensesmanager.web.dto;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.massmutual.expensesmanager.domain.ReportKind;
 import com.massmutual.expensesmanager.service.LegacyMessages;
+import com.massmutual.expensesmanager.service.ReportService;
 import com.massmutual.expensesmanager.service.model.FieldViolation.Redacted;
 import jakarta.validation.Constraint;
 import jakarta.validation.ConstraintValidator;
@@ -31,7 +32,7 @@ public record CreateReportRequest(
         return "CreateReportRequest[kind=" + shownKind + ", title=" + Redacted.length(title) + "]";
     }
 
-    // Like @Size(max), but blank text is left to @NotBlank so a blank over-long field reports one error.
+    // Like @Size(max), but text that normalizes to blank is left to the required-title checks to report one error.
     @Documented
     @Retention(RetentionPolicy.RUNTIME)
     @Target({ElementType.FIELD, ElementType.METHOD, ElementType.PARAMETER, ElementType.ANNOTATION_TYPE})
@@ -57,7 +58,8 @@ public record CreateReportRequest(
 
             @Override
             public boolean isValid(CharSequence value, ConstraintValidatorContext context) {
-                return value == null || value.length() <= max || value.toString().trim().isEmpty();
+                return value == null || value.length() <= max
+                        || ReportService.normalizeTitle(value.toString()).isEmpty();
             }
         }
     }
