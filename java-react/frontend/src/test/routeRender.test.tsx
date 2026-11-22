@@ -46,7 +46,6 @@ afterAll(() => {
   Element.prototype.scrollIntoView = scrollIntoView;
 });
 
-
 const FIND_TIMEOUT = 3000;
 const TEST_TIMEOUT = 15_000;
 const CONTROL_ROLES = ['button', 'link', 'menuitem'] as const;

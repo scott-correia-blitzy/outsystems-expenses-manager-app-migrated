@@ -4,19 +4,6 @@ export type StatusLabel = 'Draft' | 'Submitted' | 'Approved' | 'Declined';
 
 export type Role = 'Administrator' | 'Approver' | 'User' | 'Registered';
 
-export type ErrorCode =
-  | 'UNAUTHENTICATED'
-  | 'BAD_CREDENTIALS'
-  | 'FORBIDDEN'
-  | 'NOT_FOUND'
-  | 'NOT_DRAFT'
-  | 'CODE_CONFLICT'
-  | 'PAYLOAD_TOO_LARGE'
-  | 'UNSUPPORTED_MEDIA_TYPE'
-  | 'VALIDATION_FAILED'
-  | 'NO_LINES'
-  | 'SERVICE_UNAVAILABLE';
-
 // submitedOn is the server's field name, legacy misspelling included.
 export type ReportSortColumn =
   | 'id'
@@ -280,5 +267,3 @@ export const MESSAGES = {
   INTERNAL_ERROR: 'An error occurred, please try later',
   INVALID_REPORT: 'Invalid expense report',
 } as const;
-
-export type MessageKey = keyof typeof MESSAGES;
