@@ -1912,6 +1912,21 @@ const PAST_TYPING_PAUSE_MS = 600;
 // Shorter than the list's typing pause, while two of them are longer.
 const BETWEEN_KEYS_MS = 200;
 
+const DATE_CLEAR_FIELDS = [
+  { label: 'From', bound: 'from', date: '2024-04-10', codes: ['12/2024 EX', '11/2024 EX', '10/2024 EX'] },
+  {
+    label: 'To',
+    bound: 'to',
+    date: '2024-04-15',
+    codes: ['10/2024 EX', '9/2024 EX', '8/2024 EX', '3/2024 EX', '2/2024 EX', '1/2024 EX'],
+  },
+] as const;
+
+// A browser date field sends no change event when its last segment is cleared, only keyup and blur follow.
+const DATE_CLEAR_CASES = DATE_CLEAR_FIELDS.flatMap((field) =>
+  (['keyUp', 'blur'] as const).map((reread) => ({ ...field, reread })),
+);
+
 function byTitle(sort: string | undefined): ReportSummary[] {
   const rows = [...EXPENSE_ROWS];
   if (sort === 'title,asc') {
@@ -1946,6 +1961,23 @@ function pagedLines(count: number): LineView[] {
   const [first] = REPORT_DETAILS['expense/9'].lines;
   return Array.from({ length: count }, (_, index) => ({ ...first, id: 900 + index, title: `Receipt ${index + 1}` }));
 }
+
+const PAGER_FOCUS_CASES = [
+  {
+    pager: 'administrator report list',
+    path: '/admin',
+    lines: null,
+    first: '1 to 5 of 9 items',
+    last: '6 to 9 of 9 items',
+  },
+  {
+    pager: 'report line table',
+    path: '/admin/reports/expense/9',
+    lines: 11,
+    first: '1 to 10 of 11 items',
+    last: '11 to 11 of 11 items',
+  },
+] as const;
 
 describe('browsing reports and lines', () => {
   it(
@@ -2030,6 +2062,48 @@ describe('browsing reports and lines', () => {
       } finally {
         vi.useRealTimers();
       }
+    },
+    TEST_TIMEOUT,
+  );
+
+  it.each(DATE_CLEAR_CASES)(
+    'drops the $label bound once the field is wholly cleared, noticed on $reread',
+    async ({ label, bound, date, codes, reread }) => {
+      renderRoute('/reports', 'user');
+      vi.mocked(api.listReports).mockImplementation(async (sent) => createdBetween(sent));
+      expect(await screen.findByText('1 to 8 of 8 items', {}, { timeout: FIND_TIMEOUT })).toBeInTheDocument();
+      const field = screen.getByLabelText(label);
+      const pastTypingPause = () => act(() => new Promise((resolve) => setTimeout(resolve, PAST_TYPING_PAUSE_MS)));
+
+      fireEvent[reread](field);
+      await pastTypingPause();
+      expect(api.listReports).toHaveBeenCalledTimes(1);
+
+      await fillField(label, date);
+      await waitFor(() => expect(shownCodes()).toEqual(codes), { timeout: FIND_TIMEOUT });
+      expect(api.listReports).toHaveBeenLastCalledWith(
+        { ...DEFAULT_LIST_QUERY, [bound]: `${date}T00:00:00` },
+        ANY_SIGNAL,
+      );
+
+      setBadInput(field, true);
+      await fillField(label, '');
+      fireEvent[reread](field);
+      await pastTypingPause();
+      expect(api.listReports).toHaveBeenCalledTimes(2);
+      expect(shownCodes()).toEqual(codes);
+
+      setBadInput(field, false);
+      fireEvent[reread](field);
+      await waitFor(() => expect(shownCodes()).toEqual(ALL_EXPENSE_CODES), { timeout: FIND_TIMEOUT });
+      const cleared = { ...DEFAULT_LIST_QUERY, [bound]: undefined };
+      expect(api.listReports).toHaveBeenCalledTimes(3);
+      expect(api.listReports).toHaveBeenLastCalledWith(cleared, ANY_SIGNAL);
+
+      await clickControl('Draft');
+      await waitFor(() => expect(api.listReports).toHaveBeenCalledTimes(4), { timeout: FIND_TIMEOUT });
+      expect(api.listReports).toHaveBeenLastCalledWith({ ...cleared, status: 'Draft' }, ANY_SIGNAL);
+      expect(field).toHaveValue('');
     },
     TEST_TIMEOUT,
   );
@@ -2151,6 +2225,36 @@ describe('browsing reports and lines', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Go to next page' }));
       expect(screen.getByText('11 to 11 of 11 items')).toBeInTheDocument();
       expect(lineTitles(table)).toEqual(['Receipt 11']);
+    },
+    TEST_TIMEOUT,
+  );
+
+  it.each(PAGER_FOCUS_CASES)(
+    'hands focus to the other arrow when an arrow of the $pager reaches the last or first page',
+    async ({ path, lines, first, last }) => {
+      renderRoute(path, 'administrator');
+      if (lines !== null) {
+        vi.mocked(api.getReport).mockResolvedValueOnce({ ...REPORT_DETAILS['expense/9'], lines: pagedLines(lines) });
+      }
+      expect(await screen.findByText(first, {}, { timeout: FIND_TIMEOUT })).toBeInTheDocument();
+      const previous = screen.getByRole('button', { name: 'Go to previous page' });
+      const next = screen.getByRole('button', { name: 'Go to next page' });
+
+      next.focus();
+      fireEvent.click(next);
+      expect(screen.getByText(last)).toBeInTheDocument();
+      expect(next).toBeDisabled();
+      expect(previous).toHaveFocus();
+
+      fireEvent.click(previous);
+      expect(screen.getByText(first)).toBeInTheDocument();
+      expect(previous).toBeDisabled();
+      expect(next).toHaveFocus();
+
+      next.blur();
+      fireEvent.click(next);
+      expect(screen.getByText(last)).toBeInTheDocument();
+      expect(document.body).toHaveFocus();
     },
     TEST_TIMEOUT,
   );

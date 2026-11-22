@@ -11,6 +11,7 @@ import {
   type MouseEvent,
   type ReactNode,
   type Ref,
+  type SyntheticEvent,
 } from 'react';
 import { useNavigate } from 'react-router';
 import {
@@ -28,7 +29,6 @@ import {
   Paper,
   Stack,
   SvgIcon,
-  TablePagination,
   TableSortLabel,
   TextField,
   ToggleButton,
@@ -54,7 +54,7 @@ import type {
 import { formatEuro, formatListDate } from '../format/format';
 import { adminReportPath, reportPath } from '../routes';
 import { useFeedback } from './Feedback';
-import { LineRows, ResultStatus, SelectLabel, ViewIcon } from './LineTable';
+import { LineRows, Pager, ResultStatus, SelectLabel, ViewIcon } from './LineTable';
 import { LineViewDialog } from './LineViewDialog';
 import { StatusTag } from './StatusTag';
 
@@ -128,14 +128,15 @@ function dateField(bound: string): DateField {
 }
 
 // Mid-typing, a date field reports years such as 0002 or an empty bad input; both keep the last bound.
+// An unchanged text keeps its bound too, so re-reading the default To leaves it at the current time.
 function typedDate(current: DateField, text: string, badInput: boolean): DateField {
-  if (WHOLE_DATE.test(text)) {
-    return { text, bound: `${text}T00:00:00` };
-  }
   if (text === '' && !badInput) {
-    return { text, bound: '' };
+    return current.text === '' && current.bound === '' ? current : { text, bound: '' };
   }
-  return { ...current, text };
+  if (text === current.text) {
+    return current;
+  }
+  return { text, bound: WHOLE_DATE.test(text) ? `${text}T00:00:00` : current.bound };
 }
 
 function cellText(value: string | null | undefined): ReactNode {
@@ -560,13 +561,14 @@ export function ReportList({ mode, kind, onDecided }: ReportListProps) {
     }
   }, []);
 
-  const changeFrom = useCallback((event: ChangeEvent<HTMLInputElement>) => {
-    const { value, validity } = event.target;
+  // A date field sends no change event when its last segment is cleared, so keyup and blur re-read it.
+  const syncFrom = useCallback((event: SyntheticEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+    const { value, validity } = event.currentTarget;
     setFromField((current) => typedDate(current, value, validity.badInput));
   }, []);
 
-  const changeTo = useCallback((event: ChangeEvent<HTMLInputElement>) => {
-    const { value, validity } = event.target;
+  const syncTo = useCallback((event: SyntheticEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+    const { value, validity } = event.currentTarget;
     setToField((current) => typedDate(current, value, validity.badInput));
   }, []);
 
@@ -692,8 +694,8 @@ export function ReportList({ mode, kind, onDecided }: ReportListProps) {
               size="small"
               label="From"
               value={fromField.text}
-              onChange={changeFrom}
-              slotProps={{ inputLabel: { shrink: true } }}
+              onChange={syncFrom}
+              slotProps={{ inputLabel: { shrink: true }, htmlInput: { onKeyUp: syncFrom, onBlur: syncFrom } }}
               sx={{ flexGrow: 1 }}
             />
             <TextField
@@ -701,8 +703,8 @@ export function ReportList({ mode, kind, onDecided }: ReportListProps) {
               size="small"
               label="To"
               value={toField.text}
-              onChange={changeTo}
-              slotProps={{ inputLabel: { shrink: true } }}
+              onChange={syncTo}
+              slotProps={{ inputLabel: { shrink: true }, htmlInput: { onKeyUp: syncTo, onBlur: syncTo } }}
               sx={{ flexGrow: 1 }}
             />
           </Stack>
@@ -735,9 +737,9 @@ export function ReportList({ mode, kind, onDecided }: ReportListProps) {
       statusFullWidth,
       rangeLabelId,
       fromField.text,
-      changeFrom,
+      syncFrom,
       toField.text,
-      changeTo,
+      syncTo,
       searchText,
       changeSearch,
     ],
@@ -846,15 +848,7 @@ export function ReportList({ mode, kind, onDecided }: ReportListProps) {
             />
           ))}
         </Paper>
-        <TablePagination
-          component="div"
-          count={rows.length}
-          page={currentPage}
-          rowsPerPage={rowsPerPage}
-          rowsPerPageOptions={[]}
-          onPageChange={(_event, next) => setPage(next)}
-          labelDisplayedRows={({ from: first, to: last, count }) => `${first} to ${last} of ${count} items`}
-        />
+        <Pager count={rows.length} page={currentPage} rowsPerPage={rowsPerPage} onPageChange={setPage} />
       </Stack>
     );
   }

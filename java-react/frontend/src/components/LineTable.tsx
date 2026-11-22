@@ -1,4 +1,4 @@
-import { memo, useMemo, useState, type ChangeEvent, type ReactNode } from 'react';
+import { memo, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type ReactNode } from 'react';
 import {
   Grid,
   IconButton,
@@ -80,6 +80,59 @@ export function ResultStatus({ total, page, rowsPerPage, nouns, message }: Resul
 // A <label for> cannot target the select's div; the select names itself through aria-labelledby.
 export function SelectLabel({ htmlFor: _htmlFor, ...props }: InputLabelProps) {
   return <InputLabel {...props} component="span" sx={{ cursor: 'default' }} />;
+}
+
+type PagerProps = {
+  count: number;
+  page: number;
+  rowsPerPage: number;
+  onPageChange: (page: number) => void;
+};
+
+type ArrowTurn = { page: number; back: boolean };
+
+export function Pager({ count, page, rowsPerPage, onPageChange }: PagerProps) {
+  const root = useRef<HTMLDivElement>(null);
+  const previousArrow = useRef<HTMLButtonElement>(null);
+  const nextArrow = useRef<HTMLButtonElement>(null);
+  const focusedTurn = useRef<ArrowTurn | null>(null);
+
+  // The arrow that reaches the first or last page is disabled and drops its focus, so the other arrow takes it.
+  useLayoutEffect(() => {
+    const turn = focusedTurn.current;
+    focusedTurn.current = null;
+    if (turn === null || turn.page !== page) {
+      return;
+    }
+    const [activated, opposite] = turn.back
+      ? [previousArrow.current, nextArrow.current]
+      : [nextArrow.current, previousArrow.current];
+    const active = document.activeElement;
+    if (active !== null && active !== document.body && !(active === activated && activated.disabled)) {
+      return;
+    }
+    const target = [opposite, activated].find((arrow) => arrow !== null && !arrow.disabled) ?? root.current;
+    target?.focus();
+  }, [page]);
+
+  return (
+    <TablePagination
+      ref={root}
+      tabIndex={-1}
+      component="div"
+      count={count}
+      page={page}
+      rowsPerPage={rowsPerPage}
+      rowsPerPageOptions={[]}
+      onPageChange={(event, next) => {
+        focusedTurn.current =
+          event !== null && event.currentTarget === document.activeElement ? { page: next, back: next < page } : null;
+        onPageChange(next);
+      }}
+      labelDisplayedRows={({ from, to, count: total }) => `${from} to ${to} of ${total} items`}
+      slotProps={{ actions: { previousButton: { ref: previousArrow }, nextButton: { ref: nextArrow } } }}
+    />
+  );
 }
 
 export type LineTableProps = {
@@ -451,15 +504,7 @@ export function LineTable({
         onEdit={canEdit ? onEdit : undefined}
         onDelete={canEdit ? onDelete : undefined}
       />
-      <TablePagination
-        component="div"
-        count={rows.length}
-        page={currentPage}
-        rowsPerPage={ROWS_PER_PAGE}
-        rowsPerPageOptions={[]}
-        onPageChange={(_event, next) => setPage(next)}
-        labelDisplayedRows={({ from, to, count }) => `${from} to ${to} of ${count} items`}
-      />
+      <Pager count={rows.length} page={currentPage} rowsPerPage={ROWS_PER_PAGE} onPageChange={setPage} />
       <ResultStatus
         total={rows.length}
         page={currentPage}
