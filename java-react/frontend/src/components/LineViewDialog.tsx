@@ -1,0 +1,263 @@
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
+import {
+  Box,
+  Button,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+  Grid,
+  IconButton,
+  Paper,
+  Stack,
+  SvgIcon,
+  Typography,
+  type SvgIconProps,
+} from '@mui/material';
+import { downloadInvoice, invoiceDownloadUrl } from '../api/api';
+import { MESSAGES, type InvoiceInfo, type Kind, type LineView } from '../api/types';
+import { formatEuro, formatIsoDate } from '../format/format';
+import { useDialogFocus } from './ConfirmDialog';
+import { useFeedback } from './Feedback';
+
+export type LineViewDialogProps = {
+  open: boolean;
+  kind: Kind;
+  line: LineView;
+  vatRate: number;
+  onClose: () => void;
+  onEdit?: () => void;
+};
+
+type DetailRow = { label: string; value: ReactNode };
+
+function CloseIcon(props: SvgIconProps) {
+  return (
+    <SvgIcon {...props}>
+      <path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
+    </SvgIcon>
+  );
+}
+
+function DocumentIcon(props: SvgIconProps) {
+  return (
+    <SvgIcon {...props}>
+      <path d="M8 16h8v2H8zm0-4h8v2H8zm6-10H6c-1.1 0-2 .9-2 2v16c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8zm4 18H6V4h7v5h5z" />
+    </SvgIcon>
+  );
+}
+
+function DownloadIcon(props: SvgIconProps) {
+  return (
+    <SvgIcon {...props}>
+      <path d="M5 20h14v-2H5zM19 9h-4V3H9v6H5l7 7z" />
+    </SvgIcon>
+  );
+}
+
+export function vatLabel(vatRate: number): string {
+  return Number.isFinite(vatRate) ? `VAT (${Math.round(vatRate * 10000) / 100}%)` : 'VAT';
+}
+
+function detailRows(kind: Kind, line: LineView): DetailRow[] {
+  const rows: DetailRow[] = [
+    { label: 'Date', value: formatIsoDate(line.date) },
+    { label: 'Title', value: line.title },
+    { label: 'Description', value: line.description ?? '' },
+    { label: kind === 'expense' ? 'Expense Type' : 'Earning Type', value: line.typeLabel },
+  ];
+  if (line.kilometers != null) {
+    rows.push({ label: 'Distance', value: `${line.kilometers} km` });
+  }
+  return rows;
+}
+
+function saveFile(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  // Revoking within the same task can cancel the save before the browser has read the file.
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+type InvoicePanelProps = { kind: Kind; lineId: number; invoice: InvoiceInfo | null };
+
+function InvoicePanel({ kind, lineId, invoice }: InvoicePanelProps) {
+  const feedback = useFeedback();
+  const [downloading, setDownloading] = useState(false);
+  // Set synchronously: loading disables the button only after a re-render, too late for a second click.
+  const inFlight = useRef(false);
+  const restoreFocus = useRef(false);
+  const downloadButton = useRef<HTMLButtonElement>(null);
+
+  // A loading button is disabled and drops focus, which the dialog then holds on its own container.
+  useEffect(() => {
+    if (downloading || !restoreFocus.current) {
+      return;
+    }
+    restoreFocus.current = false;
+    const active = document.activeElement;
+    if (!(active instanceof HTMLElement) || active.tabIndex < 0) {
+      downloadButton.current?.focus();
+    }
+  }, [downloading]);
+
+  if (!invoice) {
+    return (
+      <Stack spacing={1} sx={{ alignItems: 'center', textAlign: 'center', paddingBlock: 4 }}>
+        <DocumentIcon sx={{ fontSize: (theme) => theme.spacing(12), color: 'grey.300' }} />
+        <Typography color="text.secondary">{MESSAGES.NO_INVOICE}</Typography>
+      </Stack>
+    );
+  }
+
+  const save = async () => {
+    if (inFlight.current) {
+      return;
+    }
+    inFlight.current = true;
+    restoreFocus.current = true;
+    setDownloading(true);
+    try {
+      const file = await downloadInvoice(kind, lineId);
+      saveFile(file.blob, file.filename ?? invoice.filename);
+    } catch (err) {
+      feedback.error(err);
+    } finally {
+      inFlight.current = false;
+      setDownloading(false);
+    }
+  };
+
+  const isImage = (invoice.contentType ?? '').startsWith('image/');
+  return (
+    <Stack spacing={2} sx={{ alignItems: 'flex-start' }}>
+      {isImage && (
+        <Box
+          component="img"
+          src={invoiceDownloadUrl(kind, lineId)}
+          alt={`Invoice ${invoice.filename}`}
+          decoding="async"
+          sx={{
+            display: 'block',
+            maxInlineSize: '100%',
+            maxBlockSize: (theme) => theme.spacing(50),
+            objectFit: 'contain',
+            borderRadius: 1,
+            bgcolor: 'grey.50',
+          }}
+        />
+      )}
+      <Typography variant="body2" sx={{ overflowWrap: 'anywhere' }}>
+        {invoice.filename}
+      </Typography>
+      <Button
+        ref={downloadButton}
+        variant="contained"
+        startIcon={<DownloadIcon />}
+        loading={downloading}
+        loadingPosition="start"
+        onClick={() => void save()}
+      >
+        Download Invoice
+      </Button>
+    </Stack>
+  );
+}
+
+export function LineViewDialog({ open, kind, line, vatRate, onClose, onEdit }: LineViewDialogProps) {
+  const titleId = useId();
+  const dialogFocus = useDialogFocus(open);
+
+  return (
+    <Dialog {...dialogFocus} open={open} onClose={onClose} maxWidth="md" fullWidth aria-labelledby={titleId}>
+      <Stack
+        direction="row"
+        spacing={1}
+        sx={{ alignItems: 'center', justifyContent: 'space-between', paddingInlineEnd: 2 }}
+      >
+        <DialogTitle id={titleId} sx={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere' }}>
+          {line.title}
+        </DialogTitle>
+        <IconButton aria-label="Close" color="primary" onClick={onClose} sx={{ flexShrink: 0 }}>
+          <CloseIcon />
+        </IconButton>
+      </Stack>
+      <DialogContent>
+        <Paper variant="outlined">
+          <Box sx={{ p: 3 }}>
+            <Grid container spacing={3}>
+              <Grid size={{ xs: 12, md: 7 }}>
+                <Stack spacing={2}>
+                  <Typography variant="h6" component="h3">
+                    Details
+                  </Typography>
+                  <Box component="dl" sx={{ m: 0 }}>
+                    {detailRows(kind, line).map((row) => (
+                      // A border rather than Divider, which renders an hr that a dl may not contain.
+                      <Box
+                        key={row.label}
+                        sx={{
+                          paddingBlock: 1,
+                          borderBlockEndStyle: 'solid',
+                          borderBlockEndWidth: 1,
+                          borderColor: 'divider',
+                        }}
+                      >
+                        <Typography component="dt" variant="subtitle2">
+                          {row.label}
+                        </Typography>
+                        <Typography
+                          component="dd"
+                          variant="body1"
+                          sx={{ overflowWrap: 'anywhere', whiteSpace: 'pre-line' }}
+                        >
+                          {row.value}
+                        </Typography>
+                      </Box>
+                    ))}
+                  </Box>
+                  <Stack
+                    spacing={1}
+                    sx={{ alignSelf: 'flex-start', bgcolor: 'grey.50', p: 2, borderRadius: 1 }}
+                  >
+                    <Typography variant="body2">Total:</Typography>
+                    <Typography
+                      variant="h4"
+                      component="p"
+                      sx={{ fontWeight: 'fontWeightBold', overflowWrap: 'anywhere' }}
+                    >
+                      {formatEuro(line.amountInEuros)}
+                    </Typography>
+                    <Typography variant="body2">{`${vatLabel(vatRate)}: ${formatEuro(line.vat)}`}</Typography>
+                  </Stack>
+                </Stack>
+              </Grid>
+              <Grid size={{ xs: 12, md: 5 }}>
+                <Stack spacing={2}>
+                  <Typography variant="h6" component="h3">
+                    Invoice
+                  </Typography>
+                  <InvoicePanel kind={kind} lineId={line.id} invoice={line.invoice} />
+                </Stack>
+              </Grid>
+            </Grid>
+          </Box>
+        </Paper>
+      </DialogContent>
+      {onEdit && (
+        <DialogActions>
+          <Stack direction="row" spacing={1} sx={{ flexGrow: 1, paddingInline: 2, paddingBlockEnd: 2 }}>
+            <Button variant="outlined" onClick={onEdit}>
+              Edit Details
+            </Button>
+          </Stack>
+        </DialogActions>
+      )}
+    </Dialog>
+  );
+}

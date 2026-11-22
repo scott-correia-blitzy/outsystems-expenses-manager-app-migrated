@@ -1,0 +1,233 @@
+import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
+import {
+  Alert,
+  Box,
+  Button,
+  Card,
+  CardContent,
+  CircularProgress,
+  InputAdornment,
+  Stack,
+  TextField,
+  useTheme,
+} from '@mui/material';
+import { reference, usdToEur } from '../api/api';
+import { ApiError, MESSAGES, type FieldError, type UsdToEurResult } from '../api/types';
+import { unplacedError, useFeedback } from '../components/Feedback';
+import { PageHeader } from '../layout/PageHeader';
+
+type ConverterField = 'amount' | 'rate';
+type FieldErrors = Record<ConverterField, string>;
+
+const NO_ERRORS: FieldErrors = { amount: '', rate: '' };
+
+const BREADCRUMBS = [{ label: 'Home', to: '/' }, { label: 'USD to EUR Converter' }];
+
+function isPositiveNumber(value: string): boolean {
+  if (value.trim() === '') {
+    return false;
+  }
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0;
+}
+
+function isConverterField(field: string): field is ConverterField {
+  return field === 'amount' || field === 'rate';
+}
+
+export function UsdToEurConverterPage() {
+  const theme = useTheme();
+  const feedback = useFeedback();
+  const [amount, setAmount] = useState('');
+  const [rate, setRate] = useState('');
+  const [errors, setErrors] = useState<FieldErrors>(NO_ERRORS);
+  const [result, setResult] = useState<UsdToEurResult | null>(null);
+  const [convertedAmount, setConvertedAmount] = useState('');
+  const [converting, setConverting] = useState(false);
+  const [rateLoading, setRateLoading] = useState(true);
+  const [badInput, setBadInput] = useState<Record<ConverterField, boolean>>({ amount: false, rate: false });
+  const rateEdited = useRef(false);
+  const amountInput = useRef<HTMLInputElement>(null);
+  const rateInput = useRef<HTMLInputElement>(null);
+  const convertButton = useRef<HTMLButtonElement>(null);
+  const restoreFocus = useRef(false);
+
+  useEffect(() => {
+    if (converting || !restoreFocus.current) {
+      return;
+    }
+    restoreFocus.current = false;
+    if (document.activeElement === null || document.activeElement === document.body) {
+      convertButton.current?.focus();
+    }
+  }, [converting]);
+
+  useEffect(() => {
+    let active = true;
+    setRateLoading(true);
+    reference()
+      .then((ref) => {
+        if (active) {
+          if (!rateEdited.current) {
+            setRate(String(ref.dollarsToEuros));
+          }
+          setRateLoading(false);
+        }
+      })
+      .catch((err: unknown) => {
+        if (active) {
+          feedback.error(err);
+          setRateLoading(false);
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [feedback]);
+
+  const handleAmountChange = (event: ChangeEvent<HTMLInputElement>) => {
+    setAmount(event.target.value);
+    setErrors((prev) => ({ ...prev, amount: '' }));
+  };
+
+  const handleRateChange = (event: ChangeEvent<HTMLInputElement>) => {
+    rateEdited.current = true;
+    setRate(event.target.value);
+    setErrors((prev) => ({ ...prev, rate: '' }));
+  };
+
+  const trackBadInput = (field: ConverterField) => (event: FormEvent<HTMLInputElement>) => {
+    const bad = event.currentTarget.validity.badInput;
+    setBadInput((prev) => (prev[field] === bad ? prev : { ...prev, [field]: bad }));
+  };
+
+  const focusFirstInvalid = (fieldErrors: FieldErrors): boolean => {
+    if (fieldErrors.amount !== '') {
+      amountInput.current?.focus();
+    } else if (fieldErrors.rate !== '') {
+      rateInput.current?.focus();
+    } else {
+      return false;
+    }
+    return true;
+  };
+
+  const handleConvert = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (converting || rateLoading) {
+      return;
+    }
+    const nextErrors: FieldErrors = {
+      amount: isPositiveNumber(amount) ? '' : MESSAGES.USD_AMOUNT_ABOVE_ZERO,
+      rate: isPositiveNumber(rate) ? '' : MESSAGES.RATE_ABOVE_ZERO,
+    };
+    setErrors(nextErrors);
+    setResult(null);
+    if (focusFirstInvalid(nextErrors)) {
+      return;
+    }
+
+    const usd = Number(amount);
+    restoreFocus.current = true;
+    setConverting(true);
+    try {
+      const converted = await usdToEur(usd, Number(rate));
+      setConvertedAmount(String(usd));
+      setResult(converted);
+    } catch (err) {
+      const serverErrors: FieldErrors = { ...NO_ERRORS };
+      let unplaced: ApiError | null = null;
+      if (err instanceof ApiError) {
+        const otherErrors: FieldError[] = [];
+        for (const fieldError of err.fieldErrors ?? []) {
+          if (isConverterField(fieldError.field)) {
+            const current = serverErrors[fieldError.field];
+            serverErrors[fieldError.field] =
+              current === '' ? fieldError.message : `${current}\n${fieldError.message}`;
+          } else {
+            otherErrors.push(fieldError);
+          }
+        }
+        if (otherErrors.length > 0) {
+          unplaced = unplacedError(err, otherErrors);
+        }
+      }
+      if (focusFirstInvalid(serverErrors)) {
+        setErrors(serverErrors);
+        if (unplaced) {
+          feedback.error(unplaced);
+        }
+      } else {
+        feedback.error(err);
+      }
+    } finally {
+      setConverting(false);
+    }
+  };
+
+  return (
+    <>
+      <PageHeader title="USD/EUR Currency Converter" breadcrumbs={BREADCRUMBS} />
+      <Card sx={{ maxWidth: 'sm' }}>
+        <CardContent>
+          <Box component="form" noValidate onSubmit={handleConvert}>
+            <Stack spacing={2}>
+              <TextField
+                label="USD Amount"
+                type="number"
+                value={amount}
+                onChange={handleAmountChange}
+                inputRef={amountInput}
+                error={errors.amount !== ''}
+                helperText={errors.amount || undefined}
+                slotProps={{
+                  input: { endAdornment: <InputAdornment position="end">$</InputAdornment> },
+                  htmlInput: { step: 'any', onInput: trackBadInput('amount') },
+                  inputLabel: { shrink: badInput.amount || undefined },
+                  formHelperText: { sx: { whiteSpace: 'pre-line' } },
+                }}
+              />
+              <TextField
+                label="Exchange Rate USD/EUR"
+                type="number"
+                value={rate}
+                onChange={handleRateChange}
+                inputRef={rateInput}
+                disabled={rateLoading}
+                error={errors.rate !== ''}
+                helperText={errors.rate || undefined}
+                slotProps={{
+                  input: {
+                    endAdornment: rateLoading ? (
+                      <InputAdornment position="end">
+                        <CircularProgress size={theme.spacing(2.5)} aria-label="Loading exchange rate" />
+                      </InputAdornment>
+                    ) : undefined,
+                  },
+                  htmlInput: { step: 'any', onInput: trackBadInput('rate') },
+                  inputLabel: { shrink: badInput.rate || undefined },
+                  formHelperText: { sx: { whiteSpace: 'pre-line' } },
+                }}
+              />
+              <Button
+                ref={convertButton}
+                type="submit"
+                variant="contained"
+                disabled={rateLoading}
+                loading={converting}
+                sx={{ alignSelf: 'flex-start' }}
+              >
+                Convert
+              </Button>
+              {result && (
+                <Alert severity="success" role="status">
+                  {`${convertedAmount}$ using exchange rate of ${String(result.rate)} equals to ${String(result.eur)}€`}
+                </Alert>
+              )}
+            </Stack>
+          </Box>
+        </CardContent>
+      </Card>
+    </>
+  );
+}

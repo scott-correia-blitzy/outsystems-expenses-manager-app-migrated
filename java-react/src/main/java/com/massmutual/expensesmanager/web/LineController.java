@@ -1,0 +1,143 @@
+package com.massmutual.expensesmanager.web;
+
+import com.massmutual.expensesmanager.domain.ReportKind;
+import com.massmutual.expensesmanager.service.AppUserPrincipal;
+import com.massmutual.expensesmanager.service.InvoiceService;
+import com.massmutual.expensesmanager.service.LineService;
+import com.massmutual.expensesmanager.service.model.InvoiceFile;
+import com.massmutual.expensesmanager.service.model.LineView;
+import com.massmutual.expensesmanager.web.dto.LineRequest;
+import jakarta.validation.Valid;
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.text.Normalizer;
+import org.springframework.core.io.InputStreamResource;
+import org.springframework.core.io.Resource;
+import org.springframework.http.ContentDisposition;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.InvalidMediaTypeException;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.util.StringUtils;
+import org.springframework.validation.BindingResult;
+import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestPart;
+import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.multipart.MultipartFile;
+import org.springframework.web.util.UriUtils;
+
+@RestController
+@RequestMapping("/api")
+public class LineController {
+
+    private final LineService lineService;
+    private final InvoiceService invoiceService;
+
+    public LineController(LineService lineService, InvoiceService invoiceService) {
+        this.lineService = lineService;
+        this.invoiceService = invoiceService;
+    }
+
+    @PostMapping(path = "/reports/{kind}/{id}/lines", produces = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<LineView> createLine(@AuthenticationPrincipal AppUserPrincipal principal,
+            @PathVariable ReportKind kind, @PathVariable Long id, @Valid @RequestBody LineRequest body,
+            BindingResult bodyErrors) {
+        LineView line = lineService.create(principal.toCaller(), kind, id, toInput(kind, body, bodyErrors));
+        return ResponseEntity.status(HttpStatus.CREATED).body(line);
+    }
+
+    @PutMapping(path = "/lines/{kind}/{id}", produces = MediaType.APPLICATION_JSON_VALUE)
+    public LineView updateLine(@AuthenticationPrincipal AppUserPrincipal principal,
+            @PathVariable ReportKind kind, @PathVariable Long id, @Valid @RequestBody LineRequest body,
+            BindingResult bodyErrors) {
+        return lineService.update(principal.toCaller(), kind, id, toInput(kind, body, bodyErrors));
+    }
+
+    @DeleteMapping("/lines/{kind}/{id}")
+    public ResponseEntity<Void> deleteLine(@AuthenticationPrincipal AppUserPrincipal principal,
+            @PathVariable ReportKind kind, @PathVariable Long id) {
+        lineService.delete(principal.toCaller(), kind, id);
+        return ResponseEntity.noContent().build();
+    }
+
+    // Optional so ownership and Draft checks in InvoiceService run before the missing-file 422.
+    @PutMapping("/lines/{kind}/{id}/invoice")
+    public ResponseEntity<Void> uploadInvoice(@AuthenticationPrincipal AppUserPrincipal principal,
+            @PathVariable ReportKind kind, @PathVariable Long id,
+            @RequestPart(name = "file", required = false) MultipartFile file) throws IOException {
+        invoiceService.upload(principal.toCaller(), kind, id,
+                file == null ? null : file.getOriginalFilename(),
+                file == null ? null : file.getContentType(),
+                file == null ? null : file.getBytes());
+        return ResponseEntity.noContent().build();
+    }
+
+    @GetMapping("/lines/{kind}/{id}/invoice")
+    public ResponseEntity<Resource> downloadInvoice(@AuthenticationPrincipal AppUserPrincipal principal,
+            @PathVariable ReportKind kind, @PathVariable Long id) {
+        InvoiceFile invoice = invoiceService.download(principal.toCaller(), kind, id);
+        byte[] content = invoice.content() == null ? new byte[0] : invoice.content();
+        return ResponseEntity.ok()
+                .contentType(mediaTypeOf(invoice.contentType()))
+                .contentLength(content.length)
+                .header(HttpHeaders.CONTENT_DISPOSITION, attachment(invoice.filename()))
+                // An InputStreamResource is logged by its description, not its bytes, and gets no Range handling.
+                .body(new InputStreamResource(new ByteArrayInputStream(content)));
+    }
+
+    // Body errors travel with the input, so access checks run first and one 422 lists every violated rule.
+    private static LineService.LineInput toInput(ReportKind kind, LineRequest request, BindingResult bodyErrors) {
+        return new LineService.LineInput(
+                kind == ReportKind.EXPENSE ? request.expenseTypeId() : request.earningTypeId(),
+                request.currencyId(),
+                request.amount(),
+                request.kilometers(),
+                request.title(),
+                request.description(),
+                request.date(),
+                ApiExceptionHandler.violations(bodyErrors));
+    }
+
+    private static String attachment(String filename) {
+        ContentDisposition.Builder disposition = ContentDisposition.attachment();
+        if (!StringUtils.hasText(filename)) {
+            return disposition.build().toString();
+        }
+        if (isPrintableAscii(filename)) {
+            return disposition.filename(filename).build().toString();
+        }
+        // Spring's charset option would RFC 2047-encode filename=, so clients ignoring filename* get an ASCII fallback.
+        return disposition.filename(asciiFallback(filename)).build()
+                + "; filename*=UTF-8''" + UriUtils.encode(filename, StandardCharsets.UTF_8);
+    }
+
+    private static boolean isPrintableAscii(String value) {
+        return value.chars().allMatch(c -> c >= ' ' && c <= '~');
+    }
+
+    private static String asciiFallback(String filename) {
+        String unaccented = Normalizer.normalize(filename, Normalizer.Form.NFD).replaceAll("\\p{M}", "");
+        return unaccented.replaceAll("[^ -~]", "_");
+    }
+
+    private static MediaType mediaTypeOf(String contentType) {
+        if (!StringUtils.hasText(contentType)) {
+            return MediaType.APPLICATION_OCTET_STREAM;
+        }
+        try {
+            MediaType mediaType = MediaType.parseMediaType(contentType);
+            return mediaType.isConcrete() ? mediaType : MediaType.APPLICATION_OCTET_STREAM;
+        } catch (InvalidMediaTypeException ex) {
+            return MediaType.APPLICATION_OCTET_STREAM;
+        }
+    }
+}

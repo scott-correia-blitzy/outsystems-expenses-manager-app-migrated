@@ -1,0 +1,548 @@
+{
+  "users": [
+    {
+      "username": "em_user1",
+      "name": "John Smith",
+      "password": "123456",
+      "roles": ["User"]
+    },
+    {
+      "username": "em_admin",
+      "name": "EM_Admin",
+      "password": "123456",
+      "roles": ["Administrator"]
+    },
+    {
+      "username": "michael.davis",
+      "name": "Michael Davis",
+      "password": null,
+      "roles": ["User"]
+    },
+    {
+      "username": "sarah.lee",
+      "name": "Sarah Lee",
+      "password": null,
+      "roles": ["User"]
+    }
+  ],
+  "reports": [
+    {
+      "kind": "expense",
+      "code": "1/2024 EX",
+      "title": "Client Meetings Expenses",
+      "owner": "em_user1",
+      "status": "Submitted",
+      "createdOn": "2024-03-02T09:00:00",
+      "submitedOn": "2024-03-03T09:00:00",
+      "processedOn": null,
+      "updatedOn": "2024-03-03T09:00:00",
+      "lines": [
+        {
+          "date": "2024-03-01",
+          "title": "Client lunch",
+          "description": "",
+          "typeId": 1,
+          "currencyId": 1,
+          "amount": 80.00,
+          "kilometers": null
+        },
+        {
+          "date": "2024-03-01",
+          "title": "Team dinner",
+          "description": "",
+          "typeId": 1,
+          "currencyId": 1,
+          "amount": 50.00,
+          "kilometers": null
+        },
+        {
+          "date": "2024-03-02",
+          "title": "Client visit mileage",
+          "description": "",
+          "typeId": 3,
+          "currencyId": 1,
+          "amount": null,
+          "kilometers": 19.05
+        }
+      ]
+    },
+    {
+      "kind": "expense",
+      "code": "2/2024 EX",
+      "title": "Business Travel Expenses",
+      "owner": "em_user1",
+      "status": "Submitted",
+      "createdOn": "2024-03-05T09:00:00",
+      "submitedOn": "2024-03-06T09:00:00",
+      "processedOn": null,
+      "updatedOn": "2024-03-06T09:00:00",
+      "lines": [
+        {
+          "date": "2024-03-04",
+          "title": "Train tickets",
+          "description": "",
+          "typeId": 2,
+          "currencyId": 1,
+          "amount": 350.00,
+          "kilometers": null
+        },
+        {
+          "date": "2024-03-04",
+          "title": "Airport transfer",
+          "description": "",
+          "typeId": 2,
+          "currencyId": 1,
+          "amount": 250.00,
+          "kilometers": null
+        }
+      ]
+    },
+    {
+      "kind": "expense",
+      "code": "3/2024 EX",
+      "title": "Transportation Expenses",
+      "owner": "em_user1",
+      "status": "Submitted",
+      "createdOn": "2024-03-09T09:00:00",
+      "submitedOn": "2024-03-10T09:00:00",
+      "processedOn": null,
+      "updatedOn": "2024-03-10T09:00:00",
+      "lines": [
+        {
+          "date": "2024-03-08",
+          "title": "Taxi",
+          "description": "",
+          "typeId": 4,
+          "currencyId": 1,
+          "amount": 30.00,
+          "kilometers": null
+        },
+        {
+          "date": "2024-03-08",
+          "title": "Parking",
+          "description": "",
+          "typeId": 4,
+          "currencyId": 1,
+          "amount": 20.00,
+          "kilometers": null
+        }
+      ]
+    },
+    {
+      "kind": "expense",
+      "code": "4/2024 EX",
+      "title": "Conference Registration",
+      "owner": "michael.davis",
+      "status": "Submitted",
+      "createdOn": "2024-03-12T09:00:00",
+      "submitedOn": "2024-03-13T09:00:00",
+      "processedOn": null,
+      "updatedOn": "2024-03-13T09:00:00",
+      "lines": [
+        {
+          "date": "2024-03-11",
+          "title": "Conference Registration",
+          "description": "",
+          "typeId": 4,
+          "currencyId": 1,
+          "amount": 120.00,
+          "kilometers": null
+        }
+      ]
+    },
+    {
+      "kind": "expense",
+      "code": "5/2024 EX",
+      "title": "Training Materials",
+      "owner": "sarah.lee",
+      "status": "Submitted",
+      "createdOn": "2024-03-16T09:00:00",
+      "submitedOn": "2024-03-17T09:00:00",
+      "processedOn": null,
+      "updatedOn": "2024-03-17T09:00:00",
+      "lines": [
+        {
+          "date": "2024-03-15",
+          "title": "Training Materials",
+          "description": "",
+          "typeId": 4,
+          "currencyId": 1,
+          "amount": 75.00,
+          "kilometers": null
+        }
+      ]
+    },
+    {
+      "kind": "expense",
+      "code": "6/2024 EX",
+      "title": "Educational Expenses",
+      "owner": "sarah.lee",
+      "status": "Submitted",
+      "createdOn": "2024-03-23T09:00:00",
+      "submitedOn": "2024-03-24T09:00:00",
+      "processedOn": null,
+      "updatedOn": "2024-03-24T09:00:00",
+      "lines": [
+        {
+          "date": "2024-03-22",
+          "title": "Educational Expenses",
+          "description": "",
+          "typeId": 4,
+          "currencyId": 1,
+          "amount": 200.00,
+          "kilometers": null
+        }
+      ]
+    },
+    {
+      "kind": "expense",
+      "code": "7/2024 EX",
+      "title": "Household Expenses",
+      "owner": "michael.davis",
+      "status": "Submitted",
+      "createdOn": "2024-04-01T09:00:00",
+      "submitedOn": "2024-04-02T09:00:00",
+      "processedOn": null,
+      "updatedOn": "2024-04-02T09:00:00",
+      "lines": [
+        {
+          "date": "2024-03-31",
+          "title": "Household Expenses",
+          "description": "",
+          "typeId": 4,
+          "currencyId": 1,
+          "amount": 250.00,
+          "kilometers": null
+        }
+      ]
+    },
+    {
+      "kind": "expense",
+      "code": "8/2024 EX",
+      "title": "Office Supplies Purchase",
+      "owner": "em_user1",
+      "status": "Declined",
+      "createdOn": "2024-03-28T09:00:00",
+      "submitedOn": "2024-03-29T09:00:00",
+      "processedOn": "2024-03-30T09:00:00",
+      "updatedOn": "2024-03-30T09:00:00",
+      "lines": [
+        {
+          "date": "2024-03-27",
+          "title": "Office supplies",
+          "description": "",
+          "typeId": 4,
+          "currencyId": 1,
+          "amount": 80.00,
+          "kilometers": null
+        }
+      ]
+    },
+    {
+      "kind": "expense",
+      "code": "9/2024 EX",
+      "title": "Business Trip Expenses",
+      "owner": "em_user1",
+      "status": "Approved",
+      "createdOn": "2024-04-01T09:00:00",
+      "submitedOn": "2024-04-02T09:00:00",
+      "processedOn": "2024-04-03T09:00:00",
+      "updatedOn": "2024-04-03T09:00:00",
+      "lines": [
+        {
+          "date": "2024-04-02",
+          "title": "Dining Expenses",
+          "description": "Meals during the business trip.",
+          "typeId": 1,
+          "currencyId": 1,
+          "amount": 200.00,
+          "kilometers": null
+        },
+        {
+          "date": "2024-04-02",
+          "title": "Hotel Accommodation",
+          "description": "Stay at a business hotel during a trip.",
+          "typeId": 2,
+          "currencyId": 1,
+          "amount": 300.00,
+          "kilometers": null
+        }
+      ]
+    },
+    {
+      "kind": "expense",
+      "code": "10/2024 EX",
+      "title": "Home Office",
+      "owner": "em_user1",
+      "status": "Draft",
+      "createdOn": "2024-04-10T09:00:00",
+      "submitedOn": null,
+      "processedOn": null,
+      "updatedOn": "2024-04-10T09:00:00",
+      "lines": []
+    },
+    {
+      "kind": "expense",
+      "code": "11/2024 EX",
+      "title": "Hotel",
+      "owner": "em_user1",
+      "status": "Draft",
+      "createdOn": "2024-04-15T09:00:00",
+      "submitedOn": null,
+      "processedOn": null,
+      "updatedOn": "2024-04-15T09:00:00",
+      "lines": []
+    },
+    {
+      "kind": "expense",
+      "code": "12/2024 EX",
+      "title": "London Trip",
+      "owner": "em_user1",
+      "status": "Draft",
+      "createdOn": "2024-05-23T15:18:38",
+      "submitedOn": null,
+      "processedOn": null,
+      "updatedOn": "2024-05-23T15:18:38",
+      "lines": [
+        {
+          "date": "2024-05-21",
+          "title": "Flight tickets",
+          "description": "Tickets for flight to London",
+          "typeId": 2,
+          "currencyId": 1,
+          "amount": 42.00,
+          "kilometers": null
+        }
+      ]
+    },
+    {
+      "kind": "earning",
+      "code": "1/2024 EA",
+      "title": "Salary Payments",
+      "owner": "em_user1",
+      "status": "Submitted",
+      "createdOn": "2024-03-01T09:00:00",
+      "submitedOn": "2024-03-02T09:00:00",
+      "processedOn": null,
+      "updatedOn": "2024-03-02T09:00:00",
+      "lines": [
+        {
+          "date": "2024-02-29",
+          "title": "Monthly salary",
+          "description": "",
+          "typeId": 1,
+          "currencyId": 1,
+          "amount": 3000.00,
+          "kilometers": null
+        }
+      ]
+    },
+    {
+      "kind": "earning",
+      "code": "2/2024 EA",
+      "title": "Investment Income",
+      "owner": "em_user1",
+      "status": "Submitted",
+      "createdOn": "2024-03-03T09:00:00",
+      "submitedOn": "2024-03-04T09:00:00",
+      "processedOn": null,
+      "updatedOn": "2024-03-04T09:00:00",
+      "lines": [
+        {
+          "date": "2024-03-02",
+          "title": "Dividends",
+          "description": "",
+          "typeId": 2,
+          "currencyId": 1,
+          "amount": 200.00,
+          "kilometers": null
+        }
+      ]
+    },
+    {
+      "kind": "earning",
+      "code": "3/2024 EA",
+      "title": "Service Income",
+      "owner": "em_user1",
+      "status": "Draft",
+      "createdOn": "2024-03-05T09:00:00",
+      "submitedOn": null,
+      "processedOn": null,
+      "updatedOn": "2024-03-05T09:00:00",
+      "lines": []
+    },
+    {
+      "kind": "earning",
+      "code": "4/2024 EA",
+      "title": "Miscellaneous Income",
+      "owner": "em_user1",
+      "status": "Draft",
+      "createdOn": "2024-03-09T09:00:00",
+      "submitedOn": null,
+      "processedOn": null,
+      "updatedOn": "2024-03-09T09:00:00",
+      "lines": [
+        {
+          "date": "2024-03-08",
+          "title": "Miscellaneous income",
+          "description": "",
+          "typeId": 4,
+          "currencyId": 1,
+          "amount": 900.00,
+          "kilometers": null
+        }
+      ]
+    },
+
+    {
+      "kind": "earning",
+      "code": "5/2024 EA",
+      "title": "Freelance Project",
+      "owner": "michael.davis",
+      "status": "Submitted",
+      "createdOn": "2024-03-14T09:00:00",
+      "submitedOn": "2024-03-15T09:00:00",
+      "processedOn": null,
+      "updatedOn": "2024-03-15T09:00:00",
+      "lines": [
+        {
+          "date": "2024-03-13",
+          "title": "Freelance Project",
+          "description": "",
+          "typeId": 3,
+          "currencyId": 1,
+          "amount": 400.00,
+          "kilometers": null
+        }
+      ]
+    },
+    {
+      "kind": "earning",
+      "code": "6/2024 EA",
+      "title": "Stock Dividends",
+      "owner": "sarah.lee",
+      "status": "Submitted",
+      "createdOn": "2024-03-18T09:00:00",
+      "submitedOn": "2024-03-19T09:00:00",
+      "processedOn": null,
+      "updatedOn": "2024-03-19T09:00:00",
+      "lines": [
+        {
+          "date": "2024-03-17",
+          "title": "Stock Dividends",
+          "description": "",
+          "typeId": 2,
+          "currencyId": 1,
+          "amount": 150.00,
+          "kilometers": null
+        }
+      ]
+    },
+    {
+      "kind": "earning",
+      "code": "7/2024 EA",
+      "title": "Monthly Salary",
+      "owner": "michael.davis",
+      "status": "Submitted",
+      "createdOn": "2024-03-25T09:00:00",
+      "submitedOn": "2024-03-26T09:00:00",
+      "processedOn": null,
+      "updatedOn": "2024-03-26T09:00:00",
+      "lines": [
+        {
+          "date": "2024-03-24",
+          "title": "Monthly Salary",
+          "description": "",
+          "typeId": 1,
+          "currencyId": 1,
+          "amount": 2500.00,
+          "kilometers": null
+        }
+      ]
+    },
+    {
+      "kind": "earning",
+      "code": "8/2024 EA",
+      "title": "Bonus Payment",
+      "owner": "sarah.lee",
+      "status": "Submitted",
+      "createdOn": "2024-03-29T09:00:00",
+      "submitedOn": "2024-03-30T09:00:00",
+      "processedOn": null,
+      "updatedOn": "2024-03-30T09:00:00",
+      "lines": [
+        {
+          "date": "2024-03-28",
+          "title": "Bonus Payment",
+          "description": "",
+          "typeId": 4,
+          "currencyId": 1,
+          "amount": 300.00,
+          "kilometers": null
+        }
+      ]
+    },
+    {
+      "kind": "earning",
+      "code": "9/2024 EA",
+      "title": "Consulting Fees",
+      "owner": "em_user1",
+      "status": "Submitted",
+      "createdOn": "2024-04-01T09:00:00",
+      "submitedOn": "2024-04-02T09:00:00",
+      "processedOn": null,
+      "updatedOn": "2024-04-02T09:00:00",
+      "lines": [
+        {
+          "date": "2024-03-28",
+          "title": "Consulting Service for Client A",
+          "description": "Fee earned for providing consulting services to Client A.",
+          "typeId": 3,
+          "currencyId": 1,
+          "amount": 500.00,
+          "kilometers": null
+        }
+      ]
+    },
+    {
+      "kind": "earning",
+      "code": "10/2024 EA",
+      "title": "Sales Commission",
+      "owner": "em_user1",
+      "status": "Submitted",
+      "createdOn": "2024-04-05T09:00:00",
+      "submitedOn": "2024-04-06T09:00:00",
+      "processedOn": null,
+      "updatedOn": "2024-04-06T09:00:00",
+      "lines": [
+        {
+          "date": "2024-03-29",
+          "title": "Sales commission",
+          "description": "",
+          "typeId": 1,
+          "currencyId": 1,
+          "amount": 1000.00,
+          "kilometers": null
+        }
+      ]
+    }
+  ],
+  "blogPosts": [
+    {
+      "title": "Welcome to Expenses Manager",
+      "description": "Record your expenses and earnings in reports, then submit them for approval.",
+      "author": "em_admin",
+      "createdOn": "2024-03-16T10:00:00",
+      "updatedOn": "2024-03-16T10:00:00",
+      "isActive": true
+    },
+    {
+      "title": "Mileage reimbursement rate",
+      "description": "Kilometers expenses are reimbursed at 0.37 EUR per km.",
+      "author": "em_admin",
+      "createdOn": "2024-03-20T10:00:00",
+      "updatedOn": "2024-03-20T10:00:00",
+      "isActive": true
+    }
+  ]
+}

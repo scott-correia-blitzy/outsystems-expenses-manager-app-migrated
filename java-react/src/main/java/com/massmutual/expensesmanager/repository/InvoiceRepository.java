@@ -1,0 +1,60 @@
+package com.massmutual.expensesmanager.repository;
+
+import com.massmutual.expensesmanager.domain.InvoiceEntity;
+import java.sql.Blob;
+import java.time.LocalDateTime;
+import java.util.Collection;
+import java.util.List;
+import java.util.Optional;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.NoRepositoryBean;
+import org.springframework.data.repository.query.Param;
+
+@NoRepositoryBean
+public interface InvoiceRepository<I extends InvoiceEntity> extends JpaRepository<I, Long> {
+
+    interface InvoiceMeta {
+        Long getId();
+
+        String getFilename();
+
+        String getFiletype();
+
+        LocalDateTime getDatetime();
+    }
+
+    interface InvoiceDownload {
+        String getFilename();
+
+        String getFiletype();
+
+        Blob getContent();
+    }
+
+    // Metadata only: line views never need the invoice bytes.
+    @Query("select i.id as id, i.filename as filename, i.filetype as filetype, i.datetime as datetime"
+            + " from #{#entityName} i where i.id in :ids")
+    List<InvoiceMeta> findInfoByIds(@Param("ids") Collection<Long> ids);
+
+    @Query("select i.id as id, i.filename as filename, i.filetype as filetype, i.datetime as datetime"
+            + " from #{#entityName} i where i.id = :id")
+    Optional<InvoiceMeta> findInfoById(@Param("id") Long id);
+
+    // Native, so Content arrives as a Blob of known length instead of through the byte[] mapping's growing buffer.
+    @Query(value = "select Filename as filename, Filetype as filetype, Content as content"
+            + " from #{#entityName} where Id = :id", nativeQuery = true)
+    Optional<InvoiceDownload> findDownloadById(@Param("id") Long id);
+
+    // A bulk update, because assigning Content on a loaded invoice would first read the old bytes.
+    @Modifying
+    @Query("update #{#entityName} i set i.content = :content, i.filename = :filename, i.filetype = :filetype,"
+            + " i.datetime = :datetime where i.id = :id")
+    int replace(
+            @Param("id") Long id,
+            @Param("content") byte[] content,
+            @Param("filename") String filename,
+            @Param("filetype") String filetype,
+            @Param("datetime") LocalDateTime datetime);
+}

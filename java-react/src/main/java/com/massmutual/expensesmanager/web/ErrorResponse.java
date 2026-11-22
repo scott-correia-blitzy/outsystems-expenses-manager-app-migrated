@@ -1,0 +1,53 @@
+package com.massmutual.expensesmanager.web;
+
+import com.fasterxml.jackson.annotation.JsonInclude;
+import com.massmutual.expensesmanager.service.ApiException;
+import com.massmutual.expensesmanager.service.LegacyMessages;
+import com.massmutual.expensesmanager.service.model.FieldViolation;
+import org.springframework.http.HttpStatus;
+
+import java.util.List;
+
+@JsonInclude(JsonInclude.Include.NON_NULL)
+public record ErrorResponse(int status, String code, String message, List<FieldViolation> fieldErrors) {
+
+    private static final int UNPROCESSABLE_ENTITY = 422;
+    private static final int INTERNAL_SERVER_ERROR = 500;
+
+    public static ErrorResponse of(int status, String code, String message) {
+        return new ErrorResponse(status, code, message, null);
+    }
+
+    // A bare status has no detail: a client error keeps its status, and a refused method answers as an unmapped path.
+    public static ErrorResponse forStatus(int status) {
+        return switch (status) {
+            case 401 -> of(status, ApiException.UNAUTHENTICATED, LegacyMessages.UNAUTHENTICATED);
+            case 403 -> of(status, ApiException.FORBIDDEN, LegacyMessages.NO_PERMISSIONS);
+            case 404, 405 -> of(HttpStatus.NOT_FOUND.value(), ApiException.NOT_FOUND, LegacyMessages.NOT_FOUND);
+            case 413 -> of(status, ApiException.PAYLOAD_TOO_LARGE, LegacyMessages.FILE_TOO_LARGE);
+            case 415 -> of(status, ApiException.UNSUPPORTED_MEDIA_TYPE, LegacyMessages.INVALID_VALUE);
+            case UNPROCESSABLE_ENTITY -> validation(LegacyMessages.INVALID_VALUE, List.of());
+            default -> HttpStatus.Series.resolve(status) == HttpStatus.Series.CLIENT_ERROR
+                    ? of(status, clientErrorCode(status), LegacyMessages.INVALID_VALUE)
+                    : of(INTERNAL_SERVER_ERROR, ApiExceptionHandler.INTERNAL_ERROR, LegacyMessages.INTERNAL_ERROR);
+        };
+    }
+
+    private static String clientErrorCode(int status) {
+        HttpStatus known = HttpStatus.resolve(status);
+        return known == null ? HttpStatus.Series.CLIENT_ERROR.name() : known.name();
+    }
+
+    public static ErrorResponse validation(String message, List<FieldViolation> fieldErrors) {
+        return new ErrorResponse(UNPROCESSABLE_ENTITY, ApiException.VALIDATION_FAILED, message, orEmpty(fieldErrors));
+    }
+
+    public static ErrorResponse from(ApiException ex) {
+        List<FieldViolation> fieldErrors = ex.status() == UNPROCESSABLE_ENTITY ? orEmpty(ex.fieldErrors()) : null;
+        return new ErrorResponse(ex.status(), ex.code(), ex.getMessage(), fieldErrors);
+    }
+
+    private static List<FieldViolation> orEmpty(List<FieldViolation> fieldErrors) {
+        return fieldErrors == null ? List.of() : List.copyOf(fieldErrors);
+    }
+}

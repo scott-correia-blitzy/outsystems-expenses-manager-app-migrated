@@ -1,0 +1,149 @@
+import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
+import { Box, Button, Card, CardContent, InputAdornment, Stack, TextField } from '@mui/material';
+import { mileage } from '../api/api';
+import { ApiError, MESSAGES, type MileageResult } from '../api/types';
+import { LiveStatus, unplacedError, useFeedback } from '../components/Feedback';
+import { formatEuro } from '../format/format';
+import { PageHeader } from '../layout/PageHeader';
+
+const KM_FIELD = 'km';
+
+function parseDistance(raw: string): number | null {
+  if (raw.trim() === '') {
+    return null;
+  }
+  const value = Number(raw);
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+export function MileageReimbursementPage() {
+  const feedback = useFeedback();
+  const [km, setKm] = useState('');
+  const [result, setResult] = useState<MileageResult | null>(null);
+  // The result shown when Convert was pressed stays silent, so only a fresh conversion is announced.
+  const [staleResult, setStaleResult] = useState<MileageResult | null>(null);
+  const [error, setError] = useState('');
+  const [converting, setConverting] = useState(false);
+  const [kmBadInput, setKmBadInput] = useState(false);
+  const latestRequest = useRef(0);
+  const kmInput = useRef<HTMLInputElement>(null);
+  const convertButton = useRef<HTMLButtonElement>(null);
+  const restoreFocus = useRef(false);
+
+  useEffect(() => {
+    if (converting || !restoreFocus.current) {
+      return;
+    }
+    restoreFocus.current = false;
+    if (document.activeElement === null || document.activeElement === document.body) {
+      convertButton.current?.focus();
+    }
+  }, [converting]);
+
+  const handleKmChange = (event: ChangeEvent<HTMLInputElement>) => {
+    latestRequest.current += 1;
+    setKm(event.target.value);
+    setResult(null);
+    setError('');
+    setConverting(false);
+  };
+
+  // Unparsable text reads as '' (so MUI drops the label and React skips onChange); the input event still reports it.
+  const handleKmInput = (event: FormEvent<HTMLInputElement>) => {
+    setKmBadInput(event.currentTarget.validity.badInput);
+  };
+
+  const convert = async (distance: number) => {
+    latestRequest.current += 1;
+    const requestId = latestRequest.current;
+    setError('');
+    restoreFocus.current = true;
+    setConverting(true);
+    try {
+      const converted = await mileage(distance);
+      if (requestId === latestRequest.current) {
+        setResult(converted);
+      }
+    } catch (err) {
+      if (requestId === latestRequest.current) {
+        const fieldErrors = err instanceof ApiError ? (err.fieldErrors ?? []) : [];
+        const kmError = fieldErrors
+          .filter((f) => f.field === KM_FIELD)
+          .map((f) => f.message)
+          .join('\n');
+        const unplaced = fieldErrors.filter((f) => f.field !== KM_FIELD);
+        if (kmError === '') {
+          feedback.error(err);
+        } else {
+          setError(kmError);
+          kmInput.current?.focus();
+          const toastError = err instanceof ApiError && unplaced.length > 0 ? unplacedError(err, unplaced) : null;
+          if (toastError) {
+            feedback.error(toastError);
+          }
+        }
+      }
+    } finally {
+      if (requestId === latestRequest.current) {
+        setConverting(false);
+      }
+    }
+  };
+
+  const handleConvert = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const distance = parseDistance(km);
+    if (distance === null) {
+      setResult(null);
+      setError(MESSAGES.DISTANCE_POSITIVE);
+      kmInput.current?.focus();
+      return;
+    }
+    setStaleResult(result);
+    void convert(distance);
+  };
+
+  const announcement =
+    result !== null && result !== staleResult ? `Result in EUR: ${formatEuro(result.eur)}` : '';
+
+  return (
+    <>
+      <PageHeader title="Mileage Reimbursement" />
+      <Card sx={{ maxWidth: 'sm' }}>
+        <CardContent>
+          <Box component="form" noValidate onSubmit={handleConvert}>
+            <Stack spacing={2} alignItems="flex-start">
+              <TextField
+                label="Mileage"
+                type="number"
+                name={KM_FIELD}
+                value={km}
+                onChange={handleKmChange}
+                inputRef={kmInput}
+                error={error !== ''}
+                helperText={error || undefined}
+                fullWidth
+                slotProps={{
+                  input: { endAdornment: <InputAdornment position="end">km</InputAdornment> },
+                  htmlInput: { step: 'any', onInput: handleKmInput },
+                  inputLabel: { shrink: kmBadInput || undefined },
+                  formHelperText: { sx: { whiteSpace: 'pre-line' } },
+                }}
+              />
+              <TextField
+                label="Result in EUR"
+                value={result ? formatEuro(result.eur) : ''}
+                fullWidth
+                slotProps={{ input: { readOnly: true } }}
+              />
+              <Button ref={convertButton} type="submit" variant="contained" loading={converting}>
+                Convert
+              </Button>
+            </Stack>
+          </Box>
+        </CardContent>
+      </Card>
+      <LiveStatus message={announcement} />
+    </>
+  );
+}
