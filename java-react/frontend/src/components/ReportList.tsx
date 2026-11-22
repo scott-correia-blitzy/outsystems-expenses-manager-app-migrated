@@ -21,6 +21,8 @@ import {
   ToggleButton,
   ToggleButtonGroup,
   Typography,
+  useMediaQuery,
+  useTheme,
   type SvgIconProps,
   type Theme,
 } from '@mui/material';
@@ -176,7 +178,7 @@ type ReportRowProps = {
   columns: Column[];
   gridColumns: number;
   idBase: string;
-  expanded: boolean;
+  requested: boolean;
   detail: ReportDetail | undefined;
   deciding: boolean;
   onToggle: (id: number, expanded: boolean) => void;
@@ -192,7 +194,7 @@ function ReportRow({
   columns,
   gridColumns,
   idBase,
-  expanded,
+  requested,
   detail,
   deciding,
   onToggle,
@@ -200,20 +202,38 @@ function ReportRow({
   onOpen,
   onViewLine,
 }: ReportRowProps) {
+  const theme = useTheme();
   const canDecide = mode === 'admin' && row.status === 'Submitted';
+  // Opens once lines are loaded, so it animates to its final height; stays open while they reload.
+  const [opened, setOpened] = useState(false);
+  const open = requested && (detail !== undefined || opened);
+  if (open !== opened) {
+    setOpened(open);
+  }
+  const pending = requested && !open;
   return (
     <Accordion
       disableGutters
       square
       elevation={0}
-      expanded={expanded}
-      onChange={(_event, isExpanded) => onToggle(row.id, isExpanded)}
+      expanded={open}
+      onChange={() => onToggle(row.id, !requested)}
       slotProps={{ heading: { component: 'h2' }, transition: { unmountOnExit: true } }}
     >
       <AccordionSummary
         id={`${idBase}-${row.id}-summary`}
         aria-controls={`${idBase}-${row.id}-details`}
-        expandIcon={<ExpandIcon color="primary" />}
+        aria-busy={pending}
+        expandIcon={
+          pending ? (
+            <CircularProgress size={theme.spacing(3)} aria-label="Loading report lines" />
+          ) : (
+            <ExpandIcon color="primary" />
+          )
+        }
+        sx={{
+          '&:hover:not(.Mui-focusVisible)': { bgcolor: 'action.hover' },
+        }}
       >
         <Grid
           container
@@ -309,7 +329,9 @@ export function ReportList({ mode, kind, onDecided }: ReportListProps) {
   const [decisionFocus, setDecisionFocus] = useState<DecisionFocus | null>(null);
   const searchInput = useRef<HTMLInputElement>(null);
   const [reference, setReference] = useState<ReferenceData | null>(null);
-  const [viewer, setViewer] = useState<{ kind: Kind; line: LineView } | null>(null);
+  const [viewer, setViewer] = useState<{ kind: Kind; line: LineView; open: boolean } | null>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const [heldBlockSize, setHeldBlockSize] = useState<number | null>(null);
 
   // Reset during render so rows and details of the previous kind are never shown with the new one.
   const [listedKind, setListedKind] = useState(kind);
@@ -322,6 +344,8 @@ export function ReportList({ mode, kind, onDecided }: ReportListProps) {
     setPage(0);
     setViewer(null);
     setDecisionFocus(null);
+    // The DOM still holds the previous kind's list; keeping its height stops the page shrinking and losing its scroll.
+    setHeldBlockSize(bodyRef.current?.getBoundingClientRect().height ?? null);
   }
 
   const shownKind = useRef(kind);
@@ -362,6 +386,7 @@ export function ReportList({ mode, kind, onDecided }: ReportListProps) {
         if (!cancelled) {
           setLoading(false);
           setSettledLoad(loadId);
+          setHeldBlockSize(null);
         }
       });
     return () => {
@@ -503,7 +528,7 @@ export function ReportList({ mode, kind, onDecided }: ReportListProps) {
 
   const viewReportLine = async (line: LineView) => {
     // Set before the reference loads; a kind switch clears it, so a late reply opens nothing.
-    const pending = { kind, line };
+    const pending = { kind, line, open: true };
     setViewer(pending);
     if (reference) {
       return;
@@ -516,18 +541,23 @@ export function ReportList({ mode, kind, onDecided }: ReportListProps) {
     }
   };
 
+  const statusVertical = useMediaQuery((theme: Theme) => theme.breakpoints.down('sm'), { noSsr: true });
+  const statusFullWidth = useMediaQuery((theme: Theme) => theme.breakpoints.down('md'), { noSsr: true });
+
   const filterBar = (
     <Stack
       direction={{ xs: 'column', md: 'row' }}
       spacing={2}
       useFlexGap
       alignItems={{ xs: 'stretch', md: 'flex-end' }}
-      sx={{ flexWrap: 'wrap' }}
+      sx={{ flexWrap: { md: 'wrap' } }}
     >
       <ToggleButtonGroup
         exclusive
         size="small"
         color="primary"
+        orientation={statusVertical ? 'vertical' : 'horizontal'}
+        fullWidth={statusFullWidth}
         value={status}
         onChange={changeStatus}
         aria-label="Filter by status"
@@ -541,13 +571,14 @@ export function ReportList({ mode, kind, onDecided }: ReportListProps) {
       <Stack
         role="group"
         aria-labelledby={rangeLabelId}
-        spacing={0.5}
+        spacing={1}
+        useFlexGap
         sx={{ flexGrow: 1, minInlineSize: (theme) => ({ md: theme.spacing(36) }) }}
       >
         <Typography id={rangeLabelId} variant="caption" color="text.secondary">
           Filter by date range
         </Typography>
-        <Stack direction="row" spacing={1} useFlexGap>
+        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} useFlexGap>
           <TextField
             type="date"
             size="small"
@@ -615,7 +646,7 @@ export function ReportList({ mode, kind, onDecided }: ReportListProps) {
         )}
       </TextField>
       <Paper variant="outlined" sx={{ display: { xs: 'none', md: 'block' } }}>
-        <Stack direction="row" alignItems="center" sx={{ paddingInline: 2, paddingBlock: 1.5 }}>
+        <Stack direction="row" alignItems="center" sx={{ paddingInline: 2, paddingBlock: 2 }}>
           <Grid container columns={gridColumns} columnSpacing={2} sx={{ flexGrow: 1 }}>
             {columns.map((column) => {
               const active = sort?.column === column.key;
@@ -648,7 +679,7 @@ export function ReportList({ mode, kind, onDecided }: ReportListProps) {
   let body: ReactNode;
   if (rows.length === 0 && loading) {
     body = (
-      <Stack alignItems="center" sx={{ paddingBlock: 4 }}>
+      <Stack alignItems="center" sx={{ paddingBlock: 4, minBlockSize: heldBlockSize ?? undefined }}>
         <CircularProgress aria-label="Loading reports" />
       </Stack>
     );
@@ -681,7 +712,7 @@ export function ReportList({ mode, kind, onDecided }: ReportListProps) {
               columns={columns}
               gridColumns={gridColumns}
               idBase={idBase}
-              expanded={expandedId === row.id}
+              requested={expandedId === row.id}
               detail={details[row.id]}
               deciding={deciding}
               onToggle={toggleRow}
@@ -722,14 +753,14 @@ export function ReportList({ mode, kind, onDecided }: ReportListProps) {
         nouns={['report', 'reports']}
         message={statusMessage}
       />
-      {body}
+      <Box ref={bodyRef}>{body}</Box>
       {viewer && reference && (
         <LineViewDialog
-          open
+          open={viewer.open}
           kind={viewer.kind}
           line={viewer.line}
           vatRate={reference.vatRate}
-          onClose={() => setViewer(null)}
+          onClose={() => setViewer((current) => current && { ...current, open: false })}
         />
       )}
     </Stack>

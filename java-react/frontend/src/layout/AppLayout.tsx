@@ -319,7 +319,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
               </Stack>
               <Stack
                 direction="row"
-                spacing={1.5}
+                spacing={1}
                 useFlexGap
                 alignItems="center"
                 sx={{ minWidth: 0, maxWidth: '100%' }}

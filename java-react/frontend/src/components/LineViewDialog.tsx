@@ -142,7 +142,7 @@ export function LineViewDialog({ open, kind, line, vatRate, onClose, onEdit }: L
                       <Box
                         key={row.label}
                         sx={{
-                          paddingBlock: 1.5,
+                          paddingBlock: 1,
                           borderBlockEndStyle: 'solid',
                           borderBlockEndWidth: 1,
                           borderColor: 'divider',

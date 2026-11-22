@@ -203,10 +203,10 @@ export function LineRows({
 }: LineRowsProps) {
   const stacked = useStackedLines();
   const columns = columnsFor(kind, typeLabel);
-  const actionsSpacingWidth = onEdit || onDelete ? 18 : 12;
+  const actionsSpacingWidth = onEdit || onDelete ? 19 : 12;
 
   const lineActions = (line: LineView, justifyContent: 'center' | 'flex-end') => (
-    <Stack direction="row" spacing={0.5} useFlexGap justifyContent={justifyContent}>
+    <Stack direction="row" spacing={1} useFlexGap justifyContent={justifyContent}>
       <IconButton aria-label="View" color="primary" disabled={viewDisabled} onClick={() => onView(line)}>
         <ViewIcon />
       </IconButton>
@@ -239,7 +239,7 @@ export function LineRows({
       <Stack role="list" aria-label={label} spacing={1} useFlexGap>
         {lines.map((line) => (
           <Paper key={line.id} role="listitem" variant="outlined">
-            <Grid container columnSpacing={2} rowSpacing={1.5} sx={{ padding: 2 }}>
+            <Grid container columnSpacing={2} rowSpacing={1} sx={{ padding: 2 }}>
               {cardFields(columns).map((column) => (
                 <Grid key={column.key} size={column.wide ? 12 : 6}>
                   <Typography variant="caption" color="text.secondary" component="div">
