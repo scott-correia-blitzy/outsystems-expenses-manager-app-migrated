@@ -4,7 +4,6 @@ import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
 
-// submitedOn keeps the legacy SubmitedOn column spelling; submittedBy is the submitter's display name.
 public record ReportDetail(
         Long id,
         String kind,

@@ -29,7 +29,6 @@ public class AppUserPrincipal implements UserDetails, CredentialsContainer {
         this.username = Objects.requireNonNull(username, "username");
         this.displayName = displayName;
         this.passwordHash = passwordHash;
-        // Every signed-in user holds Registered, so it is granted here rather than stored.
         EnumSet<Role> granted = EnumSet.of(Role.Registered);
         if (storedRoles != null) {
             granted.addAll(storedRoles);
