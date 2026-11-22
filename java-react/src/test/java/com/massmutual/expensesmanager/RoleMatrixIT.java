@@ -29,6 +29,7 @@ import org.apache.catalina.Container;
 import org.apache.catalina.Context;
 import org.apache.catalina.Manager;
 import org.apache.catalina.Session;
+import org.apache.catalina.connector.ClientAbortException;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
@@ -62,6 +63,7 @@ import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.web.HttpMediaTypeNotAcceptableException;
+import org.springframework.web.context.request.async.AsyncRequestNotUsableException;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -918,6 +920,43 @@ class RoleMatrixIT {
                 IllegalStateException.class.getName(), IllegalArgumentException.class.getName(),
                 UnsupportedOperationException.class.getName(), "at " + RoleMatrixIT.class.getName() + ".");
         assertThat(logged).doesNotContain(password, token, header);
+    }
+
+    static Stream<Exception> disconnectedClientFailures() {
+        return Stream.of(
+                new AsyncRequestNotUsableException("ServletOutputStream failed to write",
+                        new ClientAbortException(new IOException("Broken pipe"))),
+                new ClientAbortException(),
+                new IOException("Broken pipe"),
+                new IOException("Connection reset by peer"));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("disconnectedClientFailures")
+    @ExtendWith(OutputCaptureExtension.class)
+    @DisplayName("A client that disconnects mid-response gets no error body and is logged only at DEBUG")
+    void disconnectedClientIsNotLoggedAsAnError(Exception failure, @Autowired ApiExceptionHandler handler,
+            @Autowired LoggingSystem loggingSystem, CapturedOutput output) {
+        String logger = ApiExceptionHandler.class.getName();
+        LoggerConfiguration configuration = loggingSystem.getLoggerConfiguration(logger);
+        LogLevel configuredLevel = configuration == null ? null : configuration.getConfiguredLevel();
+        loggingSystem.setLogLevel(logger, LogLevel.DEBUG);
+        try {
+            MockHttpServletRequest request = new MockHttpServletRequest("GET", "/api/lines/expense/1/invoice");
+            int logStart = output.getAll().length();
+
+            ResponseEntity<ErrorResponse> response = handler.handleUnexpected(failure, request);
+
+            assertThat(response).isNull();
+            assertThat(output.getAll().substring(logStart)).doesNotContain("Unhandled error");
+            assertThat(handlerLogLines(output, logStart, ApiExceptionHandler.class)).singleElement().asString()
+                    .doesNotContain("ERROR", "WARN")
+                    .contains("DEBUG")
+                    .endsWith("Client disconnected during GET /api/lines/expense/1/invoice: "
+                            + failure.getClass().getName());
+        } finally {
+            loggingSystem.setLogLevel(logger, configuredLevel);
+        }
     }
 
     @Test

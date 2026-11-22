@@ -1,10 +1,15 @@
 package com.massmutual.expensesmanager.service;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.sql.Blob;
+import java.sql.SQLException;
 import java.time.Clock;
 import java.time.LocalDateTime;
 import java.util.Locale;
 import java.util.Map;
 
+import org.springframework.dao.DataRetrievalFailureException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -12,6 +17,7 @@ import com.massmutual.expensesmanager.domain.InvoiceEntity;
 import com.massmutual.expensesmanager.domain.LineEntity;
 import com.massmutual.expensesmanager.domain.ReportEntity;
 import com.massmutual.expensesmanager.domain.ReportKind;
+import com.massmutual.expensesmanager.repository.InvoiceRepository;
 import com.massmutual.expensesmanager.service.model.InvoiceFile;
 
 @Service
@@ -78,9 +84,31 @@ public class InvoiceService {
         ReportEntity report = policy.reportOf(kind, line);
         policy.requireOwnerOrAdminRead(caller, report);
 
-        InvoiceEntity invoice = kindRepositories.invoices(kind).findById(line.getId())
+        InvoiceRepository.InvoiceDownload invoice = kindRepositories.invoices(kind).findDownloadById(line.getId())
                 .orElseThrow(() -> ApiException.notFound(LegacyMessages.NO_INVOICE));
-        return new InvoiceFile(invoice.getFilename(), invoice.getFiletype(), invoice.getContent());
+        return new InvoiceFile(invoice.getFilename(), invoice.getFiletype(), contentOf(invoice.getContent()));
+    }
+
+    // Sized from the stored length, so a download holds one copy of the file.
+    private static byte[] contentOf(Blob blob) {
+        if (blob == null) {
+            return new byte[0];
+        }
+        try {
+            try {
+                byte[] content = new byte[Math.toIntExact(blob.length())];
+                try (InputStream stream = blob.getBinaryStream()) {
+                    if (stream.readNBytes(content, 0, content.length) < content.length) {
+                        throw new DataRetrievalFailureException("Invoice content is shorter than its stored length");
+                    }
+                }
+                return content;
+            } finally {
+                blob.free();
+            }
+        } catch (SQLException | IOException ex) {
+            throw new DataRetrievalFailureException("Invoice content could not be read", ex);
+        }
     }
 
     // The declared type must agree with the extension, since downloads are served with the stored type.

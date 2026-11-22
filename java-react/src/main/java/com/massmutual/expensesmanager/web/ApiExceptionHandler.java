@@ -36,6 +36,7 @@ import org.springframework.web.method.annotation.MethodArgumentTypeMismatchExcep
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.multipart.support.MissingServletRequestPartException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
+import org.springframework.web.util.DisconnectedClientHelper;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -165,6 +166,12 @@ public class ApiExceptionHandler {
 
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ErrorResponse> handleUnexpected(Exception ex, HttpServletRequest request) {
+        // A null result marks the request handled without writing a body to a client that has gone away.
+        if (DisconnectedClientHelper.isClientDisconnectedException(ex)) {
+            log.debug("Client disconnected during {} {}: {}",
+                    request.getMethod(), request.getRequestURI(), ex.getClass().getName());
+            return null;
+        }
         log.error("Unhandled error on {} {}", request.getMethod(), request.getRequestURI(), RedactedThrowable.of(ex));
         return internalError();
     }

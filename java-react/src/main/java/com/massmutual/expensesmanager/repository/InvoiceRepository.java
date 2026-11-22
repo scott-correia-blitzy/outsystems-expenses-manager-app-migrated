@@ -1,6 +1,7 @@
 package com.massmutual.expensesmanager.repository;
 
 import com.massmutual.expensesmanager.domain.InvoiceEntity;
+import java.sql.Blob;
 import java.time.LocalDateTime;
 import java.util.Collection;
 import java.util.List;
@@ -24,6 +25,14 @@ public interface InvoiceRepository<I extends InvoiceEntity> extends JpaRepositor
         LocalDateTime getDatetime();
     }
 
+    interface InvoiceDownload {
+        String getFilename();
+
+        String getFiletype();
+
+        Blob getContent();
+    }
+
     // Metadata only: line views never need the invoice bytes.
     @Query("select i.id as id, i.filename as filename, i.filetype as filetype, i.datetime as datetime"
             + " from #{#entityName} i where i.id in :ids")
@@ -32,6 +41,11 @@ public interface InvoiceRepository<I extends InvoiceEntity> extends JpaRepositor
     @Query("select i.id as id, i.filename as filename, i.filetype as filetype, i.datetime as datetime"
             + " from #{#entityName} i where i.id = :id")
     Optional<InvoiceMeta> findInfoById(@Param("id") Long id);
+
+    // Native, so Content arrives as a Blob of known length instead of through the byte[] mapping's growing buffer.
+    @Query(value = "select Filename as filename, Filetype as filetype, Content as content"
+            + " from #{#entityName} where Id = :id", nativeQuery = true)
+    Optional<InvoiceDownload> findDownloadById(@Param("id") Long id);
 
     // A bulk update, because assigning Content on a loaded invoice would first read the old bytes.
     @Modifying

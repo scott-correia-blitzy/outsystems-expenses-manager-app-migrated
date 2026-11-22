@@ -86,6 +86,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.Queue;
+import java.util.Random;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -1011,6 +1012,24 @@ class BusinessRulesTest {
         assertThat(file.content()).isEqualTo(PNG_BYTES);
         assertThat(storedInvoice(kind, line.id())).get().usingRecursiveComparison()
                 .isEqualTo(new StoredInvoice(filename, "image/png", PNG_BYTES, MutableClock.DEFAULT_TIME));
+        assertTwinUnchanged(otherKind(kind), line);
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @EnumSource(ReportKind.class)
+    void invoiceAtTheSizeLimitIsDownloadedUnchanged(ReportKind kind) {
+        Caller owner = newCaller(appUserRepository, Role.User);
+        LineView line = draftWithLineAndTwin(owner, kind);
+        byte[] content = new byte[InvoiceService.MAX_BYTES];
+        new Random(7).nextBytes(content);
+        System.arraycopy(PNG_BYTES, 0, content, 0, PNG_BYTES.length);
+
+        invoiceService.upload(owner, kind, line.id(), "large.png", "image/png", content);
+        InvoiceFile file = invoiceService.download(owner, kind, line.id());
+
+        assertThat(file.filename()).isEqualTo("large.png");
+        assertThat(file.contentType()).isEqualTo("image/png");
+        assertThat(file.content()).hasSize(InvoiceService.MAX_BYTES).isEqualTo(content);
         assertTwinUnchanged(otherKind(kind), line);
     }
 
