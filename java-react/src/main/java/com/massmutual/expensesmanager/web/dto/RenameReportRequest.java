@@ -2,7 +2,7 @@ package com.massmutual.expensesmanager.web.dto;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.massmutual.expensesmanager.service.LegacyMessages;
-import com.massmutual.expensesmanager.service.model.Redacted;
+import com.massmutual.expensesmanager.service.model.FieldViolation.Redacted;
 import jakarta.validation.constraints.NotBlank;
 
 @JsonIgnoreProperties(ignoreUnknown = true)

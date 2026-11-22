@@ -4,7 +4,7 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.massmutual.expensesmanager.service.LegacyMessages;
 import com.massmutual.expensesmanager.service.LineService;
 import com.massmutual.expensesmanager.service.model.FieldViolation;
-import com.massmutual.expensesmanager.service.model.Redacted;
+import com.massmutual.expensesmanager.service.model.FieldViolation.Redacted;
 import jakarta.validation.Constraint;
 import jakarta.validation.ConstraintValidator;
 import jakarta.validation.ConstraintValidatorContext;

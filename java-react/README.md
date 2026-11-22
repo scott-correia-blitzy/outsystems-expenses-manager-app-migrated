@@ -88,7 +88,7 @@ All configuration is committed in `src/main/resources/application.properties`; n
 | `expenses.remember-me-days` | `30` | Session lifetime when "Remember me" is ticked |
 | `expenses.seed.enabled` | `true` | Seeds the demo data on first start |
 
-The two rates must be positive and below 1000 with at most 8 decimals, and the reference date, when set, must lie between 0001-01-01 and 9999-12-31; any other value stops startup with an error naming the key.
+`expenses.mileage-reimbursement` and `expenses.dollars-to-euros` must be positive and below 1000 with at most 8 decimals, `expenses.vat-rate` must be zero or more with at most 29 whole digits and 8 decimals, and the reference date, when set, must lie between 0001-01-01 and 9999-12-31; any other value stops startup with an error naming the key.
 
 The SPA reads the three rates from `GET /api/reference` for its live previews; the server recomputes every stored amount.
 
@@ -110,7 +110,7 @@ What the suites prove:
 - `RoleMatrixIT`: every endpoint for anonymous, User, Approver and Administrator callers. Mixed-role callers get targeted checks: User plus Administrator cannot write another user's Draft but can read it and decide a Submitted report, and User plus Administrator and User plus Approver list the reports their combined roles allow.
 - `EndToEndIT`: create, add a line, upload and download an invoice, submit, approve, log out and in again, and restart on the same data.
 - `ResponseTimeIT`: start with seeding under 30 s, and a 95th percentile under 300 ms for the list and dashboard calls.
-- Vitest: formatters, all 14 routes rendered and guarded per role, the report, line, decision, browsing, dashboard, preview, tool and blog workflows against a mocked API, the real API client loading reference data once per session and rejecting a cancelled list request without ending the session, and a scan that rejects colour literals outside `frontend/src/theme/theme.ts`.
+- Vitest: formatters, all 14 routes rendered and guarded per role, the report, line, decision, browsing, dashboard, preview, tool and blog workflows against a mocked API, and a scan that rejects colour literals outside `frontend/src/theme/theme.ts`.
 
 The integration tests start the app on a random port with a private H2 file in a temporary directory; none needs a running server.
 
@@ -199,7 +199,7 @@ Kept from legacy:
 - A decided report can be decided again: the decision does not check the current status (AN-06).
 - Month figures compare month numbers only and ignore the year. In January the last-month figure matches nothing and the change percentage is empty (AN-02).
 - The 30-day chart includes lines of Draft reports (AN-09).
-- Saving a report as its owner (create, rename, submit) restamps its creation date and creator (AN-04).
+- Saving a report as its owner (create, rename, submit) restamps its creation date, creator and submitter (AN-04).
 - Status Draft and Submitted both have `Order` 2 (AN-12), and the "There are no expenses associated to the report" message is also used for earning reports (AN-13).
 - Legacy spellings are kept in column names (`SubmitedBy`, `SubmitedOn`), the "Submited" filter and messages such as "This report cant be deleted" and "Blog post successfuly published".
 

@@ -1,5 +1,7 @@
 package com.massmutual.expensesmanager.service.model;
 
+import com.massmutual.expensesmanager.service.model.FieldViolation.Redacted;
+
 import java.math.BigDecimal;
 import java.time.LocalDate;
 
