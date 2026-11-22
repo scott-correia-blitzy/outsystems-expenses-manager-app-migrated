@@ -58,6 +58,11 @@ export interface InvoiceInfo {
   uploadedOn: string;
 }
 
+export interface DownloadedFile {
+  blob: Blob;
+  filename: string | null;
+}
+
 export interface LineView {
   id: number;
   reportId: number;

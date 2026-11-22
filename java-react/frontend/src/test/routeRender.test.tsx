@@ -1,9 +1,10 @@
 import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import * as api from '../api/api';
 import {
   ApiError,
   MESSAGES,
+  type DownloadedFile,
   type FieldError,
   type Kind,
   type LineBody,
@@ -1427,6 +1428,11 @@ const UPLOAD_CASES = [
   },
 ];
 
+const DRAG_END_CASES = [
+  { ending: 'leaves the zone', end: fireEvent.dragLeave, selected: false },
+  { ending: 'drops the file', end: fireEvent.drop, selected: true },
+];
+
 describe('line forms', () => {
   it.each(LINE_CASES)(
     'adds $line and reloads the report with it',
@@ -1535,6 +1541,44 @@ describe('line forms', () => {
         expect(dialog).toHaveAccessibleName('Edit Details');
         expect(within(dialog).getByText(fileError)).toBeInTheDocument();
       }
+    },
+    TEST_TIMEOUT,
+  );
+
+  it.each(DRAG_END_CASES)(
+    'highlights the invoice drop zone under a dragged file until the drag $ending',
+    async ({ end, selected }) => {
+      renderRoute('/reports/expense/12', 'user');
+      expect(await heading(LONDON_TRIP)).toBeInTheDocument();
+      await clickControl('Add Expense');
+      const dialog = await findDialog(/^New Expense/);
+      const zone = within(dialog).getByRole('group', { name: 'Upload Invoice' });
+      const prompt = within(zone).getByText('Drop a file here or');
+      const idle = { borderStyle: 'dashed', borderColor: theme.palette.divider };
+      const text = { types: ['text/plain'], files: [], dropEffect: 'none' };
+      const invoice = new File(['%PDF-1.7'], 'receipt.pdf', { type: 'application/pdf' });
+      const files = { types: ['Files'], files: [invoice], dropEffect: 'none' };
+
+      fireEvent.dragEnter(zone, { dataTransfer: text });
+      fireEvent.dragOver(zone, { dataTransfer: text });
+      expect(zone).toHaveStyle(idle);
+      expect(text.dropEffect).toBe('none');
+      fireEvent.dragLeave(zone, { dataTransfer: text });
+
+      fireEvent.dragEnter(zone, { dataTransfer: files });
+      fireEvent.dragOver(zone, { dataTransfer: files });
+      fireEvent.dragEnter(prompt, { dataTransfer: files });
+      fireEvent.dragLeave(zone, { dataTransfer: files });
+      expect(zone).toHaveStyle({
+        borderStyle: 'solid',
+        borderColor: theme.palette.primary.main,
+        backgroundColor: theme.palette.action.hover,
+      });
+      expect(files.dropEffect).toBe('copy');
+
+      end(prompt, { dataTransfer: files });
+      expect(zone).toHaveStyle(idle);
+      expect(within(dialog).queryByText('Selected file: receipt.pdf') !== null).toBe(selected);
     },
     TEST_TIMEOUT,
   );
@@ -1756,6 +1800,54 @@ describe('report actions', () => {
 
 const RECEIPT = { filename: 'receipt.png', contentType: 'image/png', uploadedOn: '2024-05-22T10:00:00' };
 
+async function openReceiptLine(): Promise<HTMLElement> {
+  renderRoute('/reports/expense/12', 'user');
+  const report = REPORT_DETAILS['expense/12'];
+  vi.mocked(api.getReport).mockResolvedValueOnce({
+    ...report,
+    lines: report.lines.map((line) => ({ ...line, invoice: RECEIPT })),
+  });
+  expect(await heading(LONDON_TRIP)).toBeInTheDocument();
+  const table = screen.getByRole('table', { name: 'Expenses' });
+  fireEvent.click(within(lineRow(table, 'Flight tickets')).getByRole('button', { name: 'View' }));
+  return findDialog('Flight tickets');
+}
+
+const OBJECT_URL = 'blob:invoice';
+
+type SavedFile = { href: string; download: string };
+
+// jsdom has no object URLs and follows no download link, so the save is recorded instead.
+function stubFileSaving() {
+  const original = { createObjectURL: URL.createObjectURL, revokeObjectURL: URL.revokeObjectURL };
+  const createObjectURL = vi.fn<typeof URL.createObjectURL>(() => OBJECT_URL);
+  const revokeObjectURL = vi.fn<typeof URL.revokeObjectURL>();
+  Object.assign(URL, { createObjectURL, revokeObjectURL });
+  const saved: SavedFile[] = [];
+  const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+    saved.push({ href: this.href, download: this.download });
+  });
+  onTestFinished(() => {
+    click.mockRestore();
+    Object.assign(URL, original);
+  });
+  return { createObjectURL, revokeObjectURL, saved };
+}
+
+type SaveCase = { naming: string; served: string | null; saved: string };
+
+const SAVE_CASES: SaveCase[] = [
+  { naming: 'the name the server sends', served: 'invoice-121.png', saved: 'invoice-121.png' },
+  { naming: "the line's file name when the server sends none", served: null, saved: 'receipt.png' },
+];
+
+type DownloadFailureCase = { failure: string; rejection: ApiError };
+
+const DOWNLOAD_FAILURE_CASES: DownloadFailureCase[] = [
+  { failure: 'the network is down', rejection: new ApiError(0, 'NETWORK_ERROR', MESSAGES.GENERIC_ERROR) },
+  { failure: 'the invoice has gone', rejection: new ApiError(404, 'NOT_FOUND', MESSAGES.NO_INVOICE) },
+];
+
 type ViewCase = {
   where: string;
   open: () => Promise<HTMLElement>;
@@ -1806,37 +1898,76 @@ describe('line view', () => {
       expect(within(dialog).getByText(total)).toBeInTheDocument();
       expect(within(dialog).getByText(vat)).toBeInTheDocument();
       expect(within(dialog).getByText(MESSAGES.NO_INVOICE)).toBeInTheDocument();
-      expect(within(dialog).queryByRole('link', { name: 'Download Invoice' })).toBeNull();
+      expect(within(dialog).queryByRole('button', { name: 'Download Invoice' })).toBeNull();
     },
     TEST_TIMEOUT,
   );
 
-  it(
-    'previews and links the invoice of a line at its download address',
-    async () => {
-      renderRoute('/reports/expense/12', 'user');
-      const report = REPORT_DETAILS['expense/12'];
-      vi.mocked(api.getReport).mockResolvedValueOnce({
-        ...report,
-        lines: report.lines.map((line) => ({ ...line, invoice: RECEIPT })),
-      });
-      expect(await heading(LONDON_TRIP)).toBeInTheDocument();
-      const table = screen.getByRole('table', { name: 'Expenses' });
-      fireEvent.click(within(lineRow(table, 'Flight tickets')).getByRole('button', { name: 'View' }));
-
-      const dialog = await findDialog('Flight tickets');
+  it.each(SAVE_CASES)(
+    'previews the invoice of a line and saves it once under $naming',
+    async ({ served, saved }) => {
+      const files = stubFileSaving();
+      const dialog = await openReceiptLine();
       expect(within(dialog).getByText('receipt.png')).toBeInTheDocument();
       expect(within(dialog).getByRole('img', { name: 'Invoice receipt.png' })).toHaveAttribute(
         'src',
         '/api/lines/expense/121/invoice',
       );
-      expect(within(dialog).getByRole('link', { name: 'Download Invoice' })).toHaveAttribute(
-        'href',
-        '/api/lines/expense/121/invoice',
-      );
       expect(within(dialog).queryByText(MESSAGES.NO_INVOICE)).toBeNull();
+      expect(within(dialog).queryByRole('link', { name: 'Download Invoice' })).toBeNull();
       expect(api.invoiceDownloadUrl).toHaveBeenCalledWith('expense', 121);
+
+      const reply = deferred<DownloadedFile>();
+      vi.mocked(api.downloadInvoice).mockReturnValueOnce(reply.promise);
+      const download = within(dialog).getByRole('button', { name: 'Download Invoice' });
+      fireEvent.click(download);
+      fireEvent.click(download);
+      await waitFor(() => expect(download).toBeDisabled(), { timeout: FIND_TIMEOUT });
+      expect(api.downloadInvoice).toHaveBeenCalledExactlyOnceWith('expense', 121);
+
+      const blob = new Blob(['png'], { type: 'image/png' });
+      reply.resolve({ blob, filename: served });
+      await waitFor(() => expect(files.saved).toEqual([{ href: OBJECT_URL, download: saved }]), {
+        timeout: FIND_TIMEOUT,
+      });
+      expect(files.createObjectURL).toHaveBeenCalledExactlyOnceWith(blob);
+      await waitFor(() => expect(files.revokeObjectURL).toHaveBeenCalledExactlyOnceWith(OBJECT_URL), {
+        timeout: FIND_TIMEOUT,
+      });
+      await waitFor(() => expect(download).toBeEnabled(), { timeout: FIND_TIMEOUT });
+      expect(screen.getByRole('dialog', { name: 'Flight tickets' })).toBe(dialog);
       expect(api.getReport).toHaveBeenCalledExactlyOnceWith('expense', 12);
+    },
+    TEST_TIMEOUT,
+  );
+
+  it.each(DOWNLOAD_FAILURE_CASES)(
+    'keeps the line open with a message and Download Invoice ready again when $failure',
+    async ({ rejection }) => {
+      const files = stubFileSaving();
+      const dialog = await openReceiptLine();
+      vi.mocked(api.downloadInvoice).mockRejectedValueOnce(rejection);
+      const download = within(dialog).getByRole('button', { name: 'Download Invoice' });
+      fireEvent.click(download);
+
+      expect(await toast(rejection.message)).toBeInTheDocument();
+      expect(screen.getByRole('dialog', { name: 'Flight tickets' })).toBe(dialog);
+      expect(currentPath()).toBe('/reports/expense/12');
+      await waitFor(() => expect(download).toBeEnabled(), { timeout: FIND_TIMEOUT });
+      await waitFor(() => expect(download).toHaveFocus(), { timeout: FIND_TIMEOUT });
+      expect(files.createObjectURL).not.toHaveBeenCalled();
+      expect(files.saved).toEqual([]);
+
+      const blob = new Blob(['png'], { type: 'image/png' });
+      vi.mocked(api.downloadInvoice).mockResolvedValueOnce({ blob, filename: 'receipt.png' });
+      fireEvent.click(download);
+      await waitFor(() => expect(files.saved).toEqual([{ href: OBJECT_URL, download: 'receipt.png' }]), {
+        timeout: FIND_TIMEOUT,
+      });
+      await waitFor(() => expect(files.revokeObjectURL).toHaveBeenCalledExactlyOnceWith(OBJECT_URL), {
+        timeout: FIND_TIMEOUT,
+      });
+      expect(api.downloadInvoice).toHaveBeenCalledTimes(2);
     },
     TEST_TIMEOUT,
   );
@@ -2359,9 +2490,21 @@ describe('dashboard figures', () => {
   );
 });
 
-const PREVIEW_CASES = [
-  { currency: 'USD', amount: '100', total: '€ 90,00', vat: 'VAT (23%): € 20,70' },
-  { currency: 'EUR', amount: '42', total: '€ 42,00', vat: 'VAT (23%): € 9,66' },
+type PreviewCase = {
+  unit: 'EUR' | 'USD' | 'km';
+  amount: string;
+  rates?: Partial<ReferenceData>;
+  total: string;
+  vat: string;
+};
+
+const PREVIEW_CASES: PreviewCase[] = [
+  { unit: 'USD', amount: '100', total: '€ 90,00', vat: 'VAT (23%): € 20,70' },
+  { unit: 'EUR', amount: '42', total: '€ 42,00', vat: 'VAT (23%): € 9,66' },
+  { unit: 'USD', amount: '1.65', total: '€ 1,49', vat: 'VAT (23%): € 0,34' },
+  { unit: 'EUR', amount: '1.00499', total: '€ 1,01', vat: 'VAT (23%): € 0,23' },
+  { unit: 'km', amount: '0.2173', total: '€ 0,11', vat: 'VAT (23%): € 0,03' },
+  { unit: 'km', amount: '10', rates: { vatRate: 0.235 }, total: '€ 5,00', vat: 'VAT (23.5%): € 1,18' },
 ];
 
 type ConverterCase = { rate: string; edited: string | null; result: UsdToEurResult; message: string };
@@ -2482,14 +2625,22 @@ describe('dashboard charts', () => {
 
 describe('previews and tool forms', () => {
   it.each(PREVIEW_CASES)(
-    'previews $amount $currency with the reference rates',
-    async ({ currency, amount, total, vat }) => {
+    'previews $amount $unit with the reference rates',
+    async ({ unit, amount, rates, total, vat }) => {
       renderRoute('/reports/expense/12', 'user');
+      if (rates) {
+        vi.mocked(api.reference).mockResolvedValue({ ...REFERENCE, ...rates });
+      }
       expect(await heading(LONDON_TRIP)).toBeInTheDocument();
       await clickControl('Add Expense');
       const dialog = await findDialog(/^New Expense/);
-      press(dialog, currency);
-      enter(dialog, 'Amount', amount);
+      if (unit === 'km') {
+        await choose(dialog, /Expense Type/, 'Kilometers');
+        enter(dialog, /Distance/, amount);
+      } else {
+        press(dialog, unit);
+        enter(dialog, 'Amount', amount);
+      }
 
       expect(within(dialog).getByText(total)).toBeInTheDocument();
       expect(within(dialog).getByText(vat)).toBeInTheDocument();

@@ -82,10 +82,18 @@ type FormState = {
   kilometers: string;
 };
 
+// units × 10^-scale, held exactly like a BigDecimal.
+type Decimal = { units: bigint; scale: number };
+
 // Static record ids of the Currency and ExpenseType reference tables.
 const EURO_ID = 1;
 const DOLLAR_ID = 2;
 const KILOMETERS_TYPE_ID = 3;
+
+// The server's scales: Distance DECIMAL(37,8), Amount and AmountInEuros DECIMAL(19,4), money output 2 decimals.
+const DISTANCE_SCALE = 8;
+const STORED_SCALE = 4;
+const MONEY_SCALE = 2;
 
 const TITLE_MAX_LENGTH = 50;
 const DESCRIPTION_MAX_LENGTH = 1500;
@@ -134,9 +142,54 @@ function todayIso(): string {
   return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
 }
 
-function num(value: string): number {
+// String() of a number is the decimal JSON sends to the server; a blank or invalid entry previews as 0.
+function toDecimal(value: string | number): Decimal {
   const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : 0;
+  const finite = Number.isFinite(parsed) ? parsed : 0;
+  const [mantissa, exponent = '0'] = String(Math.abs(finite)).split('e');
+  const [whole, fraction = ''] = mantissa.split('.');
+  const scale = fraction.length - Number(exponent);
+  const magnitude = BigInt(whole + fraction) * 10n ** BigInt(Math.max(0, -scale));
+  return { units: finite < 0 ? -magnitude : magnitude, scale: Math.max(0, scale) };
+}
+
+function multiply(a: Decimal, b: Decimal): Decimal {
+  return { units: a.units * b.units, scale: a.scale + b.scale };
+}
+
+function roundHalfUp({ units, scale }: Decimal, target: number): Decimal {
+  if (target >= scale) {
+    return { units: units * 10n ** BigInt(target - scale), scale: target };
+  }
+  const divisor = 10n ** BigInt(scale - target);
+  const magnitude = ((units < 0n ? -units : units) + divisor / 2n) / divisor;
+  return { units: units < 0n ? -magnitude : magnitude, scale: target };
+}
+
+// Converted the way a saved line's JSON figure is, so the preview and the View dialog render alike.
+function toNumber({ units, scale }: Decimal): number {
+  return Number(`${units}e-${scale}`);
+}
+
+function convertedEuros(value: string, valueScale: number, rate: number): Decimal {
+  return roundHalfUp(multiply(roundHalfUp(toDecimal(value), valueScale), toDecimal(rate)), STORED_SCALE);
+}
+
+// Follows the server's rounding steps, so the preview equals the total and VAT of the saved line.
+function previewAmounts(
+  form: FormState,
+  isKilometers: boolean,
+  reference: ReferenceData,
+): { total: number; vat: number } {
+  const euros = isKilometers
+    ? convertedEuros(form.kilometers, DISTANCE_SCALE, reference.mileageReimbursement)
+    : form.currencyId === DOLLAR_ID
+      ? convertedEuros(form.amount, STORED_SCALE, reference.dollarsToEuros)
+      : roundHalfUp(toDecimal(form.amount), STORED_SCALE);
+  return {
+    total: toNumber(roundHalfUp(euros, MONEY_SCALE)),
+    vat: toNumber(roundHalfUp(multiply(euros, toDecimal(reference.vatRate)), MONEY_SCALE)),
+  };
 }
 
 function isPositive(value: string): boolean {
@@ -145,6 +198,10 @@ function isPositive(value: string): boolean {
 
 function currencyCode(currency: RefItem): string {
   return CURRENCY_CODES[currency.id] ?? currency.label;
+}
+
+function carriesFiles(event: DragEvent<HTMLElement>): boolean {
+  return event.dataTransfer.types.includes('Files');
 }
 
 function initialForm(line: LineView | undefined): FormState {
@@ -283,6 +340,10 @@ export function LineFormDialog({
   // A line stored before its invoice was rejected; later saves update it instead of adding another.
   const [storedLine, setStoredLine] = useState<LineView | undefined>(undefined);
   const target = storedLine ?? line;
+  // Entering a child fires its dragenter before the zone's dragleave, so nesting is counted.
+  const dragDepth = useRef(0);
+  const [dragOver, setDragOver] = useState(false);
+  const dropTargetActive = dragOver && !saving;
 
   useEffect(() => {
     if (open) {
@@ -292,6 +353,8 @@ export function LineFormDialog({
       setSaving(false);
       setStoredLine(undefined);
       inFlight.current = false;
+      dragDepth.current = 0;
+      setDragOver(false);
     }
   }, [open, line]);
 
@@ -319,12 +382,7 @@ export function LineFormDialog({
   const typeValue = types.some((type) => type.id === form.typeId) ? form.typeId : '';
   const hiddenFields: readonly FieldName[] = isKilometers ? ['currencyId', 'amount'] : ['kilometers'];
 
-  const previewTotal = isKilometers
-    ? num(form.kilometers) * reference.mileageReimbursement
-    : form.currencyId === DOLLAR_ID
-      ? num(form.amount) * reference.dollarsToEuros
-      : num(form.amount);
-  const previewVat = previewTotal * reference.vatRate;
+  const { total: previewTotal, vat: previewVat } = previewAmounts(form, isKilometers, reference);
 
   const heading = target
     ? 'Edit Details'
@@ -352,8 +410,35 @@ export function LineFormDialog({
     event.target.value = '';
   };
 
+  const handleDragEnter = (event: DragEvent<HTMLElement>) => {
+    if (carriesFiles(event)) {
+      dragDepth.current += 1;
+      setDragOver(true);
+    }
+  };
+
+  const handleDragOver = (event: DragEvent<HTMLElement>) => {
+    event.preventDefault();
+    const accepted = carriesFiles(event) && !saving;
+    event.dataTransfer.dropEffect = accepted ? 'copy' : 'none';
+    if (accepted) {
+      setDragOver(true);
+    }
+  };
+
+  const handleDragLeave = (event: DragEvent<HTMLElement>) => {
+    if (carriesFiles(event)) {
+      dragDepth.current = Math.max(0, dragDepth.current - 1);
+      if (dragDepth.current === 0) {
+        setDragOver(false);
+      }
+    }
+  };
+
   const handleDrop = (event: DragEvent<HTMLElement>) => {
     event.preventDefault();
+    dragDepth.current = 0;
+    setDragOver(false);
     const dropped = event.dataTransfer.files[0];
     if (dropped && !saving) {
       chooseFile(dropped);
@@ -649,12 +734,15 @@ export function LineFormDialog({
                   aria-labelledby={uploadLabelId}
                   aria-describedby={errors.file ? fileHelperId : undefined}
                   aria-disabled={saving ? true : undefined}
-                  onDragOver={(event) => event.preventDefault()}
+                  onDragEnter={handleDragEnter}
+                  onDragOver={handleDragOver}
+                  onDragLeave={handleDragLeave}
                   onDrop={handleDrop}
                   sx={{
                     border: 1,
-                    borderStyle: 'dashed',
-                    borderColor: errors.file ? 'error.main' : 'divider',
+                    borderStyle: dropTargetActive ? 'solid' : 'dashed',
+                    borderColor: dropTargetActive ? 'primary.main' : errors.file ? 'error.main' : 'divider',
+                    bgcolor: dropTargetActive ? 'action.hover' : undefined,
                     borderRadius: 1,
                     p: 2,
                   }}

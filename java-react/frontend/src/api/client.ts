@@ -1,5 +1,5 @@
 import { ApiError, MESSAGES } from './types';
-import type { ErrorBody, FieldError } from './types';
+import type { DownloadedFile, ErrorBody, FieldError } from './types';
 
 export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'DELETE';
 
@@ -72,10 +72,14 @@ function toApiError(status: number, text: string): ApiError {
   return new ApiError(status, UNEXPECTED_RESPONSE, MESSAGES.GENERIC_ERROR);
 }
 
-async function send(url: string, init: RequestInit): Promise<{ response: Response; text: string }> {
+async function send<B>(
+  url: string,
+  init: RequestInit,
+  read: (response: Response) => Promise<B>,
+): Promise<{ response: Response; body: B }> {
   try {
     const response = await fetch(url, init);
-    return { response, text: await response.text() };
+    return { response, body: await read(response) };
   } catch {
     throw new ApiError(0, init.signal?.aborted ? ABORTED : NETWORK_ERROR, MESSAGES.GENERIC_ERROR);
   }
@@ -99,7 +103,11 @@ export async function request<T>(method: HttpMethod, url: string, body?: unknown
     }
   }
 
-  const { response, text } = await send(url, { method, credentials: 'same-origin', headers, body: payload, signal });
+  const { response, body: text } = await send(
+    url,
+    { method, credentials: 'same-origin', headers, body: payload, signal },
+    (received) => received.text(),
+  );
   if (!response.ok) {
     throw toApiError(response.status, text);
   }
@@ -111,4 +119,55 @@ export async function request<T>(method: HttpMethod, url: string, body?: unknown
     throw new ApiError(response.status, UNEXPECTED_RESPONSE, MESSAGES.GENERIC_ERROR);
   }
   return data as T;
+}
+
+// A quoted value may itself hold ';', so it is matched whole.
+const DISPOSITION_PARAM = /;\s*([^\s=;]+)\s*=\s*("(?:[^"\\]|\\.)*"|[^;]*)/g;
+
+function decodeExtendedValue(value: string): string | null {
+  const match = /^UTF-8'[^']*'(.+)$/i.exec(value);
+  if (match === null) {
+    return null;
+  }
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return null;
+  }
+}
+
+function unquote(value: string): string {
+  if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
+    return value.slice(1, -1).replace(/\\(.)/g, '$1');
+  }
+  return value;
+}
+
+// filename* holds a non-ASCII name exactly, while filename then holds only an ASCII stand-in.
+function attachmentFilename(header: string | null): string | null {
+  let plain: string | null = null;
+  for (const [, name, value] of (header ?? '').matchAll(DISPOSITION_PARAM)) {
+    const key = name.toLowerCase();
+    if (key === 'filename*') {
+      const exact = decodeExtendedValue(value.trim());
+      if (exact) {
+        return exact;
+      }
+    } else if (key === 'filename') {
+      plain = unquote(value.trim());
+    }
+  }
+  return plain || null;
+}
+
+export async function download(url: string): Promise<DownloadedFile> {
+  const { response, body } = await send<Blob | string>(
+    url,
+    { method: 'GET', credentials: 'same-origin' },
+    (received) => (received.ok ? received.blob() : received.text()),
+  );
+  if (typeof body === 'string') {
+    throw toApiError(response.status, body);
+  }
+  return { blob: body, filename: attachmentFilename(response.headers.get('Content-Disposition')) };
 }

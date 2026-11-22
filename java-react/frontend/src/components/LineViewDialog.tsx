@@ -1,4 +1,4 @@
-import { useId, type ReactNode } from 'react';
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import {
   Box,
   Button,
@@ -14,10 +14,11 @@ import {
   Typography,
   type SvgIconProps,
 } from '@mui/material';
-import { invoiceDownloadUrl } from '../api/api';
+import { downloadInvoice, invoiceDownloadUrl } from '../api/api';
 import { MESSAGES, type InvoiceInfo, type Kind, type LineView } from '../api/types';
 import { formatEuro, formatIsoDate } from '../format/format';
 import { useDialogFocus } from './ConfirmDialog';
+import { useFeedback } from './Feedback';
 
 export type LineViewDialogProps = {
   open: boolean;
@@ -71,7 +72,40 @@ function detailRows(kind: Kind, line: LineView): DetailRow[] {
   return rows;
 }
 
-function InvoicePanel({ invoice, downloadUrl }: { invoice: InvoiceInfo | null; downloadUrl: string }) {
+function saveFile(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  // Revoking within the same task can cancel the save before the browser has read the file.
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+type InvoicePanelProps = { kind: Kind; lineId: number; invoice: InvoiceInfo | null };
+
+function InvoicePanel({ kind, lineId, invoice }: InvoicePanelProps) {
+  const feedback = useFeedback();
+  const [downloading, setDownloading] = useState(false);
+  // Set synchronously: loading disables the button only after a re-render, too late for a second click.
+  const inFlight = useRef(false);
+  const restoreFocus = useRef(false);
+  const downloadButton = useRef<HTMLButtonElement>(null);
+
+  // A loading button is disabled and drops focus, which the dialog then holds on its own container.
+  useEffect(() => {
+    if (downloading || !restoreFocus.current) {
+      return;
+    }
+    restoreFocus.current = false;
+    const active = document.activeElement;
+    if (!(active instanceof HTMLElement) || active.tabIndex < 0) {
+      downloadButton.current?.focus();
+    }
+  }, [downloading]);
+
   if (!invoice) {
     return (
       <Stack spacing={1} sx={{ alignItems: 'center', textAlign: 'center', paddingBlock: 4 }}>
@@ -80,13 +114,32 @@ function InvoicePanel({ invoice, downloadUrl }: { invoice: InvoiceInfo | null; d
       </Stack>
     );
   }
+
+  const save = async () => {
+    if (inFlight.current) {
+      return;
+    }
+    inFlight.current = true;
+    restoreFocus.current = true;
+    setDownloading(true);
+    try {
+      const file = await downloadInvoice(kind, lineId);
+      saveFile(file.blob, file.filename ?? invoice.filename);
+    } catch (err) {
+      feedback.error(err);
+    } finally {
+      inFlight.current = false;
+      setDownloading(false);
+    }
+  };
+
   const isImage = (invoice.contentType ?? '').startsWith('image/');
   return (
     <Stack spacing={2} sx={{ alignItems: 'flex-start' }}>
       {isImage && (
         <Box
           component="img"
-          src={downloadUrl}
+          src={invoiceDownloadUrl(kind, lineId)}
           alt={`Invoice ${invoice.filename}`}
           decoding="async"
           sx={{
@@ -102,7 +155,14 @@ function InvoicePanel({ invoice, downloadUrl }: { invoice: InvoiceInfo | null; d
       <Typography variant="body2" sx={{ overflowWrap: 'anywhere' }}>
         {invoice.filename}
       </Typography>
-      <Button variant="contained" href={downloadUrl} startIcon={<DownloadIcon />}>
+      <Button
+        ref={downloadButton}
+        variant="contained"
+        startIcon={<DownloadIcon />}
+        loading={downloading}
+        loadingPosition="start"
+        onClick={() => void save()}
+      >
         Download Invoice
       </Button>
     </Stack>
@@ -182,7 +242,7 @@ export function LineViewDialog({ open, kind, line, vatRate, onClose, onEdit }: L
                   <Typography variant="h6" component="h3">
                     Invoice
                   </Typography>
-                  <InvoicePanel invoice={line.invoice} downloadUrl={invoiceDownloadUrl(kind, line.id)} />
+                  <InvoicePanel kind={kind} lineId={line.id} invoice={line.invoice} />
                 </Stack>
               </Grid>
             </Grid>

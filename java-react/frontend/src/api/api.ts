@@ -1,10 +1,11 @@
-import { request, type HttpMethod } from './client';
+import { download, request, type HttpMethod } from './client';
 import { ApiError } from './types';
 import type {
   AdminDashboard,
   BlogPostBody,
   BlogPostView,
   CreateReportBody,
+  DownloadedFile,
   Kind,
   LineBody,
   LineView,
@@ -69,9 +70,9 @@ function notify(listeners: Set<SessionListener>): void {
   }
 }
 
-function signedInRequest<T>(method: HttpMethod, url: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+function signedIn<T>(call: () => Promise<T>): Promise<T> {
   const startedIn = sessionEpoch;
-  return request<T>(method, url, body, signal).catch((err: unknown) => {
+  return call().catch((err: unknown) => {
     if (err instanceof ApiError && startedIn === sessionEpoch) {
       if (err.status === 401) {
         sessionEpoch += 1;
@@ -82,6 +83,10 @@ function signedInRequest<T>(method: HttpMethod, url: string, body?: unknown, sig
     }
     throw err;
   });
+}
+
+function signedInRequest<T>(method: HttpMethod, url: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+  return signedIn(() => request<T>(method, url, body, signal));
 }
 
 export function me(): Promise<SessionUser> {
@@ -170,9 +175,13 @@ export function uploadInvoice(kind: Kind, lineId: number, file: File): Promise<v
   return signedInRequest<void>('PUT', `/api/lines/${seg(kind)}/${seg(lineId)}/invoice`, form);
 }
 
-// A link target rather than a fetch, so the browser saves the attachment itself.
+// For an image preview's src; saving goes through downloadInvoice so a failure is reported in the app.
 export function invoiceDownloadUrl(kind: Kind, lineId: number): string {
   return `/api/lines/${seg(kind)}/${seg(lineId)}/invoice`;
+}
+
+export function downloadInvoice(kind: Kind, lineId: number): Promise<DownloadedFile> {
+  return signedIn(() => download(invoiceDownloadUrl(kind, lineId)));
 }
 
 export function userDashboard(): Promise<UserDashboard> {

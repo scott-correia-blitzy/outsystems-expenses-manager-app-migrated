@@ -5,6 +5,7 @@ import {
   MESSAGES,
   type AdminDashboard,
   type BlogPostView,
+  type DownloadedFile,
   type Kind,
   type LineBody,
   type LineView,
@@ -403,6 +404,18 @@ function findLine(kind: Kind, lineId: number): LineView | undefined {
     .find((candidate) => candidate.id === Number(lineId));
 }
 
+function ownsLineOrAdministers(session: SessionUser, [kind, lineId]: [Kind, number]): boolean {
+  return ownsOrAdministers(session, [kind, orNotFound(findLine(kind, lineId)).reportId]);
+}
+
+function invoiceFile(kind: Kind, lineId: number): DownloadedFile {
+  const invoice = orNotFound(findLine(kind, lineId)).invoice;
+  if (invoice === null) {
+    throw new ApiError(404, 'NOT_FOUND', MESSAGES.NO_INVOICE);
+  }
+  return { blob: new Blob([invoice.filename], { type: invoice.contentType }), filename: invoice.filename };
+}
+
 function findPost(id: number): BlogPostView {
   return orNotFound(BLOG_POSTS.find((post) => post.id === Number(id)));
 }
@@ -540,6 +553,9 @@ export function installApiMocks(category: SessionCategory): void {
   vi.mocked(api.deleteLine).mockImplementation(signedIn(() => undefined, userOnly));
   vi.mocked(api.uploadInvoice).mockImplementation(signedIn(() => undefined, userOnly));
   vi.mocked(api.invoiceDownloadUrl).mockImplementation((kind, lineId) => `/api/lines/${kind}/${lineId}/invoice`);
+  vi.mocked(api.downloadInvoice).mockImplementation(
+    signedIn(async (kind, lineId) => invoiceFile(kind, lineId), ownsLineOrAdministers),
+  );
 
   vi.mocked(api.listBlogPosts).mockImplementation(
     signedIn(async (q) => BLOG_POSTS.filter((post) => matches(q, post.title, post.description))),
