@@ -7,7 +7,11 @@ import jakarta.servlet.RequestDispatcher;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import org.springframework.boot.web.server.Compression;
+import org.springframework.boot.web.server.WebServerFactoryCustomizer;
 import org.springframework.boot.web.servlet.error.ErrorController;
+import org.springframework.boot.web.servlet.server.ConfigurableServletWebServerFactory;
+import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.convert.converter.Converter;
 import org.springframework.core.io.AbstractResource;
@@ -50,13 +54,23 @@ public class SpaWebConfig implements WebMvcConfigurer {
     public void addResourceHandlers(ResourceHandlerRegistry registry) {
         registry.addResourceHandler("/**")
                 .addResourceLocations(STATIC_LOCATION)
-                .resourceChain(true)
+                // Every unknown path resolves to index.html, so a resolver cache would grow with each new path.
+                .resourceChain(false)
                 .addResolver(new SpaResourceResolver());
     }
 
     @Override
     public void addFormatters(FormatterRegistry registry) {
         registry.addConverter(String.class, ReportKind.class, REPORT_KIND);
+    }
+
+    @Bean
+    public WebServerFactoryCustomizer<ConfigurableServletWebServerFactory> textCompression() {
+        return factory -> {
+            Compression compression = new Compression();
+            compression.setEnabled(true);
+            factory.setCompression(compression);
+        };
     }
 
     // After a converter rejects a value, Spring retries enums by constant name, so "EXPENSE" would slip through.

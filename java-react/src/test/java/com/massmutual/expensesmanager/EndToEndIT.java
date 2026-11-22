@@ -3,6 +3,7 @@ package com.massmutual.expensesmanager;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.params.provider.Arguments.arguments;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.math.BigDecimal;
@@ -22,6 +23,7 @@ import java.util.regex.Pattern;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
+import java.util.zip.GZIPInputStream;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -34,6 +36,7 @@ import com.massmutual.expensesmanager.service.model.FieldViolation;
 import com.massmutual.expensesmanager.support.ApiClient;
 import com.massmutual.expensesmanager.support.MutableClock;
 import com.massmutual.expensesmanager.support.TestDatabase;
+import com.massmutual.expensesmanager.web.SpaWebConfig;
 import com.zaxxer.hikari.HikariDataSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -62,8 +65,12 @@ import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.web.method.HandlerMethod;
+import org.springframework.web.servlet.handler.SimpleUrlHandlerMapping;
 import org.springframework.web.servlet.mvc.method.annotation.HttpEntityMethodProcessor;
 import org.springframework.web.servlet.mvc.method.annotation.RequestResponseBodyMethodProcessor;
+import org.springframework.web.servlet.resource.CachingResourceResolver;
+import org.springframework.web.servlet.resource.CachingResourceTransformer;
+import org.springframework.web.servlet.resource.ResourceHttpRequestHandler;
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @Import(MutableClock.Beans.class)
@@ -128,6 +135,59 @@ class EndToEndIT {
             assertThat(unsatisfiable.header("Content-Range")).isEqualTo("bytes */" + length);
             assertThat(unsatisfiable.json().path("code").asText()).isEqualTo("REQUESTED_RANGE_NOT_SATISFIABLE");
             assertThat(unsatisfiable.header("Cache-Control")).contains("no-store").doesNotContain("immutable");
+        }
+    }
+
+    @Test
+    @DisplayName("distinct deep links each load the SPA while the resource chain keeps no per-path cache")
+    void deepLinksResolveWithoutPerPathCache() throws IOException {
+        byte[] indexHtml = classpathIndexHtml();
+        try (ApiClient anonymous = new ApiClient(port)) {
+            for (String path : List.of("/" + UUID.randomUUID(), "/reports/" + UUID.randomUUID(),
+                    "/admin/reports/expense/" + UUID.randomUUID())) {
+                ApiClient.Response response = expectStatus(anonymous.get(path), 200);
+                assertThat(response.body()).as("body of GET %s", path).isEqualTo(indexHtml);
+            }
+        }
+
+        Object spaHandler = context.getBean("resourceHandlerMapping", SimpleUrlHandlerMapping.class)
+                .getUrlMap().get("/**");
+        assertThat(spaHandler).isInstanceOf(ResourceHttpRequestHandler.class);
+        ResourceHttpRequestHandler handler = (ResourceHttpRequestHandler) spaHandler;
+        assertThat(handler.getResourceResolvers())
+                .anySatisfy(resolver -> assertThat(resolver.getClass().getEnclosingClass())
+                        .isEqualTo(SpaWebConfig.class))
+                .doesNotHaveAnyElementsOfTypes(CachingResourceResolver.class);
+        assertThat(handler.getResourceTransformers()).doesNotHaveAnyElementsOfTypes(CachingResourceTransformer.class);
+    }
+
+    @Test
+    @DisplayName("a gzip client gets the hashed bundle and a large JSON body compressed to the same content")
+    void compressesBundleAndLargeJsonForGzipClients() throws IOException {
+        Map<String, String> acceptGzip = Map.of("Accept-Encoding", "gzip");
+        Matcher bundle = Pattern.compile("src=\"(/assets/[^\"]+\\.js)\"")
+                .matcher(new String(classpathIndexHtml(), StandardCharsets.UTF_8));
+        assertThat(bundle.find()).as("hashed bundle referenced by index.html").isTrue();
+        try (ApiClient anonymous = new ApiClient(port)) {
+            ApiClient.Response asset = expectStatus(
+                    anonymous.sendWithoutCsrf("GET", bundle.group(1), null, acceptGzip), 200);
+            assertGzipped(asset);
+            assertThat(gunzip(asset.body())).isEqualTo(classpathStatic(bundle.group(1)));
+            assertThat(asset.header("Cache-Control")).isEqualTo("max-age=31536000, private, immutable");
+        }
+
+        try (ApiClient user = ApiClient.loggedIn(port, USER, PASSWORD)) {
+            // The seeded list alone stays under 2 KB.
+            for (int n = 1; n <= 6; n++) {
+                expectStatus(user.postJson("/api/reports", newReport("Conference travel and lodging #" + n)), 201);
+            }
+            String listPath = "/api/reports?kind=expense";
+            ApiClient.Response identity = expectStatus(user.get(listPath), 200);
+            assertThat(identity.headerValues("Content-Encoding")).isEmpty();
+            assertThat(identity.body().length).as("identity body above the 2 KB threshold").isGreaterThan(2048);
+            ApiClient.Response compressed = expectStatus(user.sendWithoutCsrf("GET", listPath, null, acceptGzip), 200);
+            assertGzipped(compressed);
+            assertThat(ApiClient.MAPPER.readTree(gunzip(compressed.body()))).isEqualTo(identity.json());
         }
     }
 
@@ -533,6 +593,17 @@ class EndToEndIT {
     private static ApiClient.Response expectStatus(ApiClient.Response response, int status) {
         assertThat(response.status()).as("%s", response).isEqualTo(status);
         return response;
+    }
+
+    private static void assertGzipped(ApiClient.Response response) {
+        assertThat(response.header("Content-Encoding")).isEqualTo("gzip");
+        assertThat(String.join(", ", response.headerValues("Vary"))).containsIgnoringCase("accept-encoding");
+    }
+
+    private static byte[] gunzip(byte[] body) throws IOException {
+        try (InputStream in = new GZIPInputStream(new ByteArrayInputStream(body))) {
+            return in.readAllBytes();
+        }
     }
 
     // A browser stores the last Set-Cookie of a name, so that one decides what it keeps.
