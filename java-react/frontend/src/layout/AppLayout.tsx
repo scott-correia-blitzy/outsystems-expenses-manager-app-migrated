@@ -210,8 +210,8 @@ function CompactNav({ user, pathname }: { user: SessionUser; pathname: string })
         slotProps={{ list: { 'aria-labelledby': buttonId } }}
       >
         {[
-          <ListSubheader key="user" role="none" disableSticky sx={{ py: 1 }}>
-            <Stack direction="row" spacing={1} useFlexGap alignItems="center">
+          <ListSubheader key="user" role="none" disableSticky>
+            <Stack direction="row" spacing={1} useFlexGap alignItems="center" sx={{ py: 1 }}>
               <UserAvatar user={user} />
               <Typography variant="body2" color="text.primary" sx={{ minWidth: 0, overflowWrap: 'anywhere' }}>
                 {user.displayName}
@@ -285,53 +285,62 @@ export function AppLayout({ children }: { children: ReactNode }) {
         Skip to main content
       </Button>
       <AppBar position="sticky" elevation={0}>
-        <Toolbar sx={{ gap: compact ? 1 : 2, flexWrap: compact ? 'nowrap' : 'wrap', py: 1 }}>
-          {user !== null && compact && <CompactNav user={user} pathname={pathname} />}
-          <Typography
-            variant="h6"
-            component={RouterLink}
-            to="/"
-            color="inherit"
-            noWrap
-            sx={{
-              ...barFocusRing,
-              textDecoration: 'none',
-              fontWeight: 'fontWeightBold',
-              ...(compact && { flexGrow: 1, minWidth: 0 }),
-            }}
+        <Toolbar>
+          <Stack
+            direction="row"
+            spacing={compact ? 1 : 2}
+            useFlexGap
+            alignItems="center"
+            flexWrap={compact ? 'nowrap' : 'wrap'}
+            sx={{ py: 1, flexGrow: 1, minWidth: 0 }}
           >
-            Expenses Manager V2
-          </Typography>
-          {user !== null && compact && logoutButton}
-          {user !== null && !compact && (
-            <>
-              <Stack
-                component="nav"
-                aria-label="Main menu"
-                direction="row"
-                spacing={1}
-                useFlexGap
-                sx={{ flexGrow: 1, flexWrap: 'wrap' }}
-              >
-                {menuFor(user.roles).map((item) => (
-                  <NavEntry key={item.label} item={item} pathname={pathname} />
-                ))}
-              </Stack>
-              <Stack
-                direction="row"
-                spacing={1}
-                useFlexGap
-                alignItems="center"
-                sx={{ minWidth: 0, maxWidth: '100%' }}
-              >
-                <UserAvatar user={user} />
-                <Typography variant="body2" color="inherit" noWrap title={user.displayName} sx={{ minWidth: 0 }}>
-                  {user.displayName}
-                </Typography>
-                {logoutButton}
-              </Stack>
-            </>
-          )}
+            {user !== null && compact && <CompactNav user={user} pathname={pathname} />}
+            <Typography
+              variant="h6"
+              component={RouterLink}
+              to="/"
+              color="inherit"
+              noWrap
+              sx={{
+                ...barFocusRing,
+                textDecoration: 'none',
+                fontWeight: 'fontWeightBold',
+                ...(compact && { flexGrow: 1, minWidth: 0 }),
+              }}
+            >
+              Expenses Manager V2
+            </Typography>
+            {user !== null && compact && logoutButton}
+            {user !== null && !compact && (
+              <>
+                <Stack
+                  component="nav"
+                  aria-label="Main menu"
+                  direction="row"
+                  spacing={1}
+                  useFlexGap
+                  sx={{ flexGrow: 1, flexWrap: 'wrap' }}
+                >
+                  {menuFor(user.roles).map((item) => (
+                    <NavEntry key={item.label} item={item} pathname={pathname} />
+                  ))}
+                </Stack>
+                <Stack
+                  direction="row"
+                  spacing={1}
+                  useFlexGap
+                  alignItems="center"
+                  sx={{ minWidth: 0, maxWidth: '100%' }}
+                >
+                  <UserAvatar user={user} />
+                  <Typography variant="body2" color="inherit" noWrap title={user.displayName} sx={{ minWidth: 0 }}>
+                    {user.displayName}
+                  </Typography>
+                  {logoutButton}
+                </Stack>
+              </>
+            )}
+          </Stack>
         </Toolbar>
       </AppBar>
       <Container

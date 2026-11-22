@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useState, type ChangeEvent, type ReactNode } from 'react';
+import { memo, useMemo, useState, type ChangeEvent, type ReactNode } from 'react';
 import {
   Grid,
   IconButton,
@@ -355,10 +355,6 @@ export function LineTable({
   const [sort, setSort] = useState<SortState>(null);
   const [page, setPage] = useState(0);
 
-  useEffect(() => {
-    setPage(0);
-  }, [search, lines]);
-
   const rows = useMemo(() => {
     const needle = search.trim().toLowerCase();
     const matching = needle
@@ -402,7 +398,10 @@ export function LineTable({
           size="small"
           placeholder="Search"
           value={search}
-          onChange={(event) => setSearch(event.target.value)}
+          onChange={(event) => {
+            setSearch(event.target.value);
+            setPage(0);
+          }}
           sx={{ minWidth: (theme) => ({ sm: theme.spacing(40) }) }}
           slotProps={{
             htmlInput: { 'aria-label': 'Search' },

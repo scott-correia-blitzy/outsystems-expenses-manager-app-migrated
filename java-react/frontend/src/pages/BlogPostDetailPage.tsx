@@ -80,6 +80,8 @@ export function BlogPostDetailPage() {
   const [errors, setErrors] = useState<FieldErrors>(NO_ERRORS);
   const [loading, setLoading] = useState(postId !== null);
   const [saving, setSaving] = useState(false);
+  // Unlike saving, the ref updates at once, so a second submit before the next render is ignored.
+  const saveInFlight = useRef(false);
   const titleInput = useRef<HTMLInputElement>(null);
   const descriptionInput = useRef<HTMLTextAreaElement>(null);
   const saveButton = useRef<HTMLButtonElement>(null);
@@ -159,7 +161,7 @@ export function BlogPostDetailPage() {
 
   const handleSave = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (saving) {
+    if (saveInFlight.current) {
       return;
     }
     const nextErrors = validate(title, description);
@@ -168,6 +170,7 @@ export function BlogPostDetailPage() {
       return;
     }
     const body: BlogPostBody = { title, description };
+    saveInFlight.current = true;
     setSaving(true);
     try {
       await (postId === null ? createBlogPost(body) : updateBlogPost(postId, body));
@@ -186,6 +189,7 @@ export function BlogPostDetailPage() {
         }
       }
     } finally {
+      saveInFlight.current = false;
       setSaving(false);
     }
   };

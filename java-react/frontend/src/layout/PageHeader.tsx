@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { Box, Breadcrumbs, breadcrumbsClasses, Link, Stack, Typography } from '@mui/material';
+import { Box, Breadcrumbs, Link, Stack, Typography } from '@mui/material';
 import { Link as RouterLink } from 'react-router';
 
 export type PageHeaderProps = {
@@ -18,54 +18,60 @@ export function PageHeader({ title, subtitle, breadcrumbs, actions }: PageHeader
   return (
     <Stack spacing={2} useFlexGap sx={{ mb: 3 }}>
       {crumbs.length > 0 && (
-        <Breadcrumbs
-          aria-label="breadcrumb"
-          separator="›"
-          sx={{
-            // Keeps wrapped lines clear of the links' overhanging touch targets.
-            [`& .${breadcrumbsClasses.ol}`]: { rowGap: 2.5 },
-          }}
-        >
-          {crumbs.map((item, index) => {
-            const key = `${index}-${item.label}`;
-            const isLast = index === crumbs.length - 1;
-            if (!isLast && item.to !== undefined) {
-              return (
-                <Link
-                  key={key}
-                  component={RouterLink}
-                  to={item.to}
-                  underline="hover"
-                  color="primary"
-                  variant="body2"
-                  sx={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    minHeight: (theme) => theme.spacing(5.5),
-                    minWidth: (theme) => theme.spacing(5.5),
-                    // Negative margins let the 44px target overhang the text so the breadcrumb row keeps its size.
-                    marginBlock: -1.25,
-                    marginInline: -0.5,
-                    paddingInline: 0.5,
-                  }}
-                >
-                  {item.label}
-                </Link>
-              );
+        // Padded crumbs keep wrapped lines clear of the 44px targets; the negative margin keeps the row at text height.
+        <Box sx={{ marginBlock: -1.25 }}>
+          <Breadcrumbs
+            aria-label="breadcrumb"
+            separator={
+              <Box component="span" sx={{ py: 1.25 }}>
+                ›
+              </Box>
             }
-            return (
-              <Typography
-                key={key}
-                variant="body2"
-                color="text.primary"
-                aria-current={isLast ? 'page' : undefined}
-              >
-                {item.label}
-              </Typography>
-            );
-          })}
-        </Breadcrumbs>
+          >
+            {crumbs.map((item, index) => {
+              const key = `${index}-${item.label}`;
+              const isLast = index === crumbs.length - 1;
+              if (!isLast && item.to !== undefined) {
+                return (
+                  <Link
+                    key={key}
+                    component={RouterLink}
+                    to={item.to}
+                    underline="hover"
+                    color="primary"
+                    variant="body2"
+                  >
+                    <Box
+                      component="span"
+                      sx={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        minHeight: (theme) => theme.spacing(5.5),
+                        minWidth: (theme) => theme.spacing(5.5),
+                        marginInline: -0.5,
+                        paddingInline: 0.5,
+                      }}
+                    >
+                      {item.label}
+                    </Box>
+                  </Link>
+                );
+              }
+              return (
+                <Box key={key} sx={{ py: 1.25 }}>
+                  <Typography
+                    variant="body2"
+                    color="text.primary"
+                    aria-current={isLast ? 'page' : undefined}
+                  >
+                    {item.label}
+                  </Typography>
+                </Box>
+              );
+            })}
+          </Breadcrumbs>
+        </Box>
       )}
       <Stack
         direction={{ xs: 'column', sm: 'row' }}
