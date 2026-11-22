@@ -44,16 +44,17 @@ public interface LineRepository<L extends LineEntity> extends JpaRepository<L, L
         return totals;
     }
 
+    // Status is filtered by subquery because H2 plans the equivalent join as a nested loop over the status index.
     @Query("select coalesce(sum(l.amountInEuros), 0) from #{#entityName} l"
-            + " join #{#entityName}Report r on r.id = l.reportId"
-            + " where l.createdBy = :callerId and r.statusId in :statusIds")
+            + " where l.createdBy = :callerId"
+            + " and l.reportId in (select r.id from #{#entityName}Report r where r.statusId in :statusIds)")
     BigDecimal sumForCreatorInStatuses(
             @Param("callerId") Long callerId, @Param("statusIds") Collection<Integer> statusIds);
 
     // The year is deliberately ignored, as in the legacy month cards.
     @Query("select coalesce(sum(l.amountInEuros), 0) from #{#entityName} l"
-            + " join #{#entityName}Report r on r.id = l.reportId"
-            + " where l.createdBy = :callerId and r.statusId in :statusIds"
+            + " where l.createdBy = :callerId"
+            + " and l.reportId in (select r.id from #{#entityName}Report r where r.statusId in :statusIds)"
             + " and extract(month from l.date) = :month")
     BigDecimal sumForCreatorInStatusesAndMonth(
             @Param("callerId") Long callerId,
@@ -63,9 +64,9 @@ public interface LineRepository<L extends LineEntity> extends JpaRepository<L, L
     @Query("select new com.massmutual.expensesmanager.repository.TypeTotalRow("
             + "t.id, t.label, count(l.id), sum(l.amountInEuros))"
             + " from #{#entityName} l"
-            + " join #{#entityName}Report r on r.id = l.reportId"
             + " join #{#entityName}Type t on t.id = l.typeId"
-            + " where l.createdBy = :callerId and r.statusId in :statusIds"
+            + " where l.createdBy = :callerId"
+            + " and l.reportId in (select r.id from #{#entityName}Report r where r.statusId in :statusIds)"
             + " group by t.id, t.label"
             + " order by sum(l.amountInEuros) desc, t.id")
     List<TypeTotalRow> totalsByType(
