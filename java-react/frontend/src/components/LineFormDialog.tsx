@@ -92,6 +92,7 @@ const DESCRIPTION_MAX_LENGTH = 1500;
 const ACCEPTED_INVOICE_TYPES = '.pdf,.png,.jpg,.jpeg';
 // MUI Select mirrors aria-invalid onto a hidden native input, which must not take focus.
 const FIRST_INVALID_CONTROL = '[aria-invalid="true"]:not([aria-hidden="true"]):not([tabindex="-1"])';
+const MULTILINE_HELPER_SX = { whiteSpace: 'pre-line' } as const;
 
 const CURRENCY_CODES: Record<number, string> = { [EURO_ID]: 'EUR', [DOLLAR_ID]: 'USD' };
 
@@ -235,15 +236,16 @@ function toBody(kind: Kind, form: FormState, typeId: number, isKilometers: boole
 function placeFieldErrors(
   fieldErrors: FieldError[],
   hidden: readonly FieldName[],
-): { placed: FieldErrors; unplaced: number } {
+): { placed: FieldErrors; unplaced: FieldError[] } {
   const placed: FieldErrors = {};
-  let unplaced = 0;
+  const unplaced: FieldError[] = [];
   for (const { field, message } of fieldErrors) {
     const name = Object.hasOwn(SERVER_FIELDS, field) ? SERVER_FIELDS[field] : undefined;
     if (name && !hidden.includes(name)) {
-      placed[name] ??= message;
+      const current = placed[name];
+      placed[name] = current === undefined ? message : `${current}\n${message}`;
     } else {
-      unplaced += 1;
+      unplaced.push({ field, message });
     }
   }
   return { placed, unplaced };
@@ -378,8 +380,8 @@ export function LineFormDialog({
     }
     const { placed, unplaced } = placeFieldErrors(fieldErrors, hiddenFields);
     setErrors(placed);
-    if (unplaced > 0) {
-      feedback.error(err);
+    if (err instanceof ApiError && unplaced.length > 0) {
+      feedback.error(new ApiError(err.status, err.code, err.message, unplaced));
     }
   };
 
@@ -496,7 +498,11 @@ export function LineFormDialog({
                 onChange={(event) => setField('date', event.target.value)}
                 error={Boolean(errors.date)}
                 helperText={errors.date}
-                slotProps={{ inputLabel: { shrink: true }, htmlInput: { max: todayIso() } }}
+                slotProps={{
+                  inputLabel: { shrink: true },
+                  htmlInput: { max: todayIso() },
+                  formHelperText: { sx: MULTILINE_HELPER_SX },
+                }}
               />
             </Grid>
             <Grid size={{ xs: 12, md: 4 }}>
@@ -511,6 +517,7 @@ export function LineFormDialog({
                 error={Boolean(errors.typeId)}
                 helperText={errors.typeId}
                 slots={{ inputLabel: SelectLabel }}
+                slotProps={{ formHelperText: { sx: MULTILINE_HELPER_SX } }}
               >
                 {types.map((type) => (
                   <MenuItem key={type.id} value={type.id}>
@@ -530,6 +537,7 @@ export function LineFormDialog({
                 onChange={(event) => setField('title', event.target.value)}
                 error={Boolean(errors.title)}
                 helperText={errors.title}
+                slotProps={{ formHelperText: { sx: MULTILINE_HELPER_SX } }}
               />
             </Grid>
             <Grid size={{ xs: 12, md: 4 }}>
@@ -546,7 +554,8 @@ export function LineFormDialog({
                   helperText={errors.kilometers}
                   slotProps={{
                     input: { endAdornment: <InputAdornment position="end">km</InputAdornment> },
-                    htmlInput: { min: 0, step: 'any', inputMode: 'decimal' },
+                    htmlInput: { step: 'any', inputMode: 'decimal' },
+                    formHelperText: { sx: MULTILINE_HELPER_SX },
                   }}
                 />
               ) : (
@@ -582,7 +591,7 @@ export function LineFormDialog({
                     ))}
                   </ToggleButtonGroup>
                   {errors.currencyId && (
-                    <FormHelperText id={currencyHelperId} error>
+                    <FormHelperText id={currencyHelperId} error sx={MULTILINE_HELPER_SX}>
                       {errors.currencyId}
                     </FormHelperText>
                   )}
@@ -601,6 +610,7 @@ export function LineFormDialog({
                 onChange={(event) => setField('description', event.target.value)}
                 error={Boolean(errors.description)}
                 helperText={errors.description}
+                slotProps={{ formHelperText: { sx: MULTILINE_HELPER_SX } }}
               />
             </Grid>
             {!isKilometers && (
@@ -623,7 +633,8 @@ export function LineFormDialog({
                         </InputAdornment>
                       ),
                     },
-                    htmlInput: { min: 0, step: 'any', inputMode: 'decimal' },
+                    htmlInput: { step: 'any', inputMode: 'decimal' },
+                    formHelperText: { sx: MULTILINE_HELPER_SX },
                   }}
                 />
               </Grid>
@@ -692,7 +703,11 @@ export function LineFormDialog({
                     )}
                   </Stack>
                 </Box>
-                {errors.file && <FormHelperText id={fileHelperId} error>{errors.file}</FormHelperText>}
+                {errors.file && (
+                  <FormHelperText id={fileHelperId} error sx={MULTILINE_HELPER_SX}>
+                    {errors.file}
+                  </FormHelperText>
+                )}
               </Stack>
             </Grid>
             <Grid size={{ xs: 12, md: 4 }}>

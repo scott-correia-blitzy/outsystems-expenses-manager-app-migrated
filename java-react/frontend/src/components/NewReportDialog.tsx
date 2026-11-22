@@ -15,7 +15,14 @@ import {
   ToggleButtonGroup,
 } from '@mui/material';
 import { createReport } from '../api/api';
-import { ApiError, MESSAGES, type CreateReportBody, type Kind, type ReportSummary } from '../api/types';
+import {
+  ApiError,
+  MESSAGES,
+  type CreateReportBody,
+  type FieldError,
+  type Kind,
+  type ReportSummary,
+} from '../api/types';
 import { reportPath } from '../routes';
 import { useDialogFocus } from './ConfirmDialog';
 import { useFeedback } from './Feedback';
@@ -111,20 +118,23 @@ export function NewReportDialog({ open, onClose }: NewReportDialogProps) {
   const showFailure = (err: unknown) => {
     const fieldErrors = err instanceof ApiError ? (err.fieldErrors ?? []) : [];
     const placed: FieldErrors = {};
-    let unplaced = fieldErrors.length === 0;
+    const unplaced: FieldError[] = [];
     for (const { field, message } of fieldErrors) {
       if (isFieldName(field)) {
-        placed[field] ??= message;
+        const current = placed[field];
+        placed[field] = current === undefined ? message : `${current}\n${message}`;
       } else {
-        unplaced = true;
+        unplaced.push({ field, message });
       }
     }
     showErrors(placed);
     if (Object.keys(placed).length === 0) {
       setFailedSaves((count) => count + 1);
     }
-    if (unplaced) {
+    if (fieldErrors.length === 0) {
       feedback.error(err);
+    } else if (err instanceof ApiError && unplaced.length > 0) {
+      feedback.error(new ApiError(err.status, err.code, err.message, unplaced));
     }
   };
 
@@ -194,7 +204,10 @@ export function NewReportDialog({ open, onClose }: NewReportDialogProps) {
             error={Boolean(errors.title)}
             helperText={errors.title}
             inputRef={titleInput}
-            slotProps={{ htmlInput: { 'aria-required': true } }}
+            slotProps={{
+              htmlInput: { 'aria-required': true },
+              formHelperText: { sx: { whiteSpace: 'pre-line' } },
+            }}
           />
           <FormControl error={Boolean(errors.kind)} fullWidth>
             <Stack spacing={1} useFlexGap>
@@ -221,7 +234,11 @@ export function NewReportDialog({ open, onClose }: NewReportDialogProps) {
                 <ToggleButton value="expense">Expense</ToggleButton>
                 <ToggleButton value="earning">Earning</ToggleButton>
               </ToggleButtonGroup>
-              {errors.kind && <FormHelperText id={kindHelperId}>{errors.kind}</FormHelperText>}
+              {errors.kind && (
+                <FormHelperText id={kindHelperId} sx={{ whiteSpace: 'pre-line' }}>
+                  {errors.kind}
+                </FormHelperText>
+              )}
             </Stack>
           </FormControl>
         </Stack>

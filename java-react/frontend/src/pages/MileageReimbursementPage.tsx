@@ -124,7 +124,7 @@ export function MileageReimbursementPage() {
                 fullWidth
                 slotProps={{
                   input: { endAdornment: <InputAdornment position="end">km</InputAdornment> },
-                  htmlInput: { min: 0, step: 'any', onInput: handleKmInput },
+                  htmlInput: { step: 'any', onInput: handleKmInput },
                   inputLabel: { shrink: kmBadInput || undefined },
                   formHelperText: { sx: { whiteSpace: 'pre-line' } },
                 }}

@@ -644,10 +644,15 @@ async function fillField(label: string | RegExp, value: string): Promise<void> {
 type ServerErrorCase = {
   path: string;
   category: SessionCategory;
-  name: string;
+  name: string | RegExp;
   fill: () => Promise<void>;
   submit: string;
-  endpoint: typeof api.createBlogPost | typeof api.usdToEur | typeof api.mileage;
+  endpoint:
+    | typeof api.createBlogPost
+    | typeof api.usdToEur
+    | typeof api.mileage
+    | typeof api.createReport
+    | typeof api.createLine;
   label: string | RegExp;
   field: string;
   messages: [string, string];
@@ -696,6 +701,41 @@ const SERVER_ERROR_CASES: ServerErrorCase[] = [
     messages: ['Distance is too large', 'Distance allows at most 2 decimals'],
     unknown: { field: 'vehicle', message: 'Vehicle is required' },
   },
+  {
+    path: '/reports',
+    category: 'user',
+    name: 'Reports',
+    fill: async () => {
+      await clickControl('New Report');
+      const dialog = await findDialog('New Report');
+      enter(dialog, 'Report Title', 'Car Rental');
+      press(dialog, 'Expense');
+    },
+    submit: 'Submit',
+    endpoint: api.createReport,
+    label: 'Report Title',
+    field: 'title',
+    messages: ['Title is already in use', 'Title must not end with a period'],
+    unknown: { field: 'owner', message: 'Owner is not active' },
+  },
+  {
+    path: '/reports/expense/12',
+    category: 'user',
+    name: /^12\/2024 EX: London Trip/,
+    fill: async () => {
+      await clickControl('Add Expense');
+      const dialog = await findDialog(/^New Expense/);
+      await choose(dialog, /Expense Type/, 'Restaurant');
+      enter(dialog, /^Title/, 'Team lunch');
+      enter(dialog, 'Amount', '18.5');
+    },
+    submit: 'Save',
+    endpoint: api.createLine,
+    label: /^Title/,
+    field: 'title',
+    messages: ['Title is already in use on this report', 'Title must not end with a period'],
+    unknown: { field: 'receipt', message: 'Receipt number is required' },
+  },
 ];
 
 describe('server field errors', () => {
@@ -720,7 +760,9 @@ describe('server field errors', () => {
       expect(toast).not.toHaveTextContent(`${unknown.field}:`);
       expect(toast).not.toHaveTextContent(messages[1]);
       const helperId = screen.getByLabelText(label).getAttribute('aria-describedby') ?? '';
-      expect(document.getElementById(helperId)?.textContent).toBe(messages.join('\n'));
+      const helper = document.getElementById(helperId);
+      expect(helper?.textContent).toBe(messages.join('\n'));
+      expect(helper && getComputedStyle(helper).whiteSpace).toBe('pre-line');
       expect(screen.getByLabelText(label)).toHaveFocus();
     },
     TEST_TIMEOUT,
