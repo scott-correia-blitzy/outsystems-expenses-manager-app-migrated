@@ -402,7 +402,9 @@ export function ReportList({ mode, kind, onDecided }: ReportListProps) {
   const decisionPending = useRef(false);
   const [deciding, setDeciding] = useState(false);
   const [decisionFocus, setDecisionFocus] = useState<DecisionFocus | null>(null);
+  const [retryLoadsBefore, setRetryLoadsBefore] = useState<number | null>(null);
   const searchInput = useRef<HTMLInputElement>(null);
+  const retryButton = useRef<HTMLButtonElement>(null);
   const lineViewer = useRef<LineViewerHandle>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const [heldBlockSize, setHeldBlockSize] = useState<number | null>(null);
@@ -503,6 +505,19 @@ export function ReportList({ mode, kind, onDecided }: ReportListProps) {
     ];
     candidates.find((candidate) => candidate?.isConnected && !candidate.matches(':disabled'))?.focus();
   }, [decisionFocus, settledLoad, idBase]);
+
+  useEffect(() => {
+    if (retryLoadsBefore === null || settledLoad <= retryLoadsBefore) {
+      return;
+    }
+    setRetryLoadsBefore(null);
+    const active = document.activeElement;
+    if (active !== null && active !== document.body) {
+      return;
+    }
+    const candidates = [retryButton.current, searchInput.current];
+    candidates.find((candidate) => candidate?.isConnected && !candidate.matches(':disabled'))?.focus();
+  }, [retryLoadsBefore, settledLoad]);
 
   const detailMissing = expandedId !== null && details[expandedId] === undefined;
 
@@ -623,6 +638,11 @@ export function ReportList({ mode, kind, onDecided }: ReportListProps) {
     },
     [kind, feedback, onDecided],
   );
+
+  const retryLoad = () => {
+    setRetryLoadsBefore(startedLoads.current);
+    setReloadKey((key) => key + 1);
+  };
 
   const viewReportLine = useCallback((line: LineView) => {
     lineViewer.current?.show(line);
@@ -792,7 +812,7 @@ export function ReportList({ mode, kind, onDecided }: ReportListProps) {
       <Alert
         severity="error"
         action={
-          <Button color="inherit" size="small" onClick={() => setReloadKey((key) => key + 1)}>
+          <Button ref={retryButton} color="inherit" size="small" onClick={retryLoad}>
             Retry
           </Button>
         }

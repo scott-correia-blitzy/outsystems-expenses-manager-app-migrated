@@ -142,7 +142,11 @@ function DashboardSection({ title, note, children }: { title: string; note?: str
 }
 
 const FOCUS_VISIBLE_SX = {
-  '&:focus-visible': { outline: 2, outlineColor: 'primary.main', outlineOffset: 2 },
+  '&:focus-visible': {
+    outline: 2,
+    outlineColor: 'primary.main',
+    outlineOffset: (theme: Theme) => theme.spacing(0.25),
+  },
 } as const;
 
 function NoData({ children }: { children: string }) {
@@ -408,6 +412,8 @@ export function UserDashboardPage() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const latestRequest = useRef(0);
+  const retryButton = useRef<HTMLButtonElement>(null);
+  const restoreFocus = useRef(false);
 
   const loadDashboard = useCallback(() => {
     const request = ++latestRequest.current;
@@ -437,7 +443,18 @@ export function UserDashboardPage() {
     };
   }, [loadDashboard]);
 
+  useEffect(() => {
+    if (loading || !restoreFocus.current) {
+      return;
+    }
+    restoreFocus.current = false;
+    if (document.activeElement === null || document.activeElement === document.body) {
+      (retryButton.current ?? document.querySelector<HTMLElement>('main h1'))?.focus();
+    }
+  }, [loading]);
+
   const retry = () => {
+    restoreFocus.current = true;
     setLoadError(null);
     setLoading(true);
     loadDashboard();
@@ -465,7 +482,7 @@ export function UserDashboardPage() {
         <Alert
           severity="error"
           action={
-            <Button color="inherit" size="small" onClick={retry}>
+            <Button ref={retryButton} color="inherit" size="small" onClick={retry}>
               Retry
             </Button>
           }

@@ -165,6 +165,8 @@ function ReportDetailContent({
   // Pending state disables the action buttons only after a re-render, too late for a click in the same task.
   const actionInFlight = useRef(false);
   const header = useRef<HTMLDivElement>(null);
+  const retryButton = useRef<HTMLButtonElement>(null);
+  const retrying = useRef<'report' | 'reference' | null>(null);
 
   useEffect(() => {
     alive.current = true;
@@ -230,8 +232,14 @@ function ReportDetailContent({
   }, [kind, reportId, feedback, rejectInvalidReport, resolveOwnership]);
 
   const retryLoad = () => {
+    retrying.current = 'report';
     setLoadState({ phase: 'loading' });
     void load();
+  };
+
+  const retryReference = () => {
+    retrying.current = 'reference';
+    onRetryReference();
   };
 
   useEffect(() => {
@@ -255,6 +263,19 @@ function ReportDetailContent({
       setLineView(CLOSED_DIALOG);
     }
   }, [referenceFailed]);
+
+  // Runs once the retried state has rendered, so a failed retry hands its new Retry button to focus recovery.
+  useEffect(() => {
+    if (retrying.current === null) {
+      return;
+    }
+    const retried = retrying.current === 'report' ? loadState : referenceState;
+    if (retried.phase === 'loading') {
+      return;
+    }
+    retrying.current = null;
+    setSettledAction({ trigger: retryButton.current, succeeded: retried.phase === 'ready' });
+  }, [loadState, referenceState]);
 
   // A pending action disables its focused button, which drops focus to the body. A failure returns it to that
   // button; a success, or a reload that removed the button, moves it to the page heading.
@@ -304,7 +325,7 @@ function ReportDetailContent({
         <Alert
           severity="error"
           action={
-            <Button color="inherit" size="small" onClick={retryLoad}>
+            <Button ref={retryButton} color="inherit" size="small" onClick={retryLoad}>
               Retry
             </Button>
           }
@@ -518,7 +539,7 @@ function ReportDetailContent({
           <Alert
             severity="error"
             action={
-              <Button color="inherit" size="small" onClick={onRetryReference}>
+              <Button ref={retryButton} color="inherit" size="small" onClick={retryReference}>
                 Retry
               </Button>
             }

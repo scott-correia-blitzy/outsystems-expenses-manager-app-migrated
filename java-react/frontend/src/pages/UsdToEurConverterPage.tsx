@@ -9,6 +9,7 @@ import {
   InputAdornment,
   Stack,
   TextField,
+  useTheme,
 } from '@mui/material';
 import { reference, usdToEur } from '../api/api';
 import { ApiError, MESSAGES, type FieldError, type UsdToEurResult } from '../api/types';
@@ -35,6 +36,7 @@ function isConverterField(field: string): field is ConverterField {
 }
 
 export function UsdToEurConverterPage() {
+  const theme = useTheme();
   const feedback = useFeedback();
   const [amount, setAmount] = useState('');
   const [rate, setRate] = useState('');
@@ -198,7 +200,7 @@ export function UsdToEurConverterPage() {
                   input: {
                     endAdornment: rateLoading ? (
                       <InputAdornment position="end">
-                        <CircularProgress size={20} aria-label="Loading exchange rate" />
+                        <CircularProgress size={theme.spacing(2.5)} aria-label="Loading exchange rate" />
                       </InputAdornment>
                     ) : undefined,
                   },

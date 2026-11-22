@@ -84,6 +84,8 @@ export function AdminDashboardPage() {
   const [kind, setKind] = useState<Kind>('expense');
   // Only the newest request may update state; bumping it on unmount drops every pending one.
   const latestRequest = useRef(0);
+  const retryButton = useRef<HTMLButtonElement>(null);
+  const restoreFocus = useRef(false);
 
   const reloadCounters = useCallback(() => {
     const request = ++latestRequest.current;
@@ -117,7 +119,18 @@ export function AdminDashboardPage() {
     };
   }, [reloadCounters]);
 
+  useEffect(() => {
+    if (loading || !restoreFocus.current) {
+      return;
+    }
+    restoreFocus.current = false;
+    if (document.activeElement === null || document.activeElement === document.body) {
+      (retryButton.current ?? document.querySelector<HTMLElement>('main h1'))?.focus();
+    }
+  }, [loading]);
+
   const retryCounters = () => {
+    restoreFocus.current = true;
     setLoadError(null);
     setLoading(true);
     reloadCounters();
@@ -140,7 +153,7 @@ export function AdminDashboardPage() {
       <Alert
         severity="error"
         action={
-          <Button color="inherit" size="small" onClick={retryCounters}>
+          <Button ref={retryButton} color="inherit" size="small" onClick={retryCounters}>
             Retry
           </Button>
         }

@@ -484,12 +484,14 @@ describe('dashboard loading and errors', () => {
       expect(alert?.closest('main')).not.toBeNull();
       expect(screen.queryByText(loaded)).toBeNull();
 
+      retry.focus();
       fireEvent.click(retry);
       expect(screen.getByRole('progressbar', { name: spinner })).toBeInTheDocument();
       expect(await screen.findByText(announcement, {}, { timeout: FIND_TIMEOUT })).toBeInTheDocument();
       expect(screen.getByText(loaded)).toBeInTheDocument();
       expect(alert).not.toBeInTheDocument();
       expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
+      await waitFor(() => expect(screen.getByRole('heading', { name })).toHaveFocus());
     },
     TEST_TIMEOUT,
   );
@@ -3085,6 +3087,98 @@ describe('write guards', () => {
 
       await waitFor(() => expect(screen.getByRole('textbox', { name: 'Search by title' })).toHaveFocus());
       expect(screen.queryByText('7/2024 EX')).toBeNull();
+    },
+    TEST_TIMEOUT,
+  );
+});
+
+type RetryFocusCase = {
+  surface: string;
+  outcome: string;
+  target: string;
+  path: string;
+  category: SessionCategory;
+  endpoint:
+    | typeof api.userDashboard
+    | typeof api.adminDashboard
+    | typeof api.getReport
+    | typeof api.reference
+    | typeof api.listReports;
+  failures: number;
+  meanwhile?: () => HTMLElement;
+  focused: () => HTMLElement;
+};
+
+const USER_DASHBOARD_RETRY = {
+  surface: 'the dashboard',
+  path: PATHS.dashboard,
+  category: 'user',
+  endpoint: api.userDashboard,
+} as const;
+const ADMIN_DASHBOARD_RETRY = {
+  surface: 'the admin counters',
+  path: PATHS.admin,
+  category: 'administrator',
+  endpoint: api.adminDashboard,
+} as const;
+const REPORT_RETRY = { surface: 'the report', path: OWNER_REPORT, category: 'user', endpoint: api.getReport } as const;
+const REFERENCE_RETRY = {
+  surface: 'the reference data',
+  path: OWNER_REPORT,
+  category: 'user',
+  endpoint: api.reference,
+} as const;
+const LIST_RETRY = {
+  surface: 'the report list',
+  path: PATHS.reports,
+  category: 'user',
+  endpoint: api.listReports,
+} as const;
+const SUCCESS = { outcome: 'succeeds', failures: 1 } as const;
+const SECOND_FAILURE = { outcome: 'fails again', target: 'the new Retry', failures: 2 } as const;
+const MOVED_MEANWHILE = { outcome: 'fails again', target: 'the control focused meanwhile', failures: 2 } as const;
+const NEW_RETRY = () => screen.getByRole('button', { name: 'Retry' });
+const VIEW_REPORTS = () => screen.getByRole('link', { name: 'View Reports' });
+const SEARCH_FIELD = () => screen.getByRole('textbox', { name: 'Search by title' });
+const REPORT_HEADING = () => screen.getByRole('heading', { name: OWNER_HEADING });
+const SUBMIT_REPORT = () => screen.getByRole('button', { name: 'Submit Report' });
+const NEW_REPORT = () => screen.getByRole('button', { name: 'New Report' });
+
+const RETRY_FOCUS_CASES: RetryFocusCase[] = [
+  { ...USER_DASHBOARD_RETRY, ...SECOND_FAILURE, focused: NEW_RETRY },
+  { ...USER_DASHBOARD_RETRY, ...MOVED_MEANWHILE, meanwhile: VIEW_REPORTS, focused: VIEW_REPORTS },
+  { ...ADMIN_DASHBOARD_RETRY, ...SECOND_FAILURE, focused: NEW_RETRY },
+  { ...ADMIN_DASHBOARD_RETRY, ...MOVED_MEANWHILE, meanwhile: SEARCH_FIELD, focused: SEARCH_FIELD },
+  { ...REPORT_RETRY, ...SUCCESS, target: 'the page heading', focused: REPORT_HEADING },
+  { ...REPORT_RETRY, ...SECOND_FAILURE, focused: NEW_RETRY },
+  { ...REFERENCE_RETRY, ...SUCCESS, target: 'the page heading', focused: REPORT_HEADING },
+  { ...REFERENCE_RETRY, ...SECOND_FAILURE, focused: NEW_RETRY },
+  { ...REFERENCE_RETRY, ...MOVED_MEANWHILE, meanwhile: SUBMIT_REPORT, focused: SUBMIT_REPORT },
+  { ...LIST_RETRY, ...SUCCESS, target: 'the search field', focused: SEARCH_FIELD },
+  { ...LIST_RETRY, ...SECOND_FAILURE, focused: NEW_RETRY },
+  { ...LIST_RETRY, ...MOVED_MEANWHILE, meanwhile: NEW_REPORT, focused: NEW_REPORT },
+];
+
+describe('focus after a retry', () => {
+  it.each(RETRY_FOCUS_CASES)(
+    'when a retry of $surface $outcome, focus ends on $target',
+    async ({ path, category, endpoint, failures, meanwhile, focused }) => {
+      for (let attempt = 0; attempt < failures; attempt += 1) {
+        vi.mocked(endpoint).mockRejectedValueOnce(SERVER_FAILURE);
+      }
+      renderRoute(path, category);
+      const retry = await button('Retry');
+      retry.focus();
+      fireEvent.click(retry);
+      expect(retry).not.toBeInTheDocument();
+      expect(document.body).toHaveFocus();
+      meanwhile?.().focus();
+
+      if (failures > 1) {
+        expect(await button('Retry')).not.toBe(retry);
+      }
+      await waitFor(() => expect(focused()).toHaveFocus());
+      expect(endpoint).toHaveBeenCalledTimes(2);
     },
     TEST_TIMEOUT,
   );
