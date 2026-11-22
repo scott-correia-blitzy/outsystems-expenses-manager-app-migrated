@@ -212,6 +212,16 @@ function Loading() {
   );
 }
 
+// Navigate renders nothing until its effect runs, so the spinner stands in until the destination commits.
+export function Redirect({ to, state }: { to: string; state?: unknown }) {
+  return (
+    <>
+      <Loading />
+      <Navigate to={to} replace state={state} />
+    </>
+  );
+}
+
 const APP_NAME = 'Expenses Manager V2';
 
 const ScreenAnnouncerContext = createContext<(title: string) => boolean>(() => false);
@@ -261,7 +271,7 @@ function RootRedirect() {
   if (status === 'loading') {
     return <Loading />;
   }
-  return <Navigate to={user === null ? PATHS.login : landingRouteFor(user.roles)} replace />;
+  return <Redirect to={user === null ? PATHS.login : landingRouteFor(user.roles)} />;
 }
 
 function LoginRoute({ children }: { children: ReactNode }) {
@@ -273,7 +283,7 @@ function LoginRoute({ children }: { children: ReactNode }) {
   if (user === null) {
     return <>{children}</>;
   }
-  return <Navigate to={returnPathFrom(state) ?? landingRouteFor(user.roles)} replace />;
+  return <Redirect to={returnPathFrom(state) ?? landingRouteFor(user.roles)} />;
 }
 
 function OpenRoute({ children }: { children: ReactNode }) {
@@ -307,8 +317,8 @@ function routeElement({ path, page: Page, roles, title }: AppRoute): ReactElemen
     );
   }
   return (
-    <RequireRole roles={roles}>
-      <AppLayout>{screen}</AppLayout>
+    <RequireRole roles={roles} layout={AppLayout}>
+      {screen}
     </RequireRole>
   );
 }
@@ -335,7 +345,7 @@ export function AppRoutes() {
         {ROUTES.map((route) => (
           <Route key={route.path} path={route.path} element={routeElement(route)} />
         ))}
-        <Route path="*" element={<Navigate to="/" replace />} />
+        <Route path="*" element={<Redirect to="/" />} />
       </Routes>
       <Box ref={liveRegion} role="status" aria-live="polite" aria-atomic="true" sx={VISUALLY_HIDDEN} />
     </ScreenAnnouncerContext.Provider>

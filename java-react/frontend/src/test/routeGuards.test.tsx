@@ -1,3 +1,4 @@
+import { useLayoutEffect } from 'react';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { useLocation, useNavigate } from 'react-router';
@@ -195,21 +196,21 @@ describe('route guards', () => {
     15000,
   );
 
-  it(
-    'returns an anonymous visitor to the requested page after sign-in',
-    async () => {
-      renderRoute('/reports/expense/12', 'anonymous');
+  it.each([
+    { path: '/reports/expense/12', heading: /^12\/2024 EX: London Trip/ },
+    { path: '/tools/mileage?x=1#main-content', heading: 'Mileage Reimbursement' },
+    { path: '/tools/usd-to-eur?source=qfb1#result', heading: 'USD/EUR Currency Converter' },
+  ])(
+    'returns an anonymous visitor to $path after sign-in',
+    async ({ path, heading }) => {
+      renderRoute(path, 'anonymous', <UrlProbe />);
       await expectLocation('/login');
-      expect(await screen.findByRole('heading', { name: 'Login' }, { timeout: 3000 })).toBeInTheDocument();
+      expect(screen.getByTestId('return-path').textContent).toBe(path);
 
-      fireEvent.change(screen.getByLabelText(/Username/), { target: { value: SESSIONS.user.username } });
-      fireEvent.change(screen.getByLabelText(/Password/), { target: { value: '123456' } });
-      fireEvent.click(screen.getByRole('button', { name: 'Login' }));
+      await signInAgain();
 
-      await expectLocation('/reports/expense/12');
-      expect(
-        await screen.findByRole('heading', { name: /^12\/2024 EX: London Trip/ }, { timeout: 3000 }),
-      ).toBeInTheDocument();
+      await waitFor(() => expect(screen.getByTestId('url').textContent).toBe(path));
+      expect(await screen.findByRole('heading', { name: heading }, { timeout: 3000 })).toBeInTheDocument();
     },
     15000,
   );
@@ -241,16 +242,47 @@ function held<T>() {
   return { promise, resolve, reject };
 }
 
-function HistoryProbe({ go }: { go: string | number }) {
-  const navigate = useNavigate();
-  const { state } = useLocation();
+function UrlProbe() {
+  const { pathname, search, hash, state } = useLocation();
   const from = (state as { from?: unknown } | null)?.from;
   return (
     <>
-      <button onClick={() => (typeof go === 'number' ? navigate(go) : navigate(go))}>Visit</button>
+      <div data-testid="url">{pathname + search + hash}</div>
       <div data-testid="return-path">{typeof from === 'string' ? from : ''}</div>
     </>
   );
+}
+
+function HistoryProbe({ go }: { go: string | number }) {
+  const navigate = useNavigate();
+  return (
+    <>
+      <button onClick={() => (typeof go === 'number' ? navigate(go) : navigate(go))}>Visit</button>
+      <UrlProbe />
+    </>
+  );
+}
+
+interface Frame {
+  pathname: string;
+  main: boolean;
+  banner: boolean;
+  progressbar: boolean;
+}
+
+// Every session and location change re-renders it, so its layout effect sees each commit a guard or redirect makes.
+function FrameProbe({ frames }: { frames: Frame[] }) {
+  useAuth();
+  const { pathname } = useLocation();
+  useLayoutEffect(() => {
+    frames.push({
+      pathname,
+      main: document.querySelector('main') !== null,
+      banner: document.querySelector('header') !== null,
+      progressbar: document.querySelector('[role="progressbar"]') !== null,
+    });
+  });
+  return null;
 }
 
 describe('expired session', () => {
@@ -530,6 +562,88 @@ describe('session changed in another tab', () => {
   );
 });
 
+describe('guard redirects', () => {
+  const keepsShell = (frame: Frame) => frame.main && frame.banner;
+  const showsPageOrSpinner = (frame: Frame) => frame.main || frame.progressbar;
+
+  it.each([
+    {
+      change: 'another caller signed in elsewhere',
+      category: 'administrator',
+      start: '/blog',
+      heading: 'Blog',
+      end: () => {
+        switchSession('user');
+        fireEvent.click(screen.getByRole('link', { name: 'Dashboard' }));
+      },
+      outcome: '/invalid-permissions',
+      shown: keepsShell,
+    },
+    {
+      change: 'no session left elsewhere',
+      category: 'administrator',
+      start: '/blog',
+      heading: 'Blog',
+      end: () => {
+        switchSession('user');
+        vi.mocked(api.me).mockRejectedValueOnce(new ApiError(401, 'UNAUTHENTICATED', MESSAGES.UNAUTHENTICATED));
+        fireEvent.click(screen.getByRole('link', { name: 'Dashboard' }));
+      },
+      outcome: '/login',
+      shown: showsPageOrSpinner,
+    },
+    {
+      change: 'an expired session',
+      category: 'user',
+      start: '/reports',
+      heading: 'Reports',
+      end: () => {
+        expireSession();
+        fireEvent.click(screen.getByRole('button', { name: 'Earnings' }));
+      },
+      outcome: '/login',
+      shown: showsPageOrSpinner,
+    },
+  ] as const)(
+    'commits no empty screen while $change redirects to $outcome',
+    async ({ category, start, heading, end, outcome, shown }) => {
+      const frames: Frame[] = [];
+      renderRoute(start, category, <FrameProbe frames={frames} />);
+      expect(await screen.findByRole('heading', { name: heading }, { timeout: 3000 })).toBeInTheDocument();
+      frames.length = 0;
+
+      end();
+
+      await expectLocation(outcome);
+      expect(
+        await screen.findByRole('heading', { name: DESTINATION_HEADINGS[outcome] }, { timeout: 3000 }),
+      ).toBeInTheDocument();
+      expect(frames.map((frame) => frame.pathname)).toContain(outcome);
+      expect(frames.filter((frame) => !shown(frame))).toEqual([]);
+    },
+    15000,
+  );
+
+  it.each([
+    { category: 'user', landing: '/dashboard' },
+    { category: 'approver', landing: '/blog' },
+  ] as const)(
+    'commits no empty screen while /home redirects $category to $landing',
+    async ({ category, landing }) => {
+      const frames: Frame[] = [];
+      renderRoute('/home', category, <FrameProbe frames={frames} />);
+
+      await expectLocation(landing);
+      expect(
+        await screen.findByRole('heading', { name: DESTINATION_HEADINGS[landing] }, { timeout: 3000 }),
+      ).toBeInTheDocument();
+      expect(frames.map((frame) => frame.pathname)).toContain(landing);
+      expect(frames.filter((frame) => !showsPageOrSpinner(frame))).toEqual([]);
+    },
+    15000,
+  );
+});
+
 describe('logout', () => {
   async function openReports(): Promise<void> {
     renderRoute('/reports', 'user');
@@ -685,7 +799,10 @@ describe('login return path', () => {
     expect(safeRedirectTarget(from)).toBeNull();
   });
 
-  it.each(['/reports', '/reports/expense/12', '/reports?kind=earning'])('keeps %s', (from) => {
-    expect(safeRedirectTarget(from)).toBe(from);
-  });
+  it.each(['/reports', '/reports/expense/12', '/reports?kind=earning', '/tools/mileage?x=1#main-content'])(
+    'keeps %s',
+    (from) => {
+      expect(safeRedirectTarget(from)).toBe(from);
+    },
+  );
 });

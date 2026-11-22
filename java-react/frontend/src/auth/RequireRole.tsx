@@ -1,13 +1,21 @@
-import { useState, type ReactNode } from 'react';
-import { Navigate, useLocation } from 'react-router';
+import { Fragment, useState, type ComponentType, type ReactNode } from 'react';
+import { useLocation } from 'react-router';
 import { Box, CircularProgress } from '@mui/material';
 import { useAuth } from './AuthContext';
-import { canAccess, PATHS } from '../routes';
+import { canAccess, PATHS, Redirect } from '../routes';
 import type { Role } from '../api/types';
 
-export function RequireRole({ roles, children }: { roles: readonly Role[]; children: ReactNode }) {
+export function RequireRole({
+  roles,
+  layout: Layout = Fragment,
+  children,
+}: {
+  roles: readonly Role[];
+  layout?: ComponentType<{ children: ReactNode }>;
+  children: ReactNode;
+}) {
   const { status, user, loggedOut } = useAuth();
-  const location = useLocation();
+  const { pathname, search, hash } = useLocation();
   const [shownSignedIn, setShownSignedIn] = useState(false);
   if (status === 'signedIn' && !shownSignedIn) {
     setShownSignedIn(true);
@@ -23,13 +31,18 @@ export function RequireRole({ roles, children }: { roles: readonly Role[]; child
 
   if (status === 'anonymous' || user === null) {
     // The page a logout leaves is not a return path, so the next user starts at their own landing route.
-    const returnState = loggedOut && shownSignedIn ? undefined : { from: location.pathname + location.search };
-    return <Navigate to={PATHS.login} replace state={returnState} />;
+    const returnState = loggedOut && shownSignedIn ? undefined : { from: pathname + search + hash };
+    return <Redirect to={PATHS.login} state={returnState} />;
   }
 
   if (!canAccess(user.roles, roles)) {
-    return <Navigate to={PATHS.invalidPermissions} replace />;
+    // Same layout as the allowed page, so React keeps the shell mounted until the redirect lands.
+    return (
+      <Layout>
+        <Redirect to={PATHS.invalidPermissions} />
+      </Layout>
+    );
   }
 
-  return <>{children}</>;
+  return <Layout>{children}</Layout>;
 }
